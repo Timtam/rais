@@ -290,10 +290,26 @@ fn model_from_plan_with_options(
         notes: plan.notes,
         text: wizard_text(localizer),
         controls: WizardControls {
-            back_label: localizer.text("wizard-button-back").value,
-            next_label: localizer.text("wizard-button-next").value,
-            install_label: localizer.text("wizard-button-install").value,
-            close_label: localizer.text("wizard-button-close").value,
+            back_label: localized_wx_mnemonic_label(
+                localizer,
+                "wizard-button-back",
+                "wizard-button-back-mnemonic",
+            ),
+            next_label: localized_wx_mnemonic_label(
+                localizer,
+                "wizard-button-next",
+                "wizard-button-next-mnemonic",
+            ),
+            install_label: localized_wx_mnemonic_label(
+                localizer,
+                "wizard-button-install",
+                "wizard-button-install-mnemonic",
+            ),
+            close_label: localized_wx_mnemonic_label(
+                localizer,
+                "wizard-button-close",
+                "wizard-button-close-mnemonic",
+            ),
             can_go_back: false,
             can_go_next: selected_target_index.is_some(),
             can_install,
@@ -342,9 +358,21 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         done_status_success: localizer.text("wizard-done-status-success").value,
         done_status_error: localizer.text("wizard-done-status-error").value,
         done_status_no_packages: localizer.text("wizard-done-status-no-packages").value,
-        done_launch_reaper_label: localizer.text("wizard-done-launch-reaper").value,
-        done_open_resource_label: localizer.text("wizard-done-open-resource").value,
-        done_save_report_label: localizer.text("wizard-done-save-report").value,
+        done_launch_reaper_label: localized_wx_mnemonic_label(
+            localizer,
+            "wizard-done-launch-reaper",
+            "wizard-done-launch-reaper-mnemonic",
+        ),
+        done_open_resource_label: localized_wx_mnemonic_label(
+            localizer,
+            "wizard-done-open-resource",
+            "wizard-done-open-resource-mnemonic",
+        ),
+        done_save_report_label: localized_wx_mnemonic_label(
+            localizer,
+            "wizard-done-save-report",
+            "wizard-done-save-report-mnemonic",
+        ),
         done_no_reaper_app: localizer.text("wizard-done-no-reaper-app").value,
         done_no_report: localizer.text("wizard-done-no-report").value,
         done_report_saved_prefix: localizer.text("wizard-done-report-saved-prefix").value,
@@ -356,6 +384,63 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
             .text("wizard-done-open-resource-error-prefix")
             .value,
     }
+}
+
+fn localized_wx_mnemonic_label(localizer: &Localizer, label_id: &str, mnemonic_id: &str) -> String {
+    wx_mnemonic_label(
+        &localizer.text(label_id).value,
+        &localizer.text(mnemonic_id).value,
+    )
+}
+
+fn wx_mnemonic_label(label: &str, mnemonic: &str) -> String {
+    let Some(key) = mnemonic.trim().chars().next() else {
+        return escape_wx_label(label);
+    };
+
+    let mut output = String::new();
+    let mut inserted = false;
+    for label_char in label.chars() {
+        if !inserted && mnemonic_matches(label_char, key) {
+            output.push('&');
+            inserted = true;
+        }
+        push_escaped_wx_label_char(&mut output, label_char);
+    }
+
+    if !inserted {
+        if !output.is_empty() {
+            output.push(' ');
+        }
+        output.push('(');
+        output.push('&');
+        push_escaped_wx_label_char(&mut output, key);
+        output.push(')');
+    }
+
+    output
+}
+
+fn escape_wx_label(label: &str) -> String {
+    let mut output = String::new();
+    for label_char in label.chars() {
+        push_escaped_wx_label_char(&mut output, label_char);
+    }
+    output
+}
+
+fn push_escaped_wx_label_char(output: &mut String, label_char: char) {
+    if label_char == '&' {
+        output.push_str("&&");
+    } else {
+        output.push(label_char);
+    }
+}
+
+fn mnemonic_matches(label_char: char, mnemonic: char) -> bool {
+    label_char == mnemonic
+        || label_char.eq_ignore_ascii_case(&mnemonic)
+        || label_char.to_lowercase().to_string() == mnemonic.to_lowercase().to_string()
 }
 
 fn wizard_steps(localizer: &Localizer) -> Vec<WizardStepLabel> {
@@ -901,6 +986,46 @@ mod tests {
         assert_eq!(
             localizer.text("app-title").value,
             "REAPER Accessibility Installation Software"
+        );
+    }
+
+    #[test]
+    fn wizard_command_labels_include_native_mnemonics() {
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+
+        assert_eq!(model.controls.back_label, "&Back");
+        assert_eq!(model.controls.next_label, "&Next");
+        assert_eq!(model.controls.install_label, "&Install");
+        assert_eq!(model.controls.close_label, "&Close");
+        assert_eq!(model.text.done_launch_reaper_label, "&Launch REAPER");
+        assert_eq!(model.text.done_open_resource_label, "&Open resource folder");
+        assert_eq!(model.text.done_save_report_label, "&Save report");
+    }
+
+    #[test]
+    fn wx_mnemonic_labels_support_translated_access_keys() {
+        assert_eq!(super::wx_mnemonic_label("Weiter", "W"), "&Weiter");
+        assert_eq!(super::wx_mnemonic_label("Schliessen", "S"), "&Schliessen");
+        assert_eq!(
+            super::wx_mnemonic_label("Bericht speichern", "S"),
+            "Bericht &speichern"
+        );
+        assert_eq!(super::wx_mnemonic_label("Weiter", "X"), "Weiter (&X)");
+        assert_eq!(
+            super::wx_mnemonic_label("Save & report", "S"),
+            "&Save && report"
         );
     }
 

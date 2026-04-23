@@ -30,10 +30,16 @@ wizard-step-review = Review
 wizard-step-progress = Progress
 wizard-step-done = Done
 
+# Mnemonic messages are single-character native access keys. Choose a character
+# from the translated label when possible.
 wizard-button-back = Back
+wizard-button-back-mnemonic = B
 wizard-button-next = Next
+wizard-button-next-mnemonic = N
 wizard-button-install = Install
+wizard-button-install-mnemonic = I
 wizard-button-close = Close
+wizard-button-close-mnemonic = C
 
 wizard-target-heading = Choose REAPER installation
 wizard-target-choice-label = Installation target
@@ -87,9 +93,14 @@ wizard-done-status-idle = No installation has been run from this window yet.
 wizard-done-status-success = Installation finished. Review the details below.
 wizard-done-status-error = Installation failed. Review the error below.
 wizard-done-status-no-packages = No package was selected for installation or update.
+# Mnemonic messages are single-character native access keys. Choose a character
+# from the translated label when possible.
 wizard-done-launch-reaper = Launch REAPER
+wizard-done-launch-reaper-mnemonic = L
 wizard-done-open-resource = Open resource folder
+wizard-done-open-resource-mnemonic = O
 wizard-done-save-report = Save report
+wizard-done-save-report-mnemonic = S
 wizard-done-no-reaper-app = No launchable REAPER application is known for this target.
 wizard-done-no-report = No setup report is available yet.
 wizard-done-report-saved-prefix = Report saved
