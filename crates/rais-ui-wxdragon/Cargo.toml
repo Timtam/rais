@@ -10,6 +10,7 @@ gui = ["dep:wxdragon"]
 
 [dependencies]
 rais-core = { path = "../rais-core" }
+serde.workspace = true
 wxdragon = { workspace = true, optional = true }
 
 [dev-dependencies]

@@ -1291,6 +1291,7 @@ name = "rais-ui-wxdragon"
 version = "0.1.0"
 dependencies = [
  "rais-core",
+ "serde",
  "tempfile",
  "wxdragon",
 ]

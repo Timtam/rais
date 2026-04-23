@@ -21,6 +21,7 @@ use rais_core::resource::{
 use rais_core::setup::{SetupOptions, SetupReport, execute_setup_operation};
 use rais_core::version::Version;
 use rais_core::{RaisError, Result};
+use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiBootstrapOptions {
@@ -181,7 +182,8 @@ pub struct WizardControls {
     pub can_install: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum OsaraKeymapChoice {
     PreserveCurrent,
     ReplaceCurrent,
@@ -240,6 +242,33 @@ pub struct WizardPackagePlan {
 pub struct WizardReviewPreview {
     pub lines: Vec<String>,
     pub can_install: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WizardOutcomeStatus {
+    Success,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WizardOutcomeReport {
+    pub status: WizardOutcomeStatus,
+    pub resource_path: PathBuf,
+    pub target_app_path: Option<PathBuf>,
+    pub package_ids: Vec<String>,
+    pub platform: Platform,
+    pub architecture: Architecture,
+    pub portable: bool,
+    pub dry_run: bool,
+    pub allow_reaper_running: bool,
+    pub stage_unsupported: bool,
+    pub cache_dir: PathBuf,
+    pub osara_keymap_choice: OsaraKeymapChoice,
+    pub status_line: String,
+    pub detail_lines: Vec<String>,
+    pub error_message: Option<String>,
+    pub setup_report: Option<SetupReport>,
 }
 
 pub fn load_wizard_model(options: UiBootstrapOptions) -> Result<WizardModel> {
@@ -1048,6 +1077,125 @@ pub fn execute_wizard_install(request: WizardInstallRequest) -> Result<SetupRepo
     )
 }
 
+pub fn wizard_outcome_report_from_success(
+    model: &WizardModel,
+    request: &WizardInstallRequest,
+    report: &SetupReport,
+) -> WizardOutcomeReport {
+    let summary = summarize_setup_report(model, report);
+    WizardOutcomeReport {
+        status: WizardOutcomeStatus::Success,
+        resource_path: report.resource_path.clone(),
+        target_app_path: request.target_app_path.clone(),
+        package_ids: request.package_ids.clone(),
+        platform: request.platform,
+        architecture: request.architecture,
+        portable: request.portable,
+        dry_run: request.dry_run,
+        allow_reaper_running: request.allow_reaper_running,
+        stage_unsupported: request.stage_unsupported,
+        cache_dir: request.cache_dir.clone(),
+        osara_keymap_choice: request.osara_keymap_choice,
+        status_line: summary.status_line,
+        detail_lines: summary.detail_lines,
+        error_message: None,
+        setup_report: Some(report.clone()),
+    }
+}
+
+pub fn summarize_wizard_error(
+    model: &WizardModel,
+    request: &WizardInstallRequest,
+    error: &RaisError,
+) -> WizardInstallSummary {
+    let selected_packages = if request.package_ids.is_empty() {
+        model.text.review_no_package.clone()
+    } else {
+        request
+            .package_ids
+            .iter()
+            .map(|package_id| package_display_name(model, package_id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut detail_lines = vec![
+        format!("Target: {}", request.resource_path.display()),
+        format!(
+            "Portable target: {}",
+            if request.portable {
+                &model.text.common_yes
+            } else {
+                &model.text.common_no
+            }
+        ),
+        format!(
+            "Dry run: {}",
+            if request.dry_run {
+                &model.text.common_yes
+            } else {
+                &model.text.common_no
+            }
+        ),
+        format!("Packages selected: {selected_packages}"),
+        format!("Cache: {}", request.cache_dir.display()),
+    ];
+
+    if let Some(target_app_path) = &request.target_app_path {
+        detail_lines.push(format!("Planned app path: {}", target_app_path.display()));
+    }
+
+    if request
+        .package_ids
+        .iter()
+        .any(|package_id| package_id == PACKAGE_OSARA)
+    {
+        detail_lines.push(model.text.review_osara_keymap_heading.clone());
+        detail_lines.push(match request.osara_keymap_choice {
+            OsaraKeymapChoice::PreserveCurrent => model.text.review_osara_keymap_preserve.clone(),
+            OsaraKeymapChoice::ReplaceCurrent => model.text.review_osara_keymap_replace.clone(),
+        });
+    }
+
+    detail_lines.push(format!("Error: {error}"));
+
+    WizardInstallSummary {
+        status_line: model.text.done_status_error.clone(),
+        detail_lines,
+    }
+}
+
+pub fn wizard_outcome_report_from_error(
+    model: &WizardModel,
+    request: &WizardInstallRequest,
+    error: &RaisError,
+) -> WizardOutcomeReport {
+    let summary = summarize_wizard_error(model, request, error);
+    WizardOutcomeReport {
+        status: WizardOutcomeStatus::Error,
+        resource_path: request.resource_path.clone(),
+        target_app_path: request.target_app_path.clone(),
+        package_ids: request.package_ids.clone(),
+        platform: request.platform,
+        architecture: request.architecture,
+        portable: request.portable,
+        dry_run: request.dry_run,
+        allow_reaper_running: request.allow_reaper_running,
+        stage_unsupported: request.stage_unsupported,
+        cache_dir: request.cache_dir.clone(),
+        osara_keymap_choice: request.osara_keymap_choice,
+        status_line: summary.status_line,
+        detail_lines: summary.detail_lines,
+        error_message: Some(error.to_string()),
+        setup_report: None,
+    }
+}
+
+pub fn save_wizard_outcome_report(report: &WizardOutcomeReport) -> Result<PathBuf> {
+    let json_path = default_report_path(&report.resource_path, "setup");
+    let saved = save_json_and_text_reports(&json_path, report)?;
+    Ok(saved.text_path)
+}
+
 pub fn save_wizard_setup_report(report: &SetupReport) -> Result<PathBuf> {
     let json_path = default_report_path(&report.resource_path, "setup");
     let saved = save_json_and_text_reports(&json_path, report)?;
@@ -1301,8 +1449,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        OsaraKeymapChoice, UiBootstrapOptions, custom_portable_target_row, localizer_from_options,
-        model_from_plan,
+        OsaraKeymapChoice, UiBootstrapOptions, WizardInstallRequest, custom_portable_target_row,
+        localizer_from_options, model_from_plan,
     };
 
     #[test]
@@ -1892,6 +2040,91 @@ mod tests {
     }
 
     #[test]
+    fn wizard_error_summary_includes_selected_request_context() {
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            vec![fake_installation()],
+            Some(0),
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let request = sample_install_request(PathBuf::from("C:/PortableREAPER"));
+        let error = rais_core::RaisError::PreflightFailed {
+            message: "REAPER is running.".to_string(),
+        };
+
+        let summary = super::summarize_wizard_error(&model, &request, &error);
+
+        assert_eq!(
+            summary.status_line,
+            "Installation failed. Review the error below."
+        );
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line.contains("Packages selected: OSARA, ReaPack"))
+        );
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line == "OSARA key map")
+        );
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line.contains("Replace the current key map"))
+        );
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line.contains("Error: preflight failed: REAPER is running."))
+        );
+    }
+
+    #[test]
+    fn saves_wizard_outcome_error_report_under_resource_logs() {
+        let dir = tempdir().unwrap();
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            vec![fake_installation()],
+            Some(0),
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let request = sample_install_request(dir.path().join("PortableREAPER"));
+        let error = rais_core::RaisError::PreflightFailed {
+            message: "Target path blocked".to_string(),
+        };
+        let report = super::wizard_outcome_report_from_error(&model, &request, &error);
+
+        let path = super::save_wizard_outcome_report(&report).unwrap();
+        let json_path = path.with_extension("json");
+
+        assert!(path.starts_with(dir.path().join("PortableREAPER/RAIS/logs")));
+        assert!(path.is_file());
+        assert!(json_path.is_file());
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("status: error"));
+        assert!(content.contains("error_message: preflight failed: Target path blocked"));
+    }
+
+    #[test]
     fn saves_wizard_setup_report_under_resource_logs() {
         let dir = tempdir().unwrap();
         let report = empty_setup_report(dir.path().join("PortableREAPER"));
@@ -1941,6 +2174,22 @@ mod tests {
                 install_report: None,
                 items: Vec::new(),
             },
+        }
+    }
+
+    fn sample_install_request(resource_path: PathBuf) -> WizardInstallRequest {
+        WizardInstallRequest {
+            resource_path: resource_path.clone(),
+            package_ids: vec![PACKAGE_OSARA.to_string(), PACKAGE_REAPACK.to_string()],
+            platform: Platform::Windows,
+            architecture: Architecture::X64,
+            portable: true,
+            target_app_path: Some(resource_path.join("reaper.exe")),
+            dry_run: false,
+            allow_reaper_running: false,
+            stage_unsupported: true,
+            osara_keymap_choice: OsaraKeymapChoice::ReplaceCurrent,
+            cache_dir: PathBuf::from("C:/cache"),
         }
     }
 }

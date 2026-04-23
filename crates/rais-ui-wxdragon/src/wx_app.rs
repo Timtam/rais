@@ -8,12 +8,12 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use rais_core::setup::SetupReport;
 use rais_ui_wxdragon::{
     OsaraKeymapChoice, TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel,
-    build_review_preview_for_package_rows, custom_portable_target_row, execute_wizard_install,
-    install_request_from_target_and_rows, load_wizard_model, osara_keymap_note,
-    osara_selected_for_rows, save_wizard_setup_report, summarize_setup_report,
+    WizardOutcomeReport, build_review_preview_for_package_rows, custom_portable_target_row,
+    execute_wizard_install, install_request_from_target_and_rows, load_wizard_model,
+    osara_keymap_note, osara_selected_for_rows, save_wizard_outcome_report,
+    wizard_outcome_report_from_error, wizard_outcome_report_from_success,
     wizard_package_plan_for_target,
 };
 use wxdragon::prelude::*;
@@ -76,7 +76,7 @@ pub fn run() {
         let package_notes = Rc::new(RefCell::new(model.notes.clone()));
         let can_install = Rc::new(Cell::new(model.controls.can_install));
         let review_can_install = Rc::new(Cell::new(false));
-        let last_report = Arc::new(Mutex::new(None::<SetupReport>));
+        let last_report = Arc::new(Mutex::new(None::<WizardOutcomeReport>));
         let last_reaper_app_path = Arc::new(Mutex::new(None::<PathBuf>));
         let last_resource_path = Arc::new(Mutex::new(None::<PathBuf>));
         let wizard_widgets = add_pages(&book, &model, Rc::clone(&package_rows));
@@ -388,31 +388,36 @@ pub fn run() {
                 let ui_last_reaper_app_path = Arc::clone(&last_reaper_app_path);
                 let ui_last_resource_path = Arc::clone(&last_resource_path);
                 let can_install = effective_can_install(&can_install, &review_can_install);
+                let request_for_report = request.clone();
                 std::thread::spawn(move || {
                     let result = execute_wizard_install(request);
                     wxdragon::call_after(Box::new(move || {
                         widgets.progress_gauge.set_value(100);
                         match result {
                             Ok(report) => {
-                                let summary = summarize_setup_report(&ui_model, &report);
+                                let outcome_report = wizard_outcome_report_from_success(
+                                    &ui_model,
+                                    &request_for_report,
+                                    &report,
+                                );
                                 widgets.progress_details.set_value(&format!(
                                     "{}\n\n{}",
-                                    summary.status_line,
-                                    summary.detail_lines.join("\n")
+                                    outcome_report.status_line,
+                                    outcome_report.detail_lines.join("\n")
                                 ));
                                 set_last_resource_path(
                                     &ui_last_resource_path,
                                     Some(report.resource_path.clone()),
                                 );
-                                set_last_report(&ui_last_report, Some(report));
+                                set_last_report(&ui_last_report, Some(outcome_report.clone()));
                                 widgets
                                     .progress_status
                                     .set_label(&ui_model.text.done_status_success);
                                 widgets.done_status.set_value(&format!(
                                     "{}\n\n{}\n\n{}",
                                     ui_model.text.done_status_success,
-                                    summary.status_line,
-                                    summary.detail_lines.join("\n")
+                                    outcome_report.status_line,
+                                    outcome_report.detail_lines.join("\n")
                                 ));
                                 widgets
                                     .done_launch_reaper
@@ -421,17 +426,24 @@ pub fn run() {
                                 widgets.done_save_report.enable(true);
                             }
                             Err(error) => {
-                                set_last_report(&ui_last_report, None);
+                                let outcome_report = wizard_outcome_report_from_error(
+                                    &ui_model,
+                                    &request_for_report,
+                                    &error,
+                                );
+                                set_last_report(&ui_last_report, Some(outcome_report.clone()));
                                 widgets.progress_details.set_value(&format!(
                                     "{}\n\n{}",
-                                    ui_model.text.done_status_error, error
+                                    outcome_report.status_line,
+                                    outcome_report.detail_lines.join("\n")
                                 ));
                                 widgets
                                     .progress_status
                                     .set_label(&ui_model.text.done_status_error);
                                 widgets.done_status.set_value(&format!(
                                     "{}\n\n{}",
-                                    ui_model.text.done_status_error, error
+                                    outcome_report.status_line,
+                                    outcome_report.detail_lines.join("\n")
                                 ));
                                 widgets
                                     .done_launch_reaper
@@ -439,7 +451,7 @@ pub fn run() {
                                 widgets.done_open_resource.enable(
                                     clone_last_resource_path(&ui_last_resource_path).is_some(),
                                 );
-                                widgets.done_save_report.enable(false);
+                                widgets.done_save_report.enable(true);
                             }
                         }
                         ui_current_step.store(DONE_STEP, Ordering::SeqCst);
@@ -509,7 +521,7 @@ pub fn run() {
                     append_done_status(&widgets.done_status, &model.text.done_no_report);
                     return;
                 };
-                match save_wizard_setup_report(&report) {
+                match save_wizard_outcome_report(&report) {
                     Ok(path) => append_done_status(
                         &widgets.done_status,
                         &format!(
@@ -1195,13 +1207,18 @@ fn configure_portable_folder(portable_folder: &DirPickerCtrl, enabled: bool) {
     portable_folder.set_can_focus(enabled);
 }
 
-fn set_last_report(state: &Arc<Mutex<Option<SetupReport>>>, report: Option<SetupReport>) {
+fn set_last_report(
+    state: &Arc<Mutex<Option<WizardOutcomeReport>>>,
+    report: Option<WizardOutcomeReport>,
+) {
     if let Ok(mut slot) = state.lock() {
         *slot = report;
     }
 }
 
-fn clone_last_report(state: &Arc<Mutex<Option<SetupReport>>>) -> Option<SetupReport> {
+fn clone_last_report(
+    state: &Arc<Mutex<Option<WizardOutcomeReport>>>,
+) -> Option<WizardOutcomeReport> {
     state.lock().ok().and_then(|slot| slot.clone())
 }
 
