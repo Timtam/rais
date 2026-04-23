@@ -65,6 +65,10 @@ wizard-target-details = Resource path: { $path }
 wizard-packages-heading = Choose packages
 wizard-packages-list-label = Packages to install or update
 wizard-package-details-label = Package details
+wizard-package-details-handling-prefix = Handling
+wizard-package-handling-automatic = RAIS can install this package directly.
+wizard-package-handling-manual = RAIS will download this package and report the manual steps after the run.
+wizard-package-handling-unavailable = This package is not available for the selected platform or architecture.
 
 # $package is the localized package display name, $action is the localized planned action, $installed is the installed version or unknown, and $available is the available version or unknown.
 wizard-package-row = { $package }: { $action }. Installed: { $installed }. Available: { $available }
@@ -79,6 +83,7 @@ wizard-review-resource-no-changes = No resource path changes are needed.
 wizard-review-package-heading = Selected packages
 wizard-review-notes-heading = Notes
 wizard-review-preflight-prefix = Cannot install yet
+wizard-review-manual-heading = Manual attention expected
 
 # $path is the selected REAPER resource path.
 wizard-review-target = Target: { $path }

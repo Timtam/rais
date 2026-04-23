@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
-use rais_core::artifact::default_cache_dir;
+use rais_core::artifact::{ArtifactKind, default_cache_dir, expected_artifact_kind};
 use rais_core::detection::{DiscoveryOptions, detect_components, discover_installations};
 use rais_core::latest::fetch_latest_versions;
 use rais_core::localization::{DEFAULT_LOCALE, Localizer};
@@ -61,6 +61,8 @@ pub struct WizardModel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WizardText {
+    pub common_yes: String,
+    pub common_no: String,
     pub target_heading: String,
     pub target_choice_label: String,
     pub target_details_label: String,
@@ -76,6 +78,10 @@ pub struct WizardText {
     pub packages_heading: String,
     pub packages_list_label: String,
     pub package_details_label: String,
+    pub package_details_handling_prefix: String,
+    pub package_handling_automatic: String,
+    pub package_handling_manual: String,
+    pub package_handling_unavailable: String,
     pub review_heading: String,
     pub review_target_prefix: String,
     pub review_cache_prefix: String,
@@ -86,6 +92,7 @@ pub struct WizardText {
     pub review_package_heading: String,
     pub review_notes_heading: String,
     pub review_preflight_prefix: String,
+    pub review_manual_heading: String,
     pub review_no_target: String,
     pub review_no_package: String,
     pub progress_heading: String,
@@ -145,11 +152,14 @@ pub struct PackageRow {
     pub display_name: String,
     pub selected: bool,
     pub summary: String,
+    pub details: String,
     pub installed_version: String,
     pub available_version: String,
     pub action: PlanActionKind,
     pub action_label: String,
     pub reason: String,
+    pub handling_summary: String,
+    pub manual_attention_expected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,8 +299,16 @@ fn model_from_plan_with_options(
     plan: InstallPlan,
 ) -> WizardModel {
     let package_specs = builtin_package_specs(platform);
+    let text = wizard_text(localizer);
     let target_rows = target_rows(localizer, &installations, selected_target_index);
-    let package_rows = package_rows(localizer, &package_specs, &plan.actions);
+    let package_rows = package_rows(
+        localizer,
+        &text,
+        platform,
+        architecture,
+        &package_specs,
+        &plan.actions,
+    );
     let review_lines = review_lines(localizer, &target_rows, &package_rows, &plan.notes);
     let can_install = package_rows
         .iter()
@@ -309,7 +327,7 @@ fn model_from_plan_with_options(
         available_packages,
         review_lines,
         notes: plan.notes,
-        text: wizard_text(localizer),
+        text,
         controls: WizardControls {
             back_label: localized_wx_mnemonic_label(
                 localizer,
@@ -340,6 +358,8 @@ fn model_from_plan_with_options(
 
 fn wizard_text(localizer: &Localizer) -> WizardText {
     WizardText {
+        common_yes: localizer.text("common-yes").value,
+        common_no: localizer.text("common-no").value,
         target_heading: localizer.text("wizard-target-heading").value,
         target_choice_label: localizer.text("wizard-target-choice-label").value,
         target_details_label: localizer.text("wizard-target-details-label").value,
@@ -363,6 +383,12 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         packages_heading: localizer.text("wizard-packages-heading").value,
         packages_list_label: localizer.text("wizard-packages-list-label").value,
         package_details_label: localizer.text("wizard-package-details-label").value,
+        package_details_handling_prefix: localizer
+            .text("wizard-package-details-handling-prefix")
+            .value,
+        package_handling_automatic: localizer.text("wizard-package-handling-automatic").value,
+        package_handling_manual: localizer.text("wizard-package-handling-manual").value,
+        package_handling_unavailable: localizer.text("wizard-package-handling-unavailable").value,
         review_heading: localizer.text("wizard-review-heading").value,
         review_target_prefix: localizer.text("wizard-review-target-prefix").value,
         review_cache_prefix: localizer.text("wizard-review-cache-prefix").value,
@@ -377,6 +403,7 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         review_package_heading: localizer.text("wizard-review-package-heading").value,
         review_notes_heading: localizer.text("wizard-review-notes-heading").value,
         review_preflight_prefix: localizer.text("wizard-review-preflight-prefix").value,
+        review_manual_heading: localizer.text("wizard-review-manual-heading").value,
         review_no_target: localizer.text("wizard-review-no-target").value,
         review_no_package: localizer.text("wizard-review-no-package").value,
         progress_heading: localizer.text("wizard-progress-heading").value,
@@ -757,6 +784,28 @@ pub fn build_review_preview_for_package_rows(
         }
     }
 
+    let manual_items = selected_package_indices
+        .iter()
+        .filter_map(|index| package_rows.get(*index))
+        .filter(|package| {
+            package.manual_attention_expected
+                && matches!(
+                    package.action,
+                    PlanActionKind::Install | PlanActionKind::Update
+                )
+        })
+        .collect::<Vec<_>>();
+    if !manual_items.is_empty() {
+        lines.push(String::new());
+        lines.push(model.text.review_manual_heading.clone());
+        for package in manual_items {
+            lines.push(format!(
+                "{}: {}",
+                package.display_name, package.handling_summary
+            ));
+        }
+    }
+
     if !notes.is_empty() {
         lines.push(String::new());
         lines.push(model.text.review_notes_heading.clone());
@@ -799,7 +848,14 @@ pub fn wizard_package_plan_for_target(
         &model.available_packages,
     );
     let package_specs = builtin_package_specs(model.platform);
-    let package_rows = package_rows(&localizer, &package_specs, &plan.actions);
+    let package_rows = package_rows(
+        &localizer,
+        &model.text,
+        model.platform,
+        model.architecture,
+        &package_specs,
+        &plan.actions,
+    );
     let can_install = package_rows
         .iter()
         .any(|row| matches!(row.action, PlanActionKind::Install | PlanActionKind::Update));
@@ -821,9 +877,9 @@ fn wizard_package_ids(platform: Platform) -> Vec<String> {
 pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: bool) -> TargetRow {
     let writable = is_probably_writable(&path);
     let writable_text = if writable {
-        "yes".to_string()
+        model.text.common_yes.clone()
     } else {
-        "no".to_string()
+        model.text.common_no.clone()
     };
     let app_path = portable_reaper_app_path(model.platform, &path);
     TargetRow {
@@ -921,7 +977,7 @@ pub fn save_wizard_setup_report(report: &SetupReport) -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn summarize_setup_report(report: &SetupReport) -> WizardInstallSummary {
+pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> WizardInstallSummary {
     let created_resources = report
         .resource_init
         .actions
@@ -963,7 +1019,11 @@ pub fn summarize_setup_report(report: &SetupReport) -> WizardInstallSummary {
     ];
 
     for item in &report.package_operation.items {
-        detail_lines.push(format!("{}: {}", item.package_id, item.message));
+        detail_lines.push(format!(
+            "{}: {}",
+            package_display_name(model, &item.package_id),
+            item.message
+        ));
         if let Some(manual) = &item.manual_instruction {
             detail_lines.push(format!("{}:", manual.title));
             detail_lines.extend(manual.steps.iter().map(|step| format!("  {step}")));
@@ -980,6 +1040,9 @@ pub fn summarize_setup_report(report: &SetupReport) -> WizardInstallSummary {
 
 fn package_rows(
     localizer: &Localizer,
+    text: &WizardText,
+    platform: Platform,
+    architecture: Architecture,
     package_specs: &[PackageSpec],
     actions: &[PlanAction],
 ) -> Vec<PackageRow> {
@@ -997,19 +1060,26 @@ fn package_rows(
             let installed_version = version_text(localizer, action.installed_version.as_ref());
             let available_version = version_text(localizer, action.available_version.as_ref());
             let action_label = action_label(localizer, action.action);
+            let summary = localizer
+                .format(
+                    "wizard-package-row",
+                    &[
+                        ("package", display_name.as_str()),
+                        ("action", action_label.as_str()),
+                        ("installed", installed_version.as_str()),
+                        ("available", available_version.as_str()),
+                    ],
+                )
+                .value;
+            let (handling_summary, manual_attention_expected) =
+                package_handling_summary(text, &action.package_id, platform, architecture);
             PackageRow {
                 package_id: action.package_id.clone(),
-                summary: localizer
-                    .format(
-                        "wizard-package-row",
-                        &[
-                            ("package", display_name.as_str()),
-                            ("action", action_label.as_str()),
-                            ("installed", installed_version.as_str()),
-                            ("available", available_version.as_str()),
-                        ],
-                    )
-                    .value,
+                summary: summary.clone(),
+                details: format!(
+                    "{summary}\n\n{}\n\n{}: {}",
+                    action.reason, text.package_details_handling_prefix, handling_summary
+                ),
                 display_name: display_name.clone(),
                 selected: matches!(
                     action.action,
@@ -1020,9 +1090,41 @@ fn package_rows(
                 action: action.action,
                 action_label,
                 reason: action.reason.clone(),
+                handling_summary,
+                manual_attention_expected,
             }
         })
         .collect()
+}
+
+fn package_handling_summary(
+    text: &WizardText,
+    package_id: &str,
+    platform: Platform,
+    architecture: Architecture,
+) -> (String, bool) {
+    match expected_artifact_kind(package_id, platform, architecture) {
+        Ok(ArtifactKind::ExtensionBinary) => (text.package_handling_automatic.clone(), false),
+        Ok(_) => (text.package_handling_manual.clone(), true),
+        Err(_) => (text.package_handling_unavailable.clone(), true),
+    }
+}
+
+fn package_display_name(model: &WizardModel, package_id: &str) -> String {
+    if let Ok(localizer) = localizer_from_options(&model.bootstrap_options) {
+        if let Some(spec) = builtin_package_specs(model.platform)
+            .into_iter()
+            .find(|spec| spec.id == package_id)
+        {
+            return localizer.text(&spec.display_name_key).value;
+        }
+    }
+
+    builtin_package_specs(model.platform)
+        .into_iter()
+        .find(|spec| spec.id == package_id)
+        .map(|spec| spec.display_name)
+        .unwrap_or_else(|| package_id.to_string())
 }
 
 fn review_lines(
@@ -1239,9 +1341,12 @@ mod tests {
         assert_eq!(model.package_rows.len(), 2);
         assert_eq!(model.package_rows[0].display_name, "OSARA");
         assert!(model.package_rows[0].summary.contains("OSARA"));
+        assert!(model.package_rows[0].details.contains("Handling:"));
         assert_eq!(model.package_rows[0].action_label, "Install");
+        assert!(model.package_rows[0].manual_attention_expected);
         assert!(model.package_rows[0].selected);
         assert_eq!(model.package_rows[1].action_label, "Keep");
+        assert!(!model.package_rows[1].manual_attention_expected);
         assert!(!model.package_rows[1].selected);
         assert!(model.controls.can_go_next);
         assert!(model.controls.can_install);
@@ -1470,7 +1575,55 @@ mod tests {
 
         assert_eq!(reaper.display_name, "REAPER");
         assert_eq!(reaper.action, PlanActionKind::Install);
+        assert!(reaper.manual_attention_expected);
+        assert!(reaper.details.contains("Handling:"));
         assert!(reaper.selected);
+    }
+
+    #[test]
+    fn review_preview_lists_manual_attention_for_selected_packages() {
+        let dir = tempdir().unwrap();
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let target = custom_portable_target_row(&model, dir.path().join("PortableREAPER"), true);
+        let plan = super::wizard_package_plan_for_target(&model, Some(&target)).unwrap();
+        let selected = plan
+            .package_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| (row.package_id == PACKAGE_REAPER).then_some(index))
+            .collect::<Vec<_>>();
+
+        let preview = super::build_review_preview_for_package_rows(
+            &model,
+            Some(&target),
+            &selected,
+            &plan.package_rows,
+            &plan.notes,
+        );
+
+        assert!(preview.can_install);
+        assert!(
+            preview
+                .lines
+                .iter()
+                .any(|line| line == "Manual attention expected")
+        );
+        assert!(preview.lines.iter().any(|line| {
+            line.contains("REAPER")
+                && line.contains("RAIS will download this package and report the manual steps")
+        }));
     }
 
     #[test]

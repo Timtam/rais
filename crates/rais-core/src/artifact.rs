@@ -77,6 +77,24 @@ pub fn resolve_latest_artifacts(
     Ok(artifacts)
 }
 
+pub fn expected_artifact_kind(
+    package_id: &str,
+    platform: Platform,
+    architecture: Architecture,
+) -> Result<ArtifactKind> {
+    match package_id {
+        PACKAGE_REAPER => expected_reaper_artifact_kind(platform, architecture),
+        PACKAGE_OSARA => expected_osara_artifact_kind(platform),
+        PACKAGE_SWS => expected_sws_artifact_kind(platform, architecture),
+        PACKAGE_REAPACK => expected_reapack_artifact_kind(platform, architecture),
+        _ => Err(RaisError::NoArtifactFound {
+            package_id: package_id.to_string(),
+            platform,
+            architecture,
+        }),
+    }
+}
+
 pub fn default_cache_dir() -> PathBuf {
     if cfg!(target_os = "windows") {
         if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
@@ -253,6 +271,31 @@ fn resolve_reaper_artifact(
     )
 }
 
+fn expected_reaper_artifact_kind(
+    platform: Platform,
+    architecture: Architecture,
+) -> Result<ArtifactKind> {
+    match (platform, architecture) {
+        (Platform::Windows, Architecture::X86)
+        | (
+            Platform::Windows,
+            Architecture::X64 | Architecture::Universal | Architecture::Unknown,
+        )
+        | (Platform::Windows, Architecture::Arm64 | Architecture::Arm64Ec) => {
+            Ok(ArtifactKind::Installer)
+        }
+        (Platform::MacOs, Architecture::X86)
+        | (
+            Platform::MacOs,
+            Architecture::X64
+            | Architecture::Arm64
+            | Architecture::Arm64Ec
+            | Architecture::Universal
+            | Architecture::Unknown,
+        ) => Ok(ArtifactKind::DiskImage),
+    }
+}
+
 fn resolve_osara_artifact(
     client: &Client,
     platform: Platform,
@@ -285,6 +328,13 @@ fn resolve_osara_artifact(
         "https://osara.reaperaccessibility.com/snapshots/",
         &href,
     )
+}
+
+fn expected_osara_artifact_kind(platform: Platform) -> Result<ArtifactKind> {
+    match platform {
+        Platform::Windows => Ok(ArtifactKind::Installer),
+        Platform::MacOs => Ok(ArtifactKind::Archive),
+    }
 }
 
 fn resolve_sws_artifact(
@@ -343,6 +393,26 @@ fn resolve_sws_artifact(
         "https://sws-extension.org/",
         &href,
     )
+}
+
+fn expected_sws_artifact_kind(
+    platform: Platform,
+    architecture: Architecture,
+) -> Result<ArtifactKind> {
+    match (platform, architecture) {
+        (Platform::Windows, Architecture::X86)
+        | (Platform::Windows, Architecture::X64 | Architecture::Unknown) => {
+            Ok(ArtifactKind::Installer)
+        }
+        (Platform::MacOs, Architecture::X86)
+        | (Platform::MacOs, Architecture::X64 | Architecture::Unknown)
+        | (Platform::MacOs, Architecture::Arm64) => Ok(ArtifactKind::DiskImage),
+        _ => Err(RaisError::NoArtifactFound {
+            package_id: PACKAGE_SWS.to_string(),
+            platform,
+            architecture,
+        }),
+    }
 }
 
 fn resolve_reapack_artifact(
@@ -409,6 +479,32 @@ fn resolve_reapack_artifact(
         platform,
         architecture,
     })
+}
+
+fn expected_reapack_artifact_kind(
+    platform: Platform,
+    architecture: Architecture,
+) -> Result<ArtifactKind> {
+    match (platform, architecture) {
+        (Platform::Windows, Architecture::X86)
+        | (
+            Platform::Windows,
+            Architecture::X64
+            | Architecture::Universal
+            | Architecture::Unknown
+            | Architecture::Arm64
+            | Architecture::Arm64Ec,
+        )
+        | (Platform::MacOs, Architecture::X86)
+        | (
+            Platform::MacOs,
+            Architecture::X64
+            | Architecture::Unknown
+            | Architecture::Arm64
+            | Architecture::Arm64Ec
+            | Architecture::Universal,
+        ) => Ok(ArtifactKind::ExtensionBinary),
+    }
 }
 
 fn artifact_from_href(
@@ -601,9 +697,10 @@ mod tests {
     use std::fs;
 
     use crate::artifact::{
-        absolute_url, file_name_from_url, find_href_containing, resolve_reapack_asset_from_fixture,
+        absolute_url, expected_artifact_kind, file_name_from_url, find_href_containing,
+        resolve_reapack_asset_from_fixture,
     };
-    use crate::package::PACKAGE_OSARA;
+    use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS};
     use tempfile::tempdir;
 
     use super::*;
@@ -714,6 +811,26 @@ mod tests {
 
         let error = download_artifacts(&[artifact], cache_dir.path()).unwrap_err();
         assert!(error.to_string().contains("HTTPS"));
+    }
+
+    #[test]
+    fn reports_expected_artifact_kind_for_builtin_packages() {
+        assert_eq!(
+            expected_artifact_kind(PACKAGE_REAPER, Platform::Windows, Architecture::X64).unwrap(),
+            ArtifactKind::Installer
+        );
+        assert_eq!(
+            expected_artifact_kind(PACKAGE_OSARA, Platform::MacOs, Architecture::Arm64).unwrap(),
+            ArtifactKind::Archive
+        );
+        assert_eq!(
+            expected_artifact_kind(PACKAGE_SWS, Platform::MacOs, Architecture::X64).unwrap(),
+            ArtifactKind::DiskImage
+        );
+        assert_eq!(
+            expected_artifact_kind(PACKAGE_REAPACK, Platform::Windows, Architecture::X64).unwrap(),
+            ArtifactKind::ExtensionBinary
+        );
     }
 
     fn file_url_for_test(path: &Path) -> String {

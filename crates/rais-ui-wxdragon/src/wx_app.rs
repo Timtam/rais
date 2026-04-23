@@ -380,7 +380,7 @@ pub fn run() {
                         widgets.progress_gauge.set_value(100);
                         match result {
                             Ok(report) => {
-                                let summary = summarize_setup_report(&report);
+                                let summary = summarize_setup_report(&ui_model, &report);
                                 widgets.progress_details.set_value(&format!(
                                     "{}\n\n{}",
                                     summary.status_line,
@@ -895,7 +895,7 @@ fn selected_target_details(
 }
 
 fn package_details(row: &rais_ui_wxdragon::PackageRow) -> String {
-    format!("{}\n\n{}", row.summary, row.reason)
+    row.details.clone()
 }
 
 fn progress_details_for_start(
@@ -923,6 +923,28 @@ fn progress_details_for_start(
             if let Some(row) = package_rows.get(*index) {
                 lines.push(format!("{}: {}", row.display_name, row.action_label));
             }
+        }
+    }
+
+    let manual_items = selected_package_indices
+        .iter()
+        .filter_map(|index| package_rows.get(*index))
+        .filter(|package| {
+            package.manual_attention_expected
+                && matches!(
+                    package.action,
+                    rais_core::plan::PlanActionKind::Install
+                        | rais_core::plan::PlanActionKind::Update
+                )
+        })
+        .collect::<Vec<_>>();
+    if !manual_items.is_empty() {
+        lines.push(model.text.review_manual_heading.clone());
+        for package in manual_items {
+            lines.push(format!(
+                "{}: {}",
+                package.display_name, package.handling_summary
+            ));
         }
     }
 
