@@ -19,7 +19,7 @@ use rais_core::package::{
 use rais_core::plan::{AvailablePackage, build_install_plan};
 use rais_core::portable::{PortabilityCheckStatus, PortabilityReport, check_portable_runtime};
 use rais_core::preflight::{PreflightOptions, PreflightReport, run_install_preflight};
-use rais_core::report::{default_report_path, save_json_report};
+use rais_core::report::{default_report_path, save_json_and_text_reports};
 use rais_core::resource::{ResourceInitActionKind, ResourceInitReport, initialize_resource_path};
 use rais_core::rollback::{
     BackupSet, RestoreBackupActionKind, RestoreBackupOptions, RestoreBackupReport,
@@ -755,8 +755,9 @@ where
     T: serde::Serialize + ?Sized,
 {
     if let Some(report_path) = report_path {
-        save_json_report(report_path, report)?;
-        eprintln!("Report saved: {}", report_path.display());
+        let saved = save_json_and_text_reports(report_path, report)?;
+        eprintln!("Report saved (JSON): {}", saved.json_path.display());
+        eprintln!("Report saved (text): {}", saved.text_path.display());
     }
     Ok(())
 }

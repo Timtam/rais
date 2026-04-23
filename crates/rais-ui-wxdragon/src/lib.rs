@@ -13,7 +13,7 @@ use rais_core::package::{PACKAGE_OSARA, PackageSpec, builtin_package_specs};
 use rais_core::plan::{
     AvailablePackage, InstallPlan, PlanAction, PlanActionKind, build_install_plan,
 };
-use rais_core::report::{default_report_path, save_json_report};
+use rais_core::report::{default_report_path, save_json_and_text_reports};
 use rais_core::resource::{
     ResourceInitActionKind, ResourceInitItemKind, ResourceInitOptions, ResourceInitReport,
     initialize_resource_path,
@@ -1049,9 +1049,9 @@ pub fn execute_wizard_install(request: WizardInstallRequest) -> Result<SetupRepo
 }
 
 pub fn save_wizard_setup_report(report: &SetupReport) -> Result<PathBuf> {
-    let path = default_report_path(&report.resource_path, "setup");
-    save_json_report(&path, report)?;
-    Ok(path)
+    let json_path = default_report_path(&report.resource_path, "setup");
+    let saved = save_json_and_text_reports(&json_path, report)?;
+    Ok(saved.text_path)
 }
 
 pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> WizardInstallSummary {
@@ -1897,11 +1897,14 @@ mod tests {
         let report = empty_setup_report(dir.path().join("PortableREAPER"));
 
         let path = super::save_wizard_setup_report(&report).unwrap();
+        let json_path = path.with_extension("json");
 
         assert!(path.starts_with(dir.path().join("PortableREAPER/RAIS/logs")));
         assert!(path.is_file());
+        assert!(json_path.is_file());
         let content = std::fs::read_to_string(path).unwrap();
-        assert!(content.contains("\"resource_path\""));
+        assert!(content.contains("RAIS Report"));
+        assert!(content.contains("resource_path:"));
     }
 
     fn fake_installation() -> Installation {
