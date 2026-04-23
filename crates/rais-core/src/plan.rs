@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ComponentDetection, Installation};
+use crate::package::PACKAGE_REAPER;
 use crate::version::Version;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,11 +55,16 @@ pub fn build_install_plan(
 
     let mut actions = Vec::new();
     for package_id in desired_package_ids {
-        let detection = detections_by_id.get(package_id.as_str()).copied();
         let available = available_by_id.get(package_id.as_str()).copied();
-
-        let installed = detection.is_some_and(|detection| detection.installed);
-        let installed_version = detection.and_then(|detection| detection.version.clone());
+        let detection = detections_by_id.get(package_id.as_str()).copied();
+        let (installed, installed_version) = if package_id == PACKAGE_REAPER {
+            target_reaper_state(target.as_ref())
+        } else {
+            (
+                detection.is_some_and(|detection| detection.installed),
+                detection.and_then(|detection| detection.version.clone()),
+            )
+        };
         let available_version = available.and_then(|available| available.version.clone());
 
         let (action, reason) = if !installed {
@@ -115,10 +122,33 @@ pub fn build_install_plan(
     }
 }
 
+fn target_reaper_state(target: Option<&Installation>) -> (bool, Option<Version>) {
+    let Some(target) = target else {
+        return (false, None);
+    };
+
+    let installed = target_reaper_app_exists(&target.app_path);
+    let installed_version = installed.then(|| target.version.clone()).flatten();
+    (installed, installed_version)
+}
+
+fn target_reaper_app_exists(app_path: &Path) -> bool {
+    app_path.is_file()
+        || app_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+            && app_path.exists()
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::model::{ComponentDetection, Confidence};
-    use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK};
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use crate::model::{ComponentDetection, Confidence, Installation, InstallationKind, Platform};
+    use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER};
     use crate::plan::{AvailablePackage, PlanActionKind, build_install_plan};
     use crate::version::Version;
 
@@ -174,5 +204,98 @@ mod tests {
         let plan = build_install_plan(None, &detections, &desired, &available);
 
         assert_eq!(plan.actions[0].action, PlanActionKind::ManualReview);
+    }
+
+    #[test]
+    fn plans_install_for_reaper_when_target_app_is_missing() {
+        let dir = tempdir().unwrap();
+        let installation = fake_reaper_installation(
+            dir.path().join("reaper.exe"),
+            dir.path().to_path_buf(),
+            None,
+        );
+        let desired = vec![PACKAGE_REAPER.to_string()];
+        let available = vec![AvailablePackage {
+            package_id: PACKAGE_REAPER.to_string(),
+            version: Some(Version::parse("7.70").unwrap()),
+        }];
+
+        let plan = build_install_plan(Some(installation), &[], &desired, &available);
+
+        assert_eq!(plan.actions[0].action, PlanActionKind::Install);
+        assert_eq!(plan.actions[0].installed_version, None);
+        assert_eq!(
+            plan.actions[0].available_version,
+            Some(Version::parse("7.70").unwrap())
+        );
+    }
+
+    #[test]
+    fn plans_keep_for_reaper_when_target_app_exists() {
+        let dir = tempdir().unwrap();
+        let app_path = dir.path().join("reaper.exe");
+        fs::write(&app_path, b"").unwrap();
+        let installation = fake_reaper_installation(
+            app_path,
+            dir.path().to_path_buf(),
+            Some(Version::parse("7.69").unwrap()),
+        );
+        let desired = vec![PACKAGE_REAPER.to_string()];
+
+        let plan = build_install_plan(Some(installation), &[], &desired, &[]);
+
+        assert_eq!(plan.actions[0].action, PlanActionKind::Keep);
+        assert_eq!(
+            plan.actions[0].installed_version,
+            Some(Version::parse("7.69").unwrap())
+        );
+        assert!(plan.actions[0].available_version.is_none());
+    }
+
+    #[test]
+    fn plans_update_for_reaper_when_available_version_is_newer() {
+        let dir = tempdir().unwrap();
+        let app_path = dir.path().join("reaper.exe");
+        fs::write(&app_path, b"").unwrap();
+        let installation = fake_reaper_installation(
+            app_path,
+            dir.path().to_path_buf(),
+            Some(Version::parse("7.68").unwrap()),
+        );
+        let desired = vec![PACKAGE_REAPER.to_string()];
+        let available = vec![AvailablePackage {
+            package_id: PACKAGE_REAPER.to_string(),
+            version: Some(Version::parse("7.70").unwrap()),
+        }];
+
+        let plan = build_install_plan(Some(installation), &[], &desired, &available);
+
+        assert_eq!(plan.actions[0].action, PlanActionKind::Update);
+        assert_eq!(
+            plan.actions[0].installed_version,
+            Some(Version::parse("7.68").unwrap())
+        );
+        assert_eq!(
+            plan.actions[0].available_version,
+            Some(Version::parse("7.70").unwrap())
+        );
+    }
+
+    fn fake_reaper_installation(
+        app_path: std::path::PathBuf,
+        resource_path: std::path::PathBuf,
+        version: Option<Version>,
+    ) -> Installation {
+        Installation {
+            kind: InstallationKind::Portable,
+            platform: Platform::Windows,
+            app_path,
+            resource_path,
+            version,
+            architecture: None,
+            writable: true,
+            confidence: Confidence::High,
+            evidence: Vec::new(),
+        }
     }
 }

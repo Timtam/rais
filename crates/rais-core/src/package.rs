@@ -273,9 +273,10 @@ mod tests {
     use crate::model::{Architecture, Platform};
     use crate::package::{
         ArtifactProvider, BackupPolicy, InstallStep, LatestVersionProvider, PACKAGE_OSARA,
-        PACKAGE_REAPACK, PACKAGE_SWS, PackageDetector, PackageKind, SupportedPlatform,
-        builtin_package_specs, default_desired_package_ids, embedded_package_manifest,
-        embedded_package_manifest_source, package_specs_by_id, parse_package_manifest,
+        PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS, PackageDetector, PackageKind,
+        SupportedPlatform, builtin_package_specs, default_desired_package_ids,
+        embedded_package_manifest, embedded_package_manifest_source, package_specs_by_id,
+        parse_package_manifest,
     };
 
     #[test]
@@ -283,12 +284,38 @@ mod tests {
         let manifest = embedded_package_manifest();
 
         assert_eq!(manifest.schema_version, 1);
-        assert_eq!(manifest.packages.len(), 3);
+        assert_eq!(manifest.packages.len(), 4);
+        assert!(
+            manifest
+                .packages
+                .iter()
+                .any(|package| package.id == PACKAGE_REAPER)
+        );
         assert!(
             manifest
                 .packages
                 .iter()
                 .any(|package| package.id == PACKAGE_OSARA)
+        );
+        let reaper = manifest
+            .packages
+            .iter()
+            .find(|package| package.id == PACKAGE_REAPER)
+            .unwrap();
+        assert_eq!(reaper.package_kind, PackageKind::ReaperApp);
+        assert_eq!(
+            reaper.latest_version_provider,
+            Some(LatestVersionProvider::ReaperDownloadPage)
+        );
+        assert_eq!(
+            reaper.artifact_provider,
+            Some(ArtifactProvider::ReaperDownloadPage)
+        );
+        assert_eq!(reaper.backup_policy, BackupPolicy::None);
+        assert!(
+            reaper
+                .install_steps
+                .contains(&InstallStep::RunUpstreamInstaller)
         );
         let osara = manifest
             .packages

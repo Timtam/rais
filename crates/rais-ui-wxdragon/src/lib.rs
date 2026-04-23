@@ -9,7 +9,7 @@ use rais_core::latest::fetch_latest_versions;
 use rais_core::localization::{DEFAULT_LOCALE, Localizer};
 use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
 use rais_core::operation::PackageOperationStatus;
-use rais_core::package::{PackageSpec, builtin_package_specs, default_desired_package_ids};
+use rais_core::package::{PackageSpec, builtin_package_specs};
 use rais_core::plan::{
     AvailablePackage, InstallPlan, PlanAction, PlanActionKind, build_install_plan,
 };
@@ -19,6 +19,7 @@ use rais_core::resource::{
     initialize_resource_path,
 };
 use rais_core::setup::{SetupOptions, SetupReport, execute_setup_operation};
+use rais_core::version::Version;
 use rais_core::{RaisError, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,7 +131,9 @@ pub struct TargetRow {
     pub label: String,
     pub details: String,
     pub app_path: Option<PathBuf>,
+    pub planned_app_path: PathBuf,
     pub path: PathBuf,
+    pub version: Option<Version>,
     pub portable: bool,
     pub selected: bool,
     pub writable: bool,
@@ -233,7 +236,7 @@ pub fn load_wizard_model(options: UiBootstrapOptions) -> Result<WizardModel> {
     } else {
         Vec::new()
     };
-    let desired = default_desired_package_ids();
+    let desired = wizard_package_ids(platform);
     let plan = build_install_plan(target, &detections, &desired, &available);
 
     Ok(model_from_plan_with_options(
@@ -532,7 +535,9 @@ fn target_rows(
                     .app_path
                     .exists()
                     .then(|| installation.app_path.clone()),
+                planned_app_path: installation.app_path.clone(),
                 path: installation.resource_path.clone(),
+                version: installation.version.clone(),
                 portable: installation.kind == InstallationKind::Portable,
                 selected: Some(index) == selected_target_index,
                 writable: installation.writable,
@@ -600,7 +605,7 @@ pub fn install_request_from_target_and_rows(
         platform: model.platform,
         architecture: model.architecture,
         portable: target.portable,
-        target_app_path: target.app_path.clone(),
+        target_app_path: Some(target.planned_app_path.clone()),
         dry_run: options.dry_run,
         allow_reaper_running: options.allow_reaper_running,
         stage_unsupported: options.stage_unsupported,
@@ -723,7 +728,7 @@ pub fn build_review_preview_for_package_rows(
             dry_run: true,
             portable: target.portable,
             allow_reaper_running: false,
-            target_app_path: target.app_path.clone(),
+            target_app_path: Some(target.planned_app_path.clone()),
         },
     ) {
         Ok(report) => {
@@ -786,7 +791,7 @@ pub fn wizard_package_plan_for_target(
         Some(target) => detect_components(&target.path, model.platform)?,
         None => Vec::new(),
     };
-    let desired = default_desired_package_ids();
+    let desired = wizard_package_ids(model.platform);
     let plan = build_install_plan(
         target.map(|target| installation_from_target_row(model, target)),
         &detections,
@@ -806,6 +811,13 @@ pub fn wizard_package_plan_for_target(
     })
 }
 
+fn wizard_package_ids(platform: Platform) -> Vec<String> {
+    builtin_package_specs(platform)
+        .into_iter()
+        .map(|spec| spec.id)
+        .collect()
+}
+
 pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: bool) -> TargetRow {
     let writable = is_probably_writable(&path);
     let writable_text = if writable {
@@ -813,6 +825,7 @@ pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: 
     } else {
         "no".to_string()
     };
+    let app_path = portable_reaper_app_path(model.platform, &path);
     TargetRow {
         label: format!(
             "{}: {}",
@@ -827,8 +840,11 @@ pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: 
             writable_text,
             model.text.target_custom_portable_note
         ),
-        app_path: portable_reaper_app_path(model.platform, &path),
+        app_path: app_path.clone(),
+        planned_app_path: app_path
+            .unwrap_or_else(|| default_portable_reaper_app_path(model.platform, &path)),
         path,
+        version: None,
         portable: true,
         selected,
         writable,
@@ -843,12 +859,9 @@ fn installation_from_target_row(model: &WizardModel, target: &TargetRow) -> Inst
             InstallationKind::Standard
         },
         platform: model.platform,
-        app_path: target
-            .app_path
-            .clone()
-            .unwrap_or_else(|| target.path.clone()),
+        app_path: target.planned_app_path.clone(),
         resource_path: target.path.clone(),
-        version: None,
+        version: target.version.clone(),
         architecture: Some(model.architecture),
         writable: target.writable,
         confidence: Confidence::Medium,
@@ -875,6 +888,13 @@ fn portable_reaper_app_path(platform: Platform, resource_path: &Path) -> Option<
                         .and_then(|name| name.to_str())
                         .is_some_and(|name| name.to_ascii_lowercase().contains("reaper"))
             }),
+    }
+}
+
+fn default_portable_reaper_app_path(platform: Platform, resource_path: &Path) -> PathBuf {
+    match platform {
+        Platform::Windows => resource_path.join("reaper.exe"),
+        Platform::MacOs => resource_path.join("REAPER.app"),
     }
 }
 
@@ -1086,7 +1106,7 @@ mod tests {
     use rais_core::localization::{DEFAULT_LOCALE, Localizer};
     use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
     use rais_core::operation::PackageOperationReport;
-    use rais_core::package::{PACKAGE_OSARA, PACKAGE_REAPACK};
+    use rais_core::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER};
     use rais_core::plan::{InstallPlan, PlanAction, PlanActionKind};
     use rais_core::preflight::PreflightReport;
     use rais_core::resource::{
@@ -1356,6 +1376,10 @@ mod tests {
         assert!(row.portable);
         assert!(row.writable);
         assert!(row.app_path.is_none());
+        assert_eq!(
+            row.planned_app_path,
+            dir.path().join("PortableREAPER").join("reaper.exe")
+        );
         assert!(row.label.contains("Portable REAPER folder"));
         assert!(row.details.contains("Portable resource path"));
     }
@@ -1383,6 +1407,7 @@ mod tests {
         let row = custom_portable_target_row(&model, resource_path.clone(), true);
 
         assert_eq!(row.app_path, Some(resource_path.join("reaper.exe")));
+        assert_eq!(row.planned_app_path, resource_path.join("reaper.exe"));
     }
 
     #[test]
@@ -1416,6 +1441,36 @@ mod tests {
         assert_eq!(reapack.action, PlanActionKind::Keep);
         assert!(!reapack.selected);
         assert!(plan.package_rows.iter().any(|row| row.selected));
+    }
+
+    #[test]
+    fn package_plan_includes_reaper_for_empty_custom_target() {
+        let dir = tempdir().unwrap();
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let target = custom_portable_target_row(&model, dir.path().join("PortableREAPER"), true);
+
+        let plan = super::wizard_package_plan_for_target(&model, Some(&target)).unwrap();
+        let reaper = plan
+            .package_rows
+            .iter()
+            .find(|row| row.package_id == PACKAGE_REAPER)
+            .unwrap();
+
+        assert_eq!(reaper.display_name, "REAPER");
+        assert_eq!(reaper.action, PlanActionKind::Install);
+        assert!(reaper.selected);
     }
 
     #[test]
