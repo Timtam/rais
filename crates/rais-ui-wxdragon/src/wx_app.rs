@@ -1,3 +1,4 @@
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{
@@ -7,8 +8,8 @@ use std::sync::{
 
 use rais_ui_wxdragon::{
     TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel, custom_portable_target_row,
-    execute_wizard_install, install_request_from_target, load_wizard_model,
-    review_lines_for_target, summarize_setup_report,
+    execute_wizard_install, install_request_from_target_and_rows, load_wizard_model,
+    review_lines_for_package_rows, summarize_setup_report, wizard_package_plan_for_target,
 };
 use wxdragon::prelude::*;
 use wxdragon::widgets::SimpleBook;
@@ -23,7 +24,9 @@ const DONE_STEP: usize = 4;
 struct WizardWidgets {
     target_choice: Choice,
     portable_folder: DirPickerCtrl,
+    target_details: TextCtrl,
     package_checklist: CheckListBox,
+    package_details: TextCtrl,
     review_text: TextCtrl,
     progress_status: StaticText,
     progress_gauge: Gauge,
@@ -58,7 +61,10 @@ pub fn run() {
 
         let book = SimpleBook::builder(&root_panel).build();
         book.set_name("rais-wizard-pages");
-        let wizard_widgets = add_pages(&book, &model);
+        let package_rows = Rc::new(RefCell::new(model.package_rows.clone()));
+        let package_notes = Rc::new(RefCell::new(model.notes.clone()));
+        let can_install = Rc::new(Cell::new(model.controls.can_install));
+        let wizard_widgets = add_pages(&book, &model, Rc::clone(&package_rows));
         root.add(&book, 1, SizerFlag::All | SizerFlag::Expand, 12);
 
         let buttons = BoxSizer::builder(Orientation::Horizontal).build();
@@ -109,7 +115,6 @@ pub fn run() {
                 .map(|step| step_status(&model, step))
                 .collect::<Vec<_>>(),
         );
-        let can_install = model.controls.can_install;
         let model = Arc::new(model);
 
         update_navigation(
@@ -120,7 +125,7 @@ pub fn run() {
             &back,
             &next,
             &install,
-            can_install,
+            can_install.get(),
             target_is_valid(&model, &wizard_widgets),
         );
         bind_target_navigation_updates(&model, wizard_widgets, &current_step, &next);
@@ -135,6 +140,7 @@ pub fn run() {
             let labels = Arc::clone(&labels);
             let model = Arc::clone(&model);
             let widgets = wizard_widgets;
+            let can_install = Rc::clone(&can_install);
             back.on_click(move |_| {
                 let step = current_step.load(Ordering::SeqCst).saturating_sub(1);
                 current_step.store(step, Ordering::SeqCst);
@@ -146,7 +152,7 @@ pub fn run() {
                     &back,
                     &next,
                     &install,
-                    can_install,
+                    can_install.get(),
                     target_is_valid(&model, &widgets),
                 );
             });
@@ -162,21 +168,43 @@ pub fn run() {
             let labels = Arc::clone(&labels);
             let model = Arc::clone(&model);
             let widgets = wizard_widgets;
+            let package_rows = Rc::clone(&package_rows);
+            let package_notes = Rc::clone(&package_notes);
+            let can_install = Rc::clone(&can_install);
             next.on_click(move |_| {
                 let step = match current_step.load(Ordering::SeqCst) {
                     TARGET_STEP => {
-                        if selected_target_row(&model, &widgets).is_some() {
-                            PACKAGES_STEP
-                        } else {
-                            TARGET_STEP
+                        let Some(selected_target) = selected_target_row(&model, &widgets) else {
+                            return;
+                        };
+                        match wizard_package_plan_for_target(&model, Some(&selected_target)) {
+                            Ok(plan) => {
+                                *package_rows.borrow_mut() = plan.package_rows;
+                                *package_notes.borrow_mut() = plan.notes;
+                                can_install.set(plan.can_install);
+                                refresh_package_checklist(
+                                    &widgets.package_checklist,
+                                    &widgets.package_details,
+                                    &package_rows.borrow(),
+                                );
+                                PACKAGES_STEP
+                            }
+                            Err(error) => {
+                                widgets.target_details.set_value(&error.to_string());
+                                TARGET_STEP
+                            }
                         }
                     }
                     PACKAGES_STEP => {
                         let selected_target = selected_target_row(&model, &widgets);
-                        let review_lines = review_lines_for_target(
+                        let rows = package_rows.borrow();
+                        let notes = package_notes.borrow();
+                        let review_lines = review_lines_for_package_rows(
                             &model,
                             selected_target.as_ref(),
                             &checked_package_indices(&widgets.package_checklist),
+                            &rows,
+                            &notes,
                         );
                         widgets.review_text.set_value(&review_lines.join("\n"));
                         REVIEW_STEP
@@ -193,7 +221,7 @@ pub fn run() {
                     &back,
                     &next,
                     &install,
-                    can_install,
+                    can_install.get(),
                     target_is_valid(&model, &widgets),
                 );
             });
@@ -209,6 +237,8 @@ pub fn run() {
             let labels = Arc::clone(&labels);
             let model = Arc::clone(&model);
             let widgets = wizard_widgets;
+            let package_rows = Rc::clone(&package_rows);
+            let can_install = Rc::clone(&can_install);
             install.on_click(move |_| {
                 current_step.store(PROGRESS_STEP, Ordering::SeqCst);
                 update_navigation(
@@ -219,7 +249,7 @@ pub fn run() {
                     &back,
                     &next,
                     &install,
-                    can_install,
+                    can_install.get(),
                     target_is_valid(&model, &widgets),
                 );
                 back.enable(false);
@@ -232,15 +262,17 @@ pub fn run() {
 
                 let selected_target = selected_target_row(&model, &widgets);
                 let selected_packages = checked_package_indices(&widgets.package_checklist);
+                let rows = package_rows.borrow();
                 let request = match selected_target
                     .as_ref()
                     .ok_or_else(|| rais_core::RaisError::PreflightFailed {
                         message: model.text.review_no_target.clone(),
                     })
                     .and_then(|target| {
-                        install_request_from_target(
+                        install_request_from_target_and_rows(
                             &model,
                             target,
+                            &rows,
                             &selected_packages,
                             WizardInstallOptions::default(),
                         )
@@ -263,16 +295,18 @@ pub fn run() {
                             &back,
                             &next,
                             &install,
-                            can_install,
+                            can_install.get(),
                             target_is_valid(&model, &widgets),
                         );
                         return;
                     }
                 };
+                drop(rows);
 
                 let ui_model = Arc::clone(&model);
                 let ui_current_step = Arc::clone(&current_step);
                 let ui_labels = Arc::clone(&labels);
+                let can_install = can_install.get();
                 std::thread::spawn(move || {
                     let result = execute_wizard_install(request);
                     wxdragon::call_after(Box::new(move || {
@@ -327,13 +361,18 @@ pub fn run() {
     });
 }
 
-fn add_pages(book: &SimpleBook, model: &WizardModel) -> WizardWidgets {
+fn add_pages(
+    book: &SimpleBook,
+    model: &WizardModel,
+    package_rows: Rc<RefCell<Vec<rais_ui_wxdragon::PackageRow>>>,
+) -> WizardWidgets {
     let target_page = Panel::builder(book).build();
-    let (target_choice, portable_folder) = build_target_page(&target_page, model);
+    let (target_choice, portable_folder, target_details) = build_target_page(&target_page, model);
     book.add_page(&target_page, &model.steps[TARGET_STEP].label, true, None);
 
     let packages_page = Panel::builder(book).build();
-    let package_checklist = build_packages_page(&packages_page, model);
+    let (package_checklist, package_details) =
+        build_packages_page(&packages_page, model, package_rows);
     book.add_page(
         &packages_page,
         &model.steps[PACKAGES_STEP].label,
@@ -361,7 +400,9 @@ fn add_pages(book: &SimpleBook, model: &WizardModel) -> WizardWidgets {
     WizardWidgets {
         target_choice,
         portable_folder,
+        target_details,
         package_checklist,
+        package_details,
         review_text,
         progress_status,
         progress_gauge,
@@ -369,7 +410,7 @@ fn add_pages(book: &SimpleBook, model: &WizardModel) -> WizardWidgets {
     }
 }
 
-fn build_target_page(page: &Panel, model: &WizardModel) -> (Choice, DirPickerCtrl) {
+fn build_target_page(page: &Panel, model: &WizardModel) -> (Choice, DirPickerCtrl, TextCtrl) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(
         page,
@@ -477,10 +518,14 @@ fn build_target_page(page: &Panel, model: &WizardModel) -> (Choice, DirPickerCtr
     }
 
     page.set_sizer(sizer, true);
-    (choice, portable_folder)
+    (choice, portable_folder, details)
 }
 
-fn build_packages_page(page: &Panel, model: &WizardModel) -> CheckListBox {
+fn build_packages_page(
+    page: &Panel,
+    model: &WizardModel,
+    package_rows: Rc<RefCell<Vec<rais_ui_wxdragon::PackageRow>>>,
+) -> (CheckListBox, TextCtrl) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(
         page,
@@ -499,7 +544,7 @@ fn build_packages_page(page: &Panel, model: &WizardModel) -> CheckListBox {
         .with_size(Size::new(-1, 180))
         .build();
     checklist.set_name("rais-package-list");
-    for (index, row) in model.package_rows.iter().enumerate() {
+    for (index, row) in package_rows.borrow().iter().enumerate() {
         checklist.append(&row.summary);
         checklist.check(index as u32, row.selected);
     }
@@ -511,8 +556,8 @@ fn build_packages_page(page: &Panel, model: &WizardModel) -> CheckListBox {
         &model.text.package_details_label,
         "rais-package-details-label",
     );
-    let initial_details = model
-        .package_rows
+    let initial_details = package_rows
+        .borrow()
         .first()
         .map(package_details)
         .unwrap_or_default();
@@ -524,33 +569,35 @@ fn build_packages_page(page: &Panel, model: &WizardModel) -> CheckListBox {
     details.set_name("rais-package-details");
     sizer.add(&details, 0, SizerFlag::All | SizerFlag::Expand, 6);
 
-    let detail_values = Rc::new(
-        model
-            .package_rows
-            .iter()
-            .map(package_details)
-            .collect::<Vec<_>>(),
-    );
     {
-        let detail_values = Rc::clone(&detail_values);
+        let package_rows = Rc::clone(&package_rows);
         checklist.on_selected(move |event| {
             if let Some(index) = event.get_selection() {
-                if let Some(value) = detail_values.get(index as usize) {
-                    details.set_value(value);
+                if let Some(value) = package_rows
+                    .borrow()
+                    .get(index as usize)
+                    .map(package_details)
+                {
+                    details.set_value(&value);
                 }
             }
         });
     }
+    let toggled_package_rows = Rc::clone(&package_rows);
     checklist.on_toggled(move |event| {
         if let Some(index) = event.get_selection() {
-            if let Some(value) = detail_values.get(index as usize) {
-                details.set_value(value);
+            if let Some(value) = toggled_package_rows
+                .borrow()
+                .get(index as usize)
+                .map(package_details)
+            {
+                details.set_value(&value);
             }
         }
     });
 
     page.set_sizer(sizer, true);
-    checklist
+    (checklist, details)
 }
 
 fn build_review_page(page: &Panel, model: &WizardModel) -> TextCtrl {
@@ -665,6 +712,19 @@ fn checked_package_indices(checklist: &CheckListBox) -> Vec<usize> {
         .filter(|index| checklist.is_checked(*index))
         .map(|index| index as usize)
         .collect()
+}
+
+fn refresh_package_checklist(
+    checklist: &CheckListBox,
+    details: &TextCtrl,
+    rows: &[rais_ui_wxdragon::PackageRow],
+) {
+    checklist.clear();
+    for (index, row) in rows.iter().enumerate() {
+        checklist.append(&row.summary);
+        checklist.check(index as u32, row.selected);
+    }
+    details.set_value(&rows.first().map(package_details).unwrap_or_default());
 }
 
 fn portable_choice_index(model: &WizardModel) -> usize {

@@ -7,10 +7,12 @@ use rais_core::artifact::default_cache_dir;
 use rais_core::detection::{DiscoveryOptions, detect_components, discover_installations};
 use rais_core::latest::fetch_latest_versions;
 use rais_core::localization::{DEFAULT_LOCALE, Localizer};
-use rais_core::model::{Architecture, Installation, InstallationKind, Platform};
+use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
 use rais_core::operation::PackageOperationStatus;
 use rais_core::package::{PackageSpec, builtin_package_specs, default_desired_package_ids};
-use rais_core::plan::{InstallPlan, PlanAction, PlanActionKind, build_install_plan};
+use rais_core::plan::{
+    AvailablePackage, InstallPlan, PlanAction, PlanActionKind, build_install_plan,
+};
 use rais_core::resource::ResourceInitActionKind;
 use rais_core::setup::{SetupOptions, SetupReport, execute_setup_operation};
 use rais_core::{RaisError, Result};
@@ -40,11 +42,13 @@ pub struct WizardModel {
     pub platform: Platform,
     pub architecture: Architecture,
     pub text: WizardText,
+    pub bootstrap_options: UiBootstrapOptions,
     pub current_step: WizardStep,
     pub steps: Vec<WizardStepLabel>,
     pub target_rows: Vec<TargetRow>,
     pub selected_target_index: Option<usize>,
     pub package_rows: Vec<PackageRow>,
+    pub available_packages: Vec<AvailablePackage>,
     pub review_lines: Vec<String>,
     pub notes: Vec<String>,
     pub controls: WizardControls,
@@ -168,13 +172,20 @@ pub struct WizardInstallSummary {
     pub detail_lines: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WizardPackagePlan {
+    pub package_rows: Vec<PackageRow>,
+    pub notes: Vec<String>,
+    pub can_install: bool,
+}
+
 pub fn load_wizard_model(options: UiBootstrapOptions) -> Result<WizardModel> {
     let platform = Platform::current().ok_or(RaisError::UnsupportedPlatform)?;
     let architecture = Architecture::current();
     let localizer = localizer_from_options(&options)?;
     let installations = discover_installations(&DiscoveryOptions {
         include_standard: true,
-        portable_roots: options.portable_roots,
+        portable_roots: options.portable_roots.clone(),
     })?;
     let selected_target_index = installations
         .iter()
@@ -192,12 +203,14 @@ pub fn load_wizard_model(options: UiBootstrapOptions) -> Result<WizardModel> {
     let desired = default_desired_package_ids();
     let plan = build_install_plan(target, &detections, &desired, &available);
 
-    Ok(model_from_plan(
+    Ok(model_from_plan_with_options(
         &localizer,
+        options,
         platform,
         architecture,
         installations,
         selected_target_index,
+        available,
         plan,
     ))
 }
@@ -217,6 +230,28 @@ pub fn model_from_plan(
     selected_target_index: Option<usize>,
     plan: InstallPlan,
 ) -> WizardModel {
+    model_from_plan_with_options(
+        localizer,
+        UiBootstrapOptions::default(),
+        platform,
+        architecture,
+        installations,
+        selected_target_index,
+        Vec::new(),
+        plan,
+    )
+}
+
+fn model_from_plan_with_options(
+    localizer: &Localizer,
+    bootstrap_options: UiBootstrapOptions,
+    platform: Platform,
+    architecture: Architecture,
+    installations: Vec<Installation>,
+    selected_target_index: Option<usize>,
+    available_packages: Vec<AvailablePackage>,
+    plan: InstallPlan,
+) -> WizardModel {
     let package_specs = builtin_package_specs(platform);
     let target_rows = target_rows(localizer, &installations, selected_target_index);
     let package_rows = package_rows(localizer, &package_specs, &plan.actions);
@@ -229,11 +264,13 @@ pub fn model_from_plan(
         window_title: localizer.text("app-title").value,
         platform,
         architecture,
+        bootstrap_options,
         current_step: WizardStep::Target,
         steps: wizard_steps(localizer),
         selected_target_index,
         target_rows,
         package_rows,
+        available_packages,
         review_lines,
         notes: plan.notes,
         text: wizard_text(localizer),
@@ -374,6 +411,22 @@ pub fn install_request_from_target(
     selected_package_indices: &[usize],
     options: WizardInstallOptions,
 ) -> Result<WizardInstallRequest> {
+    install_request_from_target_and_rows(
+        model,
+        target,
+        &model.package_rows,
+        selected_package_indices,
+        options,
+    )
+}
+
+pub fn install_request_from_target_and_rows(
+    model: &WizardModel,
+    target: &TargetRow,
+    package_rows: &[PackageRow],
+    selected_package_indices: &[usize],
+    options: WizardInstallOptions,
+) -> Result<WizardInstallRequest> {
     if !target.writable {
         return Err(RaisError::PreflightFailed {
             message: format!(
@@ -383,7 +436,7 @@ pub fn install_request_from_target(
         });
     }
 
-    let package_ids = package_ids_for_indices(model, selected_package_indices);
+    let package_ids = package_ids_for_rows(package_rows, selected_package_indices);
     if package_ids.is_empty() {
         return Err(RaisError::PreflightFailed {
             message: "No package was selected for installation or update.".to_string(),
@@ -404,9 +457,13 @@ pub fn install_request_from_target(
 }
 
 pub fn package_ids_for_indices(model: &WizardModel, indices: &[usize]) -> Vec<String> {
+    package_ids_for_rows(&model.package_rows, indices)
+}
+
+pub fn package_ids_for_rows(package_rows: &[PackageRow], indices: &[usize]) -> Vec<String> {
     let mut package_ids = Vec::new();
     for index in indices {
-        let Some(row) = model.package_rows.get(*index) else {
+        let Some(row) = package_rows.get(*index) else {
             continue;
         };
         if !package_ids.contains(&row.package_id) {
@@ -430,6 +487,22 @@ pub fn review_lines_for_target(
     target: Option<&TargetRow>,
     selected_package_indices: &[usize],
 ) -> Vec<String> {
+    review_lines_for_package_rows(
+        model,
+        target,
+        selected_package_indices,
+        &model.package_rows,
+        &model.notes,
+    )
+}
+
+pub fn review_lines_for_package_rows(
+    model: &WizardModel,
+    target: Option<&TargetRow>,
+    selected_package_indices: &[usize],
+    package_rows: &[PackageRow],
+    notes: &[String],
+) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(target) = target {
         lines.push(format!(
@@ -441,13 +514,12 @@ pub fn review_lines_for_target(
         lines.push(model.text.review_no_target.clone());
     }
 
-    let package_ids = package_ids_for_indices(model, selected_package_indices);
+    let package_ids = package_ids_for_rows(package_rows, selected_package_indices);
     if package_ids.is_empty() {
         lines.push(model.text.review_no_package.clone());
     } else {
         for package_id in package_ids {
-            if let Some(package) = model
-                .package_rows
+            if let Some(package) = package_rows
                 .iter()
                 .find(|package| package.package_id == package_id)
             {
@@ -459,8 +531,37 @@ pub fn review_lines_for_target(
         }
     }
 
-    lines.extend(model.notes.iter().cloned());
+    lines.extend(notes.iter().cloned());
     lines
+}
+
+pub fn wizard_package_plan_for_target(
+    model: &WizardModel,
+    target: Option<&TargetRow>,
+) -> Result<WizardPackagePlan> {
+    let localizer = localizer_from_options(&model.bootstrap_options)?;
+    let detections = match target {
+        Some(target) => detect_components(&target.path, model.platform)?,
+        None => Vec::new(),
+    };
+    let desired = default_desired_package_ids();
+    let plan = build_install_plan(
+        target.map(|target| installation_from_target_row(model, target)),
+        &detections,
+        &desired,
+        &model.available_packages,
+    );
+    let package_specs = builtin_package_specs(model.platform);
+    let package_rows = package_rows(&localizer, &package_specs, &plan.actions);
+    let can_install = package_rows
+        .iter()
+        .any(|row| matches!(row.action, PlanActionKind::Install | PlanActionKind::Update));
+
+    Ok(WizardPackagePlan {
+        package_rows,
+        notes: plan.notes,
+        can_install,
+    })
 }
 
 pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: bool) -> TargetRow {
@@ -488,6 +589,24 @@ pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: 
         portable: true,
         selected,
         writable,
+    }
+}
+
+fn installation_from_target_row(model: &WizardModel, target: &TargetRow) -> Installation {
+    Installation {
+        kind: if target.portable {
+            InstallationKind::Portable
+        } else {
+            InstallationKind::Standard
+        },
+        platform: model.platform,
+        app_path: target.path.clone(),
+        resource_path: target.path.clone(),
+        version: None,
+        architecture: Some(model.architecture),
+        writable: target.writable,
+        confidence: Confidence::Medium,
+        evidence: Vec::new(),
     }
 }
 
@@ -913,6 +1032,39 @@ mod tests {
         assert!(row.writable);
         assert!(row.label.contains("Portable REAPER folder"));
         assert!(row.details.contains("Portable resource path"));
+    }
+
+    #[test]
+    fn builds_package_plan_for_custom_target_path() {
+        let dir = tempdir().unwrap();
+        let plugins = dir.path().join("PortableREAPER").join("UserPlugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(plugins.join("reaper_reapack-x64.dll"), b"installed").unwrap();
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let target = custom_portable_target_row(&model, dir.path().join("PortableREAPER"), true);
+
+        let plan = super::wizard_package_plan_for_target(&model, Some(&target)).unwrap();
+        let reapack = plan
+            .package_rows
+            .iter()
+            .find(|row| row.package_id == PACKAGE_REAPACK)
+            .unwrap();
+
+        assert_eq!(reapack.action, PlanActionKind::Keep);
+        assert!(!reapack.selected);
+        assert!(plan.package_rows.iter().any(|row| row.selected));
     }
 
     fn fake_installation() -> Installation {
