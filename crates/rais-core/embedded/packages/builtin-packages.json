@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "packages": [
+    {
+      "id": "osara",
+      "display_name": "OSARA",
+      "display_name_key": "package-osara",
+      "package_kind": "user_plugin_binary",
+      "required": false,
+      "recommended": true,
+      "supported_platforms": ["windows", "macos"],
+      "supported_architectures": ["x86", "x64", "arm64", "arm64-ec", "universal"],
+      "latest_version_provider": "osara_update_json",
+      "artifact_provider": "osara_snapshots",
+      "detectors": [
+        "rais_receipt",
+        "user_plugin_file",
+        "file_version_metadata",
+        "osara_binary_version_string"
+      ],
+      "install_steps": ["run_upstream_installer", "copy_user_plugin_binary"],
+      "uninstall_steps": ["remove_user_plugin_binary"],
+      "backup_policy": "backup_overwritten_files",
+      "user_plugin_prefixes": ["reaper_osara"],
+      "user_plugin_suffixes": {
+        "windows": [".dll"],
+        "macos": [".dylib"]
+      }
+    },
+    {
+      "id": "sws",
+      "display_name": "SWS Extension",
+      "display_name_key": "package-sws",
+      "package_kind": "user_plugin_binary",
+      "required": false,
+      "recommended": true,
+      "supported_platforms": ["windows", "macos"],
+      "supported_architectures": ["x86", "x64", "arm64", "universal"],
+      "latest_version_provider": "sws_home_page",
+      "artifact_provider": "sws_download_page",
+      "detectors": ["rais_receipt", "user_plugin_file", "file_version_metadata"],
+      "install_steps": ["run_upstream_installer", "copy_user_plugin_binary"],
+      "uninstall_steps": ["remove_user_plugin_binary"],
+      "backup_policy": "backup_overwritten_files",
+      "user_plugin_prefixes": ["reaper_sws"],
+      "user_plugin_suffixes": {
+        "windows": [".dll"],
+        "macos": [".dylib"]
+      }
+    },
+    {
+      "id": "reapack",
+      "display_name": "ReaPack",
+      "display_name_key": "package-reapack",
+      "package_kind": "user_plugin_binary",
+      "required": false,
+      "recommended": true,
+      "supported_platforms": ["windows", "macos"],
+      "supported_architectures": ["x86", "x64", "arm64", "arm64-ec", "universal"],
+      "latest_version_provider": "reapack_github_release",
+      "artifact_provider": "reapack_github_release_assets",
+      "detectors": [
+        "rais_receipt",
+        "user_plugin_file",
+        "file_version_metadata",
+        "reapack_registry"
+      ],
+      "install_steps": ["copy_user_plugin_binary"],
+      "uninstall_steps": ["remove_user_plugin_binary"],
+      "backup_policy": "backup_overwritten_files",
+      "user_plugin_prefixes": ["reaper_reapack"],
+      "user_plugin_suffixes": {
+        "windows": [".dll"],
+        "macos": [".dylib"]
+      }
+    }
+  ]
+}

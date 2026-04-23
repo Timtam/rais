@@ -1,0 +1,16 @@
+[package]
+name = "rais-ui-wxdragon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+gui = ["dep:wxdragon"]
+
+[dependencies]
+rais-core = { path = "../rais-core" }
+wxdragon = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

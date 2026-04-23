@@ -1,0 +1,23 @@
+pub mod artifact;
+pub mod detection;
+pub mod error;
+pub mod hash;
+pub mod install;
+pub mod latest;
+pub mod localization;
+pub mod metadata;
+pub mod model;
+pub mod operation;
+pub mod package;
+pub mod plan;
+pub mod portable;
+pub mod preflight;
+pub mod reapack;
+pub mod receipt;
+pub mod report;
+pub mod resource;
+pub mod rollback;
+pub mod setup;
+pub mod version;
+
+pub use error::{RaisError, Result};

@@ -1,0 +1,11 @@
+[package]
+name = "rais-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap.workspace = true
+rais-core = { path = "../rais-core" }
+serde.workspace = true
+serde_json.workspace = true

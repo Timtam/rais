@@ -1,0 +1,6 @@
+/target/
+/.idea/
+/.vscode/
+*.log
+*.tmp
+*.bak
