@@ -9,7 +9,7 @@ use rais_core::latest::fetch_latest_versions;
 use rais_core::localization::{DEFAULT_LOCALE, Localizer};
 use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
 use rais_core::operation::PackageOperationStatus;
-use rais_core::package::{PackageSpec, builtin_package_specs};
+use rais_core::package::{PACKAGE_OSARA, PackageSpec, builtin_package_specs};
 use rais_core::plan::{
     AvailablePackage, InstallPlan, PlanAction, PlanActionKind, build_install_plan,
 };
@@ -78,6 +78,11 @@ pub struct WizardText {
     pub packages_heading: String,
     pub packages_list_label: String,
     pub package_details_label: String,
+    pub packages_osara_keymap_heading: String,
+    pub packages_osara_keymap_replace_label: String,
+    pub packages_osara_keymap_unavailable_note: String,
+    pub packages_osara_keymap_preserve_note: String,
+    pub packages_osara_keymap_replace_note: String,
     pub package_details_handling_prefix: String,
     pub package_handling_automatic: String,
     pub package_handling_manual: String,
@@ -90,6 +95,9 @@ pub struct WizardText {
     pub review_resource_create_file_prefix: String,
     pub review_resource_no_changes: String,
     pub review_package_heading: String,
+    pub review_osara_keymap_heading: String,
+    pub review_osara_keymap_preserve: String,
+    pub review_osara_keymap_replace: String,
     pub review_notes_heading: String,
     pub review_preflight_prefix: String,
     pub review_manual_heading: String,
@@ -173,11 +181,18 @@ pub struct WizardControls {
     pub can_install: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OsaraKeymapChoice {
+    PreserveCurrent,
+    ReplaceCurrent,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WizardInstallOptions {
     pub dry_run: bool,
     pub allow_reaper_running: bool,
     pub stage_unsupported: bool,
+    pub osara_keymap_choice: OsaraKeymapChoice,
     pub cache_dir: Option<PathBuf>,
 }
 
@@ -187,6 +202,7 @@ impl Default for WizardInstallOptions {
             dry_run: false,
             allow_reaper_running: false,
             stage_unsupported: true,
+            osara_keymap_choice: OsaraKeymapChoice::PreserveCurrent,
             cache_dir: None,
         }
     }
@@ -203,6 +219,7 @@ pub struct WizardInstallRequest {
     pub dry_run: bool,
     pub allow_reaper_running: bool,
     pub stage_unsupported: bool,
+    pub osara_keymap_choice: OsaraKeymapChoice,
     pub cache_dir: PathBuf,
 }
 
@@ -383,6 +400,19 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         packages_heading: localizer.text("wizard-packages-heading").value,
         packages_list_label: localizer.text("wizard-packages-list-label").value,
         package_details_label: localizer.text("wizard-package-details-label").value,
+        packages_osara_keymap_heading: localizer.text("wizard-packages-osara-keymap-heading").value,
+        packages_osara_keymap_replace_label: localizer
+            .text("wizard-packages-osara-keymap-replace-label")
+            .value,
+        packages_osara_keymap_unavailable_note: localizer
+            .text("wizard-packages-osara-keymap-unavailable-note")
+            .value,
+        packages_osara_keymap_preserve_note: localizer
+            .text("wizard-packages-osara-keymap-preserve-note")
+            .value,
+        packages_osara_keymap_replace_note: localizer
+            .text("wizard-packages-osara-keymap-replace-note")
+            .value,
         package_details_handling_prefix: localizer
             .text("wizard-package-details-handling-prefix")
             .value,
@@ -401,6 +431,9 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
             .value,
         review_resource_no_changes: localizer.text("wizard-review-resource-no-changes").value,
         review_package_heading: localizer.text("wizard-review-package-heading").value,
+        review_osara_keymap_heading: localizer.text("wizard-review-osara-keymap-heading").value,
+        review_osara_keymap_preserve: localizer.text("wizard-review-osara-keymap-preserve").value,
+        review_osara_keymap_replace: localizer.text("wizard-review-osara-keymap-replace").value,
         review_notes_heading: localizer.text("wizard-review-notes-heading").value,
         review_preflight_prefix: localizer.text("wizard-review-preflight-prefix").value,
         review_manual_heading: localizer.text("wizard-review-manual-heading").value,
@@ -625,6 +658,7 @@ pub fn install_request_from_target_and_rows(
             message: "No package was selected for installation or update.".to_string(),
         });
     }
+    let osara_selected = package_ids.iter().any(|id| id == PACKAGE_OSARA);
 
     Ok(WizardInstallRequest {
         resource_path: target.path.clone(),
@@ -636,6 +670,11 @@ pub fn install_request_from_target_and_rows(
         dry_run: options.dry_run,
         allow_reaper_running: options.allow_reaper_running,
         stage_unsupported: options.stage_unsupported,
+        osara_keymap_choice: if osara_selected {
+            options.osara_keymap_choice
+        } else {
+            OsaraKeymapChoice::PreserveCurrent
+        },
         cache_dir: options.cache_dir.unwrap_or_else(default_cache_dir),
     })
 }
@@ -655,6 +694,30 @@ pub fn package_ids_for_rows(package_rows: &[PackageRow], indices: &[usize]) -> V
         }
     }
     package_ids
+}
+
+pub fn osara_selected_for_rows(package_rows: &[PackageRow], indices: &[usize]) -> bool {
+    indices
+        .iter()
+        .filter_map(|index| package_rows.get(*index))
+        .any(|row| row.package_id == PACKAGE_OSARA)
+}
+
+pub fn osara_keymap_note(
+    model: &WizardModel,
+    osara_selected: bool,
+    choice: OsaraKeymapChoice,
+) -> String {
+    if !osara_selected {
+        return model.text.packages_osara_keymap_unavailable_note.clone();
+    }
+
+    match choice {
+        OsaraKeymapChoice::PreserveCurrent => {
+            model.text.packages_osara_keymap_preserve_note.clone()
+        }
+        OsaraKeymapChoice::ReplaceCurrent => model.text.packages_osara_keymap_replace_note.clone(),
+    }
 }
 
 pub fn review_lines_for_indices(
@@ -725,6 +788,7 @@ pub fn build_review_preview_for_package_rows(
     selected_package_indices: &[usize],
     package_rows: &[PackageRow],
     notes: &[String],
+    osara_keymap_choice: OsaraKeymapChoice,
 ) -> WizardReviewPreview {
     let Some(target) = target else {
         return WizardReviewPreview {
@@ -782,6 +846,15 @@ pub fn build_review_preview_for_package_rows(
                 lines.push(package.summary.clone());
             }
         }
+    }
+
+    if osara_selected_for_rows(package_rows, selected_package_indices) {
+        lines.push(String::new());
+        lines.push(model.text.review_osara_keymap_heading.clone());
+        lines.push(match osara_keymap_choice {
+            OsaraKeymapChoice::PreserveCurrent => model.text.review_osara_keymap_preserve.clone(),
+            OsaraKeymapChoice::ReplaceCurrent => model.text.review_osara_keymap_replace.clone(),
+        });
     }
 
     let manual_items = selected_package_indices
@@ -966,6 +1039,10 @@ pub fn execute_wizard_install(request: WizardInstallRequest) -> Result<SetupRepo
             portable: request.portable,
             allow_reaper_running: request.allow_reaper_running,
             stage_unsupported: request.stage_unsupported,
+            replace_osara_keymap: matches!(
+                request.osara_keymap_choice,
+                OsaraKeymapChoice::ReplaceCurrent
+            ),
             target_app_path: request.target_app_path.clone(),
         },
     )
@@ -1027,6 +1104,7 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
         if let Some(manual) = &item.manual_instruction {
             detail_lines.push(format!("{}:", manual.title));
             detail_lines.extend(manual.steps.iter().map(|step| format!("  {step}")));
+            detail_lines.extend(manual.notes.iter().map(|note| format!("  Note: {note}")));
         }
     }
 
@@ -1205,9 +1283,13 @@ fn is_probably_writable(path: &Path) -> bool {
 mod tests {
     use std::path::PathBuf;
 
+    use rais_core::artifact::{ArtifactDescriptor, ArtifactKind};
     use rais_core::localization::{DEFAULT_LOCALE, Localizer};
     use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
-    use rais_core::operation::PackageOperationReport;
+    use rais_core::operation::{
+        ManualInstallInstruction, PackageOperationItem, PackageOperationReport,
+        PackageOperationStatus,
+    };
     use rais_core::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER};
     use rais_core::plan::{InstallPlan, PlanAction, PlanActionKind};
     use rais_core::preflight::PreflightReport;
@@ -1219,7 +1301,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        UiBootstrapOptions, custom_portable_target_row, localizer_from_options, model_from_plan,
+        OsaraKeymapChoice, UiBootstrapOptions, custom_portable_target_row, localizer_from_options,
+        model_from_plan,
     };
 
     #[test]
@@ -1414,6 +1497,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: true,
                 stage_unsupported: false,
+                osara_keymap_choice: OsaraKeymapChoice::ReplaceCurrent,
                 cache_dir: Some(PathBuf::from("C:/cache")),
             },
         )
@@ -1427,6 +1511,10 @@ mod tests {
             Some(PathBuf::from("C:/REAPER/reaper.exe"))
         );
         assert!(request.dry_run);
+        assert_eq!(
+            request.osara_keymap_choice,
+            OsaraKeymapChoice::ReplaceCurrent
+        );
         assert_eq!(request.cache_dir, PathBuf::from("C:/cache"));
     }
 
@@ -1611,6 +1699,7 @@ mod tests {
             &selected,
             &plan.package_rows,
             &plan.notes,
+            OsaraKeymapChoice::PreserveCurrent,
         );
 
         assert!(preview.can_install);
@@ -1623,6 +1712,131 @@ mod tests {
         assert!(preview.lines.iter().any(|line| {
             line.contains("REAPER")
                 && line.contains("RAIS will download this package and report the manual steps")
+        }));
+    }
+
+    #[test]
+    fn review_preview_includes_osara_keymap_choice() {
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let installation = fake_installation();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            vec![installation.clone()],
+            Some(0),
+            InstallPlan {
+                target: Some(installation),
+                actions: vec![PlanAction {
+                    package_id: PACKAGE_OSARA.to_string(),
+                    action: PlanActionKind::Install,
+                    installed_version: None,
+                    available_version: Some(Version::parse("2026.1").unwrap()),
+                    reason: "Missing".to_string(),
+                }],
+                notes: Vec::new(),
+            },
+        );
+
+        let preview = super::build_review_preview_for_package_rows(
+            &model,
+            model.target_rows.first(),
+            &[0],
+            &model.package_rows,
+            &model.notes,
+            OsaraKeymapChoice::ReplaceCurrent,
+        );
+
+        assert!(preview.lines.iter().any(|line| line == "OSARA key map"));
+        assert!(preview.lines.iter().any(|line| {
+            line.contains("Replace the current key map") && line.contains("reaper-kb.ini")
+        }));
+    }
+
+    #[test]
+    fn osara_keymap_note_defaults_to_unavailable_when_osara_is_not_selected() {
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+
+        let note = super::osara_keymap_note(&model, false, OsaraKeymapChoice::PreserveCurrent);
+
+        assert!(note.contains("Select OSARA"));
+    }
+
+    #[test]
+    fn setup_summary_includes_manual_instruction_notes() {
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let report = SetupReport {
+            resource_path: PathBuf::from("C:/PortableREAPER"),
+            dry_run: true,
+            resource_init: ResourceInitReport {
+                resource_path: PathBuf::from("C:/PortableREAPER"),
+                dry_run: true,
+                portable: true,
+                preflight: PreflightReport {
+                    passed: true,
+                    checks: Vec::new(),
+                },
+                actions: Vec::new(),
+            },
+            package_operation: PackageOperationReport {
+                resource_path: PathBuf::from("C:/PortableREAPER"),
+                dry_run: true,
+                install_report: None,
+                items: vec![PackageOperationItem {
+                    package_id: PACKAGE_OSARA.to_string(),
+                    plan_action: PlanActionKind::Install,
+                    status: PackageOperationStatus::SkippedUnsupported,
+                    artifact: ArtifactDescriptor {
+                        package_id: PACKAGE_OSARA.to_string(),
+                        version: Version::parse("2026.1").unwrap(),
+                        platform: Platform::Windows,
+                        architecture: Architecture::X64,
+                        kind: ArtifactKind::Installer,
+                        url: "https://example.test/osara.exe".to_string(),
+                        file_name: "osara.exe".to_string(),
+                    },
+                    cached_artifact: None,
+                    install_action: None,
+                    manual_instruction: Some(ManualInstallInstruction {
+                        title: "Manual install required for osara".to_string(),
+                        steps: vec!["Use this artifact: https://example.test/osara.exe".to_string()],
+                        notes: vec![
+                            "The selected workflow preserves the current key map. Leave reaper-kb.ini unchanged.".to_string(),
+                        ],
+                    }),
+                    message: "Artifact kind Installer requires a dedicated installer implementation and was not downloaded or executed.".to_string(),
+                }],
+            },
+        };
+
+        let summary = super::summarize_setup_report(&model, &report);
+
+        assert!(summary.detail_lines.iter().any(|line| {
+            line.contains("Note:") && line.contains("Leave reaper-kb.ini unchanged")
         }));
     }
 

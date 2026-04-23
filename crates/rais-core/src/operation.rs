@@ -16,6 +16,7 @@ pub struct PackageOperationOptions {
     pub dry_run: bool,
     pub allow_reaper_running: bool,
     pub stage_unsupported: bool,
+    pub replace_osara_keymap: bool,
     pub target_app_path: Option<PathBuf>,
 }
 
@@ -136,7 +137,12 @@ pub fn execute_resolved_package_operation_with_detections(
                         .iter()
                         .find(|cached| cached.descriptor.package_id == planned.artifact.package_id)
                         .cloned();
-                    skipped_item(planned.artifact.clone(), planned.plan_action, cached)
+                    skipped_item(
+                        planned.artifact.clone(),
+                        planned.plan_action,
+                        cached,
+                        options.replace_osara_keymap,
+                    )
                 })
                 .collect::<Vec<_>>(),
         );
@@ -144,7 +150,14 @@ pub fn execute_resolved_package_operation_with_detections(
         items.extend(
             unsupported
                 .into_iter()
-                .map(|planned| skipped_item(planned.artifact, planned.plan_action, None))
+                .map(|planned| {
+                    skipped_item(
+                        planned.artifact,
+                        planned.plan_action,
+                        None,
+                        options.replace_osara_keymap,
+                    )
+                })
                 .collect::<Vec<_>>(),
         );
     }
@@ -280,10 +293,12 @@ fn skipped_item(
     artifact: ArtifactDescriptor,
     plan_action: PlanActionKind,
     cached_artifact: Option<CachedArtifact>,
+    replace_osara_keymap: bool,
 ) -> PackageOperationItem {
     let manual_instruction = Some(manual_instruction_for_artifact(
         &artifact,
         cached_artifact.as_ref(),
+        replace_osara_keymap,
     ));
     PackageOperationItem {
         package_id: artifact.package_id.clone(),
@@ -310,6 +325,7 @@ fn skipped_item(
 fn manual_instruction_for_artifact(
     artifact: &ArtifactDescriptor,
     cached_artifact: Option<&CachedArtifact>,
+    replace_osara_keymap: bool,
 ) -> ManualInstallInstruction {
     let artifact_location = cached_artifact
         .map(|cached| cached.path.display().to_string())
@@ -325,6 +341,17 @@ fn manual_instruction_for_artifact(
                 "OSARA's Windows installer supports standard and portable REAPER targets; preserve an existing key map unless the user explicitly chooses replacement."
                     .to_string(),
             );
+            if replace_osara_keymap {
+                notes.push(
+                    "The selected workflow replaces the current key map. Back up reaper-kb.ini before replacing it with the OSARA key map."
+                        .to_string(),
+                );
+            } else {
+                notes.push(
+                    "The selected workflow preserves the current key map. Leave reaper-kb.ini unchanged."
+                        .to_string(),
+                );
+            }
         }
         crate::package::PACKAGE_SWS => {
             notes.push(
@@ -384,6 +411,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: false,
+                replace_osara_keymap: false,
                 target_app_path: None,
             },
         )
@@ -396,6 +424,15 @@ mod tests {
             PackageOperationStatus::SkippedUnsupported
         );
         assert!(report.items[0].manual_instruction.is_some());
+        assert!(
+            report.items[0]
+                .manual_instruction
+                .as_ref()
+                .unwrap()
+                .notes
+                .iter()
+                .any(|note| note.contains("preserves the current key map"))
+        );
     }
 
     #[test]
@@ -413,6 +450,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: false,
+                replace_osara_keymap: false,
                 target_app_path: None,
             },
         )
@@ -442,6 +480,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: true,
+                replace_osara_keymap: false,
                 target_app_path: None,
             },
         )
@@ -478,6 +517,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: false,
+                replace_osara_keymap: false,
                 target_app_path: None,
             },
         )
@@ -510,6 +550,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: false,
+                replace_osara_keymap: false,
                 target_app_path: None,
             },
         )
@@ -521,6 +562,39 @@ mod tests {
         assert_eq!(
             report.items[0].status,
             PackageOperationStatus::SkippedManualReview
+        );
+    }
+
+    #[test]
+    fn osara_manual_instruction_reflects_replace_keymap_choice() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let report = execute_resolved_package_operation(
+            dir.path(),
+            vec![artifact(
+                PACKAGE_OSARA,
+                ArtifactKind::Installer,
+                "osara.exe",
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: true,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: true,
+                target_app_path: None,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            report.items[0]
+                .manual_instruction
+                .as_ref()
+                .unwrap()
+                .notes
+                .iter()
+                .any(|note| note.contains("Back up reaper-kb.ini"))
         );
     }
 

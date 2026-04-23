@@ -166,6 +166,8 @@ enum Command {
         #[arg(long)]
         stage_unsupported: bool,
         #[arg(long)]
+        replace_osara_keymap: bool,
+        #[arg(long)]
         report_path: Option<PathBuf>,
         #[arg(long)]
         save_report: bool,
@@ -189,6 +191,8 @@ enum Command {
         allow_reaper_running: bool,
         #[arg(long)]
         stage_unsupported: bool,
+        #[arg(long)]
+        replace_osara_keymap: bool,
         #[arg(long)]
         report_path: Option<PathBuf>,
         #[arg(long)]
@@ -541,6 +545,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             apply,
             allow_reaper_running,
             stage_unsupported,
+            replace_osara_keymap,
             report_path,
             save_report,
             json,
@@ -559,6 +564,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     dry_run: !apply,
                     allow_reaper_running,
                     stage_unsupported,
+                    replace_osara_keymap,
                     target_app_path: None,
                 },
             )?;
@@ -584,6 +590,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             apply,
             allow_reaper_running,
             stage_unsupported,
+            replace_osara_keymap,
             report_path,
             save_report,
             json,
@@ -603,6 +610,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     portable,
                     allow_reaper_running,
                     stage_unsupported,
+                    replace_osara_keymap,
                     target_app_path: None,
                 },
             )?;

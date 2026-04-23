@@ -17,6 +17,7 @@ pub struct SetupOptions {
     pub portable: bool,
     pub allow_reaper_running: bool,
     pub stage_unsupported: bool,
+    pub replace_osara_keymap: bool,
     pub target_app_path: Option<PathBuf>,
 }
 
@@ -55,6 +56,7 @@ pub fn execute_setup_operation(
             dry_run: options.dry_run,
             allow_reaper_running: options.allow_reaper_running,
             stage_unsupported: options.stage_unsupported,
+            replace_osara_keymap: options.replace_osara_keymap,
             target_app_path: options.target_app_path.clone(),
         },
     )?;
@@ -90,6 +92,7 @@ pub fn execute_resolved_setup_operation(
             dry_run: options.dry_run,
             allow_reaper_running: options.allow_reaper_running,
             stage_unsupported: options.stage_unsupported,
+            replace_osara_keymap: options.replace_osara_keymap,
             target_app_path: options.target_app_path.clone(),
         },
     )?;
@@ -132,6 +135,7 @@ mod tests {
                 portable: true,
                 allow_reaper_running: false,
                 stage_unsupported: false,
+                replace_osara_keymap: false,
                 target_app_path: None,
             },
         )
@@ -163,6 +167,7 @@ mod tests {
                 portable: true,
                 allow_reaper_running: true,
                 stage_unsupported: false,
+                replace_osara_keymap: false,
                 target_app_path: None,
             },
         )

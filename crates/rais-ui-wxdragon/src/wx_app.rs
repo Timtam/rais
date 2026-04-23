@@ -10,10 +10,11 @@ use std::sync::{
 
 use rais_core::setup::SetupReport;
 use rais_ui_wxdragon::{
-    TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel,
+    OsaraKeymapChoice, TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel,
     build_review_preview_for_package_rows, custom_portable_target_row, execute_wizard_install,
-    install_request_from_target_and_rows, load_wizard_model, save_wizard_setup_report,
-    summarize_setup_report, wizard_package_plan_for_target,
+    install_request_from_target_and_rows, load_wizard_model, osara_keymap_note,
+    osara_selected_for_rows, save_wizard_setup_report, summarize_setup_report,
+    wizard_package_plan_for_target,
 };
 use wxdragon::prelude::*;
 use wxdragon::widgets::SimpleBook;
@@ -31,6 +32,8 @@ struct WizardWidgets {
     target_details: TextCtrl,
     package_checklist: CheckListBox,
     package_details: TextCtrl,
+    osara_keymap_replace: CheckBox,
+    osara_keymap_note: TextCtrl,
     review_text: TextCtrl,
     progress_status: StaticText,
     progress_gauge: Gauge,
@@ -200,6 +203,9 @@ pub fn run() {
                                 refresh_package_checklist(
                                     &widgets.package_checklist,
                                     &widgets.package_details,
+                                    &widgets.osara_keymap_replace,
+                                    &widgets.osara_keymap_note,
+                                    &model,
                                     &package_rows.borrow(),
                                 );
                                 PACKAGES_STEP
@@ -220,6 +226,7 @@ pub fn run() {
                             &checked_package_indices(&widgets.package_checklist),
                             &rows,
                             &notes,
+                            osara_keymap_choice(&widgets.osara_keymap_replace),
                         );
                         review_can_install.set(review_preview.can_install);
                         widgets
@@ -306,6 +313,7 @@ pub fn run() {
                         selected_target.as_ref(),
                         &selected_packages,
                         &rows,
+                        osara_keymap_choice(&widgets.osara_keymap_replace),
                         None,
                     ));
                 let request = match selected_target
@@ -319,7 +327,12 @@ pub fn run() {
                             target,
                             &rows,
                             &selected_packages,
-                            WizardInstallOptions::default(),
+                            WizardInstallOptions {
+                                osara_keymap_choice: osara_keymap_choice(
+                                    &widgets.osara_keymap_replace,
+                                ),
+                                ..WizardInstallOptions::default()
+                            },
                         )
                     }) {
                     Ok(request) => request,
@@ -363,6 +376,7 @@ pub fn run() {
                         selected_target.as_ref(),
                         &selected_packages,
                         &rows,
+                        osara_keymap_choice(&widgets.osara_keymap_replace),
                         Some(&request.cache_dir),
                     ));
                 drop(rows);
@@ -527,7 +541,7 @@ fn add_pages(
     book.add_page(&target_page, &model.steps[TARGET_STEP].label, true, None);
 
     let packages_page = Panel::builder(book).build();
-    let (package_checklist, package_details) =
+    let (package_checklist, package_details, osara_keymap_replace, osara_keymap_note) =
         build_packages_page(&packages_page, model, package_rows);
     book.add_page(
         &packages_page,
@@ -561,6 +575,8 @@ fn add_pages(
         target_details,
         package_checklist,
         package_details,
+        osara_keymap_replace,
+        osara_keymap_note,
         review_text,
         progress_status,
         progress_gauge,
@@ -687,7 +703,7 @@ fn build_packages_page(
     page: &Panel,
     model: &WizardModel,
     package_rows: Rc<RefCell<Vec<rais_ui_wxdragon::PackageRow>>>,
-) -> (CheckListBox, TextCtrl) {
+) -> (CheckListBox, TextCtrl, CheckBox, TextCtrl) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(
         page,
@@ -731,8 +747,48 @@ fn build_packages_page(
     details.set_name("rais-package-details");
     sizer.add(&details, 0, SizerFlag::All | SizerFlag::Expand, 6);
 
+    add_label(
+        page,
+        &sizer,
+        &model.text.packages_osara_keymap_heading,
+        "rais-osara-keymap-heading",
+    );
+    let osara_keymap_replace = CheckBox::builder(page)
+        .with_label(&model.text.packages_osara_keymap_replace_label)
+        .build();
+    osara_keymap_replace.set_name("rais-osara-keymap-replace");
+    osara_keymap_replace.add_style(WindowStyle::TabStop);
+    osara_keymap_replace.set_can_focus(false);
+    sizer.add(
+        &osara_keymap_replace,
+        0,
+        SizerFlag::All | SizerFlag::Expand,
+        6,
+    );
+
+    let osara_keymap_note = TextCtrl::builder(page)
+        .with_value(&model.text.packages_osara_keymap_unavailable_note)
+        .with_style(TextCtrlStyle::MultiLine | TextCtrlStyle::ReadOnly | TextCtrlStyle::WordWrap)
+        .with_size(Size::new(-1, 68))
+        .build();
+    osara_keymap_note.set_name("rais-osara-keymap-note");
+    osara_keymap_note.set_can_focus(false);
+    sizer.add(&osara_keymap_note, 0, SizerFlag::All | SizerFlag::Expand, 6);
+
+    sync_osara_keymap_widgets(
+        model,
+        &package_rows.borrow(),
+        &checklist,
+        &osara_keymap_replace,
+        &osara_keymap_note,
+    );
+
     {
         let package_rows = Rc::clone(&package_rows);
+        let model = model.clone();
+        let checklist_widget = checklist;
+        let osara_checkbox = osara_keymap_replace;
+        let osara_note = osara_keymap_note;
         checklist.on_selected(move |event| {
             if let Some(index) = event.get_selection() {
                 if let Some(value) = package_rows
@@ -743,9 +799,20 @@ fn build_packages_page(
                     details.set_value(&value);
                 }
             }
+            sync_osara_keymap_widgets(
+                &model,
+                &package_rows.borrow(),
+                &checklist_widget,
+                &osara_checkbox,
+                &osara_note,
+            );
         });
     }
     let toggled_package_rows = Rc::clone(&package_rows);
+    let toggled_model = model.clone();
+    let toggled_checklist = checklist;
+    let toggled_osara_checkbox = osara_keymap_replace;
+    let toggled_osara_note = osara_keymap_note;
     checklist.on_toggled(move |event| {
         if let Some(index) = event.get_selection() {
             if let Some(value) = toggled_package_rows
@@ -756,10 +823,34 @@ fn build_packages_page(
                 details.set_value(&value);
             }
         }
+        sync_osara_keymap_widgets(
+            &toggled_model,
+            &toggled_package_rows.borrow(),
+            &toggled_checklist,
+            &toggled_osara_checkbox,
+            &toggled_osara_note,
+        );
     });
 
+    {
+        let model = model.clone();
+        let rows = Rc::clone(&package_rows);
+        let checklist_widget = checklist;
+        let osara_checkbox = osara_keymap_replace;
+        let osara_note = osara_keymap_note;
+        osara_keymap_replace.on_toggled(move |_| {
+            sync_osara_keymap_widgets(
+                &model,
+                &rows.borrow(),
+                &checklist_widget,
+                &osara_checkbox,
+                &osara_note,
+            );
+        });
+    }
+
     page.set_sizer(sizer, true);
-    (checklist, details)
+    (checklist, details, osara_keymap_replace, osara_keymap_note)
 }
 
 fn build_review_page(page: &Panel, model: &WizardModel) -> TextCtrl {
@@ -903,6 +994,7 @@ fn progress_details_for_start(
     target: Option<&TargetRow>,
     selected_package_indices: &[usize],
     package_rows: &[rais_ui_wxdragon::PackageRow],
+    osara_keymap_choice: OsaraKeymapChoice,
     cache_dir: Option<&Path>,
 ) -> String {
     let mut lines = vec![model.text.progress_details_starting.clone()];
@@ -924,6 +1016,14 @@ fn progress_details_for_start(
                 lines.push(format!("{}: {}", row.display_name, row.action_label));
             }
         }
+    }
+
+    if osara_selected_for_rows(package_rows, selected_package_indices) {
+        lines.push(model.text.review_osara_keymap_heading.clone());
+        lines.push(match osara_keymap_choice {
+            OsaraKeymapChoice::PreserveCurrent => model.text.review_osara_keymap_preserve.clone(),
+            OsaraKeymapChoice::ReplaceCurrent => model.text.review_osara_keymap_replace.clone(),
+        });
     }
 
     let manual_items = selected_package_indices
@@ -983,6 +1083,14 @@ fn checked_package_indices(checklist: &CheckListBox) -> Vec<usize> {
         .collect()
 }
 
+fn osara_keymap_choice(checkbox: &CheckBox) -> OsaraKeymapChoice {
+    if checkbox.get_value() {
+        OsaraKeymapChoice::ReplaceCurrent
+    } else {
+        OsaraKeymapChoice::PreserveCurrent
+    }
+}
+
 fn effective_can_install(plan_can_install: &Cell<bool>, review_can_install: &Cell<bool>) -> bool {
     plan_can_install.get() && review_can_install.get()
 }
@@ -990,6 +1098,9 @@ fn effective_can_install(plan_can_install: &Cell<bool>, review_can_install: &Cel
 fn refresh_package_checklist(
     checklist: &CheckListBox,
     details: &TextCtrl,
+    osara_keymap_replace: &CheckBox,
+    osara_keymap_note: &TextCtrl,
+    model: &WizardModel,
     rows: &[rais_ui_wxdragon::PackageRow],
 ) {
     checklist.clear();
@@ -998,6 +1109,31 @@ fn refresh_package_checklist(
         checklist.check(index as u32, row.selected);
     }
     details.set_value(&rows.first().map(package_details).unwrap_or_default());
+    sync_osara_keymap_widgets(
+        model,
+        rows,
+        checklist,
+        osara_keymap_replace,
+        osara_keymap_note,
+    );
+}
+
+fn sync_osara_keymap_widgets(
+    model: &WizardModel,
+    rows: &[rais_ui_wxdragon::PackageRow],
+    checklist: &CheckListBox,
+    checkbox: &CheckBox,
+    note: &TextCtrl,
+) {
+    let selected_indices = checked_package_indices(checklist);
+    let osara_selected = osara_selected_for_rows(rows, &selected_indices);
+    checkbox.enable(osara_selected);
+    checkbox.set_can_focus(osara_selected);
+    note.set_value(&osara_keymap_note(
+        model,
+        osara_selected,
+        osara_keymap_choice(checkbox),
+    ));
 }
 
 fn portable_choice_index(model: &WizardModel) -> usize {
