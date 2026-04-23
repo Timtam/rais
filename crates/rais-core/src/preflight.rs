@@ -4,12 +4,14 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sysinfo::{ProcessesToUpdate, System};
 
+use crate::detection::{DiscoveryOptions, discover_installations};
 use crate::model::Platform;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreflightOptions {
     pub dry_run: bool,
     pub allow_reaper_running: bool,
+    pub target_app_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +50,7 @@ pub enum PreflightStatus {
 pub struct RunningProcess {
     pub pid: String,
     pub name: String,
+    pub executable_path: Option<PathBuf>,
 }
 
 pub fn run_install_preflight(resource_path: &Path, options: &PreflightOptions) -> PreflightReport {
@@ -63,9 +66,13 @@ pub fn run_install_preflight_with_processes(
     options: &PreflightOptions,
     running_processes: &[RunningProcess],
 ) -> PreflightReport {
+    let target_app_path =
+        effective_target_app_path(resource_path, options.target_app_path.as_deref());
+    let relevant_processes =
+        relevant_running_processes(resource_path, running_processes, target_app_path.as_deref());
     let mut checks = vec![resource_path_check(resource_path, options.dry_run)];
     checks.push(reaper_process_check(
-        running_processes,
+        &relevant_processes,
         options.allow_reaper_running || options.dry_run,
     ));
 
@@ -88,12 +95,149 @@ pub fn running_reaper_processes(platform: Option<Platform>) -> Vec<RunningProces
                 Some(RunningProcess {
                     pid: pid.to_string(),
                     name,
+                    executable_path: process.exe().map(Path::to_path_buf),
                 })
             } else {
                 None
             }
         })
         .collect()
+}
+
+fn effective_target_app_path(
+    resource_path: &Path,
+    explicit_target_app_path: Option<&Path>,
+) -> Option<PathBuf> {
+    explicit_target_app_path
+        .map(Path::to_path_buf)
+        .or_else(|| portable_target_app_path(resource_path, Platform::current()))
+        .or_else(|| detected_standard_app_path(resource_path))
+}
+
+fn portable_target_app_path(resource_path: &Path, platform: Option<Platform>) -> Option<PathBuf> {
+    match platform {
+        Some(Platform::Windows) => {
+            let app_path = resource_path.join("reaper.exe");
+            app_path.is_file().then_some(app_path)
+        }
+        Some(Platform::MacOs) => fs::read_dir(resource_path)
+            .ok()?
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.to_ascii_lowercase().contains("reaper"))
+            }),
+        None => None,
+    }
+}
+
+fn detected_standard_app_path(resource_path: &Path) -> Option<PathBuf> {
+    discover_installations(&DiscoveryOptions {
+        include_standard: true,
+        portable_roots: Vec::new(),
+    })
+    .ok()?
+    .into_iter()
+    .find(|installation| installation.resource_path == resource_path)
+    .map(|installation| installation.app_path)
+}
+
+fn relevant_running_processes(
+    resource_path: &Path,
+    running_processes: &[RunningProcess],
+    target_app_path: Option<&Path>,
+) -> Vec<RunningProcess> {
+    match target_app_path {
+        Some(target_app_path) => running_processes
+            .iter()
+            .filter(|process| process_matches_target(process, target_app_path))
+            .cloned()
+            .collect(),
+        None if is_distinct_portable_like_resource_path(resource_path) => running_processes
+            .iter()
+            .filter(|process| process_runs_within_resource_path(process, resource_path))
+            .cloned()
+            .collect(),
+        None => running_processes.to_vec(),
+    }
+}
+
+fn process_matches_target(process: &RunningProcess, target_app_path: &Path) -> bool {
+    let Some(process_path) = process.executable_path.as_deref() else {
+        return false;
+    };
+
+    paths_match_target(process_path, target_app_path)
+}
+
+fn process_runs_within_resource_path(process: &RunningProcess, resource_path: &Path) -> bool {
+    let Some(process_path) = process.executable_path.as_deref() else {
+        return false;
+    };
+
+    let process_path = normalize_path_for_match(process_path);
+    let resource_path = normalize_path_for_match(resource_path);
+    process_path.starts_with(resource_path)
+}
+
+fn paths_match_target(process_path: &Path, target_app_path: &Path) -> bool {
+    let process_path = normalize_path_for_match(process_path);
+    let target_app_path = normalize_path_for_match(target_app_path);
+
+    same_path(&process_path, &target_app_path)
+        || (is_app_bundle(&target_app_path) && process_path.starts_with(&target_app_path))
+}
+
+fn normalize_path_for_match(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    if cfg!(target_os = "windows") {
+        normalize_windows_path(left) == normalize_windows_path(right)
+    } else {
+        left == right
+    }
+}
+
+fn normalize_windows_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+}
+
+fn is_app_bundle(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+}
+
+fn is_distinct_portable_like_resource_path(resource_path: &Path) -> bool {
+    let Some(standard_resource_path) = standard_resource_path(Platform::current()) else {
+        return false;
+    };
+
+    !same_path(resource_path, &standard_resource_path)
+}
+
+fn standard_resource_path(platform: Option<Platform>) -> Option<PathBuf> {
+    match platform {
+        Some(Platform::Windows) => std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("REAPER")),
+        Some(Platform::MacOs) => std::env::var_os("HOME").map(PathBuf::from).map(|path| {
+            path.join("Library")
+                .join("Application Support")
+                .join("REAPER")
+        }),
+        None => None,
+    }
 }
 
 fn resource_path_check(resource_path: &Path, dry_run: bool) -> PreflightCheck {
@@ -208,6 +352,8 @@ fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use tempfile::tempdir;
 
     use super::{
@@ -222,6 +368,7 @@ mod tests {
             &PreflightOptions {
                 dry_run: true,
                 allow_reaper_running: false,
+                target_app_path: None,
             },
             &[],
         );
@@ -243,10 +390,12 @@ mod tests {
             &PreflightOptions {
                 dry_run: false,
                 allow_reaper_running: false,
+                target_app_path: Some(PathBuf::from(r"C:\REAPER\reaper.exe")),
             },
             &[RunningProcess {
                 pid: "123".to_string(),
                 name: "reaper.exe".to_string(),
+                executable_path: Some(PathBuf::from(r"C:\REAPER\reaper.exe")),
             }],
         );
 
@@ -270,10 +419,12 @@ mod tests {
             &PreflightOptions {
                 dry_run: false,
                 allow_reaper_running: true,
+                target_app_path: Some(PathBuf::from(r"C:\REAPER\reaper.exe")),
             },
             &[RunningProcess {
                 pid: "123".to_string(),
                 name: "reaper.exe".to_string(),
+                executable_path: Some(PathBuf::from(r"C:\REAPER\reaper.exe")),
             }],
         );
 
@@ -286,6 +437,100 @@ mod tests {
                 .unwrap()
                 .status,
             PreflightStatus::Warn
+        );
+    }
+
+    #[test]
+    fn ignores_running_reaper_when_explicit_target_app_differs() {
+        let dir = tempdir().unwrap();
+        let report = run_install_preflight_with_processes(
+            dir.path(),
+            &PreflightOptions {
+                dry_run: false,
+                allow_reaper_running: false,
+                target_app_path: Some(PathBuf::from(r"C:\Portable\REAPER\reaper.exe")),
+            },
+            &[RunningProcess {
+                pid: "456".to_string(),
+                name: "reaper.exe".to_string(),
+                executable_path: Some(PathBuf::from(r"C:\Program Files\REAPER\reaper.exe")),
+            }],
+        );
+
+        assert!(report.passed);
+        assert_eq!(
+            report
+                .checks
+                .iter()
+                .find(|check| check.name == "reaper-process")
+                .unwrap()
+                .status,
+            PreflightStatus::Pass
+        );
+    }
+
+    #[test]
+    fn ignores_running_reaper_from_other_portable_folder() {
+        let dir = tempdir().unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+        std::fs::create_dir_all(&resource_path).unwrap();
+        std::fs::write(resource_path.join("reaper.exe"), b"").unwrap();
+
+        let report = run_install_preflight_with_processes(
+            &resource_path,
+            &PreflightOptions {
+                dry_run: false,
+                allow_reaper_running: false,
+                target_app_path: None,
+            },
+            &[RunningProcess {
+                pid: "789".to_string(),
+                name: "reaper.exe".to_string(),
+                executable_path: Some(PathBuf::from(r"C:\OtherPortable\reaper.exe")),
+            }],
+        );
+
+        assert!(report.passed);
+        assert_eq!(
+            report
+                .checks
+                .iter()
+                .find(|check| check.name == "reaper-process")
+                .unwrap()
+                .status,
+            PreflightStatus::Pass
+        );
+    }
+
+    #[test]
+    fn ignores_running_standard_reaper_for_empty_portable_target_folder() {
+        let dir = tempdir().unwrap();
+        let resource_path = dir.path().join("EmptyPortableTarget");
+        std::fs::create_dir_all(&resource_path).unwrap();
+
+        let report = run_install_preflight_with_processes(
+            &resource_path,
+            &PreflightOptions {
+                dry_run: false,
+                allow_reaper_running: false,
+                target_app_path: None,
+            },
+            &[RunningProcess {
+                pid: "999".to_string(),
+                name: "reaper.exe".to_string(),
+                executable_path: Some(PathBuf::from(r"C:\Program Files\REAPER\reaper.exe")),
+            }],
+        );
+
+        assert!(report.passed);
+        assert_eq!(
+            report
+                .checks
+                .iter()
+                .find(|check| check.name == "reaper-process")
+                .unwrap()
+                .status,
+            PreflightStatus::Pass
         );
     }
 }

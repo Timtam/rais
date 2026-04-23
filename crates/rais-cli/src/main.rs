@@ -408,6 +408,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &PreflightOptions {
                     dry_run,
                     allow_reaper_running,
+                    target_app_path: None,
                 },
             );
             let report_path =
@@ -437,6 +438,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     dry_run: !apply,
                     portable,
                     allow_reaper_running,
+                    target_app_path: None,
                 },
             )?;
             let report_path = selected_report_path(
@@ -515,6 +517,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &InstallOptions {
                     dry_run: !apply,
                     allow_reaper_running,
+                    target_app_path: None,
                 },
             )?;
             let report_path = selected_report_path(
@@ -556,6 +559,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     dry_run: !apply,
                     allow_reaper_running,
                     stage_unsupported,
+                    target_app_path: None,
                 },
             )?;
             let report_path = selected_report_path(
@@ -599,6 +603,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     portable,
                     allow_reaper_running,
                     stage_unsupported,
+                    target_app_path: None,
                 },
             )?;
             let report_path =

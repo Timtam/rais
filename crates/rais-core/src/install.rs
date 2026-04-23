@@ -18,6 +18,7 @@ use crate::rollback::{BackupManifest, BackupManifestFile, save_backup_manifest};
 pub struct InstallOptions {
     pub dry_run: bool,
     pub allow_reaper_running: bool,
+    pub target_app_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +64,7 @@ pub fn install_cached_artifacts(
         &PreflightOptions {
             dry_run: options.dry_run,
             allow_reaper_running: options.allow_reaper_running,
+            target_app_path: options.target_app_path.clone(),
         },
     );
     if !preflight.passed {
@@ -356,6 +358,7 @@ mod tests {
             &InstallOptions {
                 dry_run: false,
                 allow_reaper_running: true,
+                target_app_path: None,
             },
         )
         .unwrap();
@@ -416,6 +419,7 @@ mod tests {
             &InstallOptions {
                 dry_run: false,
                 allow_reaper_running: true,
+                target_app_path: None,
             },
         )
         .unwrap();
@@ -471,6 +475,7 @@ mod tests {
             &InstallOptions {
                 dry_run: true,
                 allow_reaper_running: false,
+                target_app_path: None,
             },
         )
         .unwrap();
@@ -496,6 +501,7 @@ mod tests {
             &InstallOptions {
                 dry_run: false,
                 allow_reaper_running: true,
+                target_app_path: None,
             },
         )
         .unwrap_err();
@@ -524,6 +530,7 @@ mod tests {
             &InstallOptions {
                 dry_run: false,
                 allow_reaper_running: true,
+                target_app_path: None,
             },
         )
         .unwrap_err();

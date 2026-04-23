@@ -17,6 +17,7 @@ pub struct SetupOptions {
     pub portable: bool,
     pub allow_reaper_running: bool,
     pub stage_unsupported: bool,
+    pub target_app_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +42,7 @@ pub fn execute_setup_operation(
             dry_run: options.dry_run,
             portable: options.portable,
             allow_reaper_running: options.allow_reaper_running,
+            target_app_path: options.target_app_path.clone(),
         },
     )?;
     let package_operation = execute_package_operation(
@@ -53,6 +55,7 @@ pub fn execute_setup_operation(
             dry_run: options.dry_run,
             allow_reaper_running: options.allow_reaper_running,
             stage_unsupported: options.stage_unsupported,
+            target_app_path: options.target_app_path.clone(),
         },
     )?;
 
@@ -76,6 +79,7 @@ pub fn execute_resolved_setup_operation(
             dry_run: options.dry_run,
             portable: options.portable,
             allow_reaper_running: options.allow_reaper_running,
+            target_app_path: options.target_app_path.clone(),
         },
     )?;
     let package_operation = execute_resolved_package_operation(
@@ -86,6 +90,7 @@ pub fn execute_resolved_setup_operation(
             dry_run: options.dry_run,
             allow_reaper_running: options.allow_reaper_running,
             stage_unsupported: options.stage_unsupported,
+            target_app_path: options.target_app_path.clone(),
         },
     )?;
 
@@ -127,6 +132,7 @@ mod tests {
                 portable: true,
                 allow_reaper_running: false,
                 stage_unsupported: false,
+                target_app_path: None,
             },
         )
         .unwrap();
@@ -157,6 +163,7 @@ mod tests {
                 portable: true,
                 allow_reaper_running: true,
                 stage_unsupported: false,
+                target_app_path: None,
             },
         )
         .unwrap();

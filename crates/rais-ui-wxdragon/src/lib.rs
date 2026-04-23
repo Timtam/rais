@@ -186,6 +186,7 @@ pub struct WizardInstallRequest {
     pub platform: Platform,
     pub architecture: Architecture,
     pub portable: bool,
+    pub target_app_path: Option<PathBuf>,
     pub dry_run: bool,
     pub allow_reaper_running: bool,
     pub stage_unsupported: bool,
@@ -599,6 +600,7 @@ pub fn install_request_from_target_and_rows(
         platform: model.platform,
         architecture: model.architecture,
         portable: target.portable,
+        target_app_path: target.app_path.clone(),
         dry_run: options.dry_run,
         allow_reaper_running: options.allow_reaper_running,
         stage_unsupported: options.stage_unsupported,
@@ -721,6 +723,7 @@ pub fn build_review_preview_for_package_rows(
             dry_run: true,
             portable: target.portable,
             allow_reaper_running: false,
+            target_app_path: target.app_path.clone(),
         },
     ) {
         Ok(report) => {
@@ -887,6 +890,7 @@ pub fn execute_wizard_install(request: WizardInstallRequest) -> Result<SetupRepo
             portable: request.portable,
             allow_reaper_running: request.allow_reaper_running,
             stage_unsupported: request.stage_unsupported,
+            target_app_path: request.target_app_path.clone(),
         },
     )
 }
@@ -1293,6 +1297,10 @@ mod tests {
         assert_eq!(request.resource_path, PathBuf::from("C:/REAPER"));
         assert_eq!(request.package_ids, vec![PACKAGE_OSARA.to_string()]);
         assert!(request.portable);
+        assert_eq!(
+            request.target_app_path,
+            Some(PathBuf::from("C:/REAPER/reaper.exe"))
+        );
         assert!(request.dry_run);
         assert_eq!(request.cache_dir, PathBuf::from("C:/cache"));
     }

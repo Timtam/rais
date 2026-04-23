@@ -11,6 +11,7 @@ pub struct ResourceInitOptions {
     pub dry_run: bool,
     pub portable: bool,
     pub allow_reaper_running: bool,
+    pub target_app_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +54,7 @@ pub fn initialize_resource_path(
         &PreflightOptions {
             dry_run: options.dry_run,
             allow_reaper_running: options.allow_reaper_running,
+            target_app_path: options.target_app_path.clone(),
         },
     );
     if !preflight.passed {
@@ -183,6 +185,7 @@ mod tests {
                 dry_run: true,
                 portable: true,
                 allow_reaper_running: false,
+                target_app_path: None,
             },
         )
         .unwrap();
@@ -207,6 +210,7 @@ mod tests {
                 dry_run: false,
                 portable: true,
                 allow_reaper_running: true,
+                target_app_path: None,
             },
         )
         .unwrap();
@@ -236,6 +240,7 @@ mod tests {
                 dry_run: false,
                 portable: false,
                 allow_reaper_running: true,
+                target_app_path: None,
             },
         )
         .unwrap_err();

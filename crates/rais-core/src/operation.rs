@@ -16,6 +16,7 @@ pub struct PackageOperationOptions {
     pub dry_run: bool,
     pub allow_reaper_running: bool,
     pub stage_unsupported: bool,
+    pub target_app_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,6 +168,7 @@ pub fn execute_resolved_package_operation_with_detections(
             &InstallOptions {
                 dry_run: options.dry_run,
                 allow_reaper_running: options.allow_reaper_running,
+                target_app_path: options.target_app_path.clone(),
             },
         )?)
     };
@@ -382,6 +384,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: false,
+                target_app_path: None,
             },
         )
         .unwrap();
@@ -410,6 +413,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: false,
+                target_app_path: None,
             },
         )
         .unwrap();
@@ -438,6 +442,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: true,
+                target_app_path: None,
             },
         )
         .unwrap();
@@ -473,6 +478,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: false,
+                target_app_path: None,
             },
         )
         .unwrap();
@@ -504,6 +510,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: false,
+                target_app_path: None,
             },
         )
         .unwrap();

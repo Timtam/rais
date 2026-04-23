@@ -127,6 +127,7 @@ pub fn restore_backup_set(
         &PreflightOptions {
             dry_run: options.dry_run,
             allow_reaper_running: options.allow_reaper_running,
+            target_app_path: None,
         },
     );
     if !preflight.passed {
