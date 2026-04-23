@@ -36,9 +36,17 @@ wizard-button-install = Install
 wizard-button-close = Close
 
 wizard-target-heading = Choose REAPER installation
-wizard-target-choice-label = Detected installations
+wizard-target-choice-label = Installation target
 wizard-target-details-label = Target details
-wizard-target-empty = No REAPER installation was detected. Use the CLI setup command for a new portable resource path until the GUI creation workflow is implemented.
+wizard-target-empty = No REAPER installation target is selected.
+wizard-target-portable-choice = Install or update a portable REAPER folder
+wizard-target-portable-folder-label = Portable folder
+wizard-target-portable-folder-message = Choose a portable REAPER folder, or an empty folder for a new portable setup.
+wizard-target-portable-pending-details = Choose the portable target option, then choose a portable REAPER folder or an empty folder for a new portable setup.
+wizard-target-custom-portable-label = Portable REAPER folder
+wizard-target-custom-portable-path-label = Portable resource path
+wizard-target-custom-portable-writable-label = Writable
+wizard-target-custom-portable-note = RAIS will create the REAPER resource layout here if it is missing.
 
 # $kind is the detected installation kind, $version is the REAPER version or an unknown-version label, and $path is the resource path.
 wizard-target-row = { $kind } REAPER { $version } at { $path }

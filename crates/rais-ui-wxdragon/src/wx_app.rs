@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{
     Arc,
@@ -5,9 +6,9 @@ use std::sync::{
 };
 
 use rais_ui_wxdragon::{
-    UiBootstrapOptions, WizardInstallOptions, WizardModel, execute_wizard_install,
-    install_request_from_model, load_wizard_model, review_lines_for_indices,
-    summarize_setup_report,
+    TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel, custom_portable_target_row,
+    execute_wizard_install, install_request_from_target, load_wizard_model,
+    review_lines_for_target, summarize_setup_report,
 };
 use wxdragon::prelude::*;
 use wxdragon::widgets::SimpleBook;
@@ -21,6 +22,7 @@ const DONE_STEP: usize = 4;
 #[derive(Clone, Copy)]
 struct WizardWidgets {
     target_choice: Choice,
+    portable_folder: DirPickerCtrl,
     package_checklist: CheckListBox,
     review_text: TextCtrl,
     progress_status: StaticText,
@@ -119,7 +121,9 @@ pub fn run() {
             &next,
             &install,
             can_install,
+            target_is_valid(&model, &wizard_widgets),
         );
+        bind_target_navigation_updates(&model, wizard_widgets, &current_step, &next);
 
         {
             let book = book;
@@ -129,6 +133,8 @@ pub fn run() {
             let install = install;
             let current_step = Arc::clone(&current_step);
             let labels = Arc::clone(&labels);
+            let model = Arc::clone(&model);
+            let widgets = wizard_widgets;
             back.on_click(move |_| {
                 let step = current_step.load(Ordering::SeqCst).saturating_sub(1);
                 current_step.store(step, Ordering::SeqCst);
@@ -141,6 +147,7 @@ pub fn run() {
                     &next,
                     &install,
                     can_install,
+                    target_is_valid(&model, &widgets),
                 );
             });
         }
@@ -157,11 +164,18 @@ pub fn run() {
             let widgets = wizard_widgets;
             next.on_click(move |_| {
                 let step = match current_step.load(Ordering::SeqCst) {
-                    TARGET_STEP => PACKAGES_STEP,
+                    TARGET_STEP => {
+                        if selected_target_row(&model, &widgets).is_some() {
+                            PACKAGES_STEP
+                        } else {
+                            TARGET_STEP
+                        }
+                    }
                     PACKAGES_STEP => {
-                        let review_lines = review_lines_for_indices(
+                        let selected_target = selected_target_row(&model, &widgets);
+                        let review_lines = review_lines_for_target(
                             &model,
-                            selected_target_index(&widgets.target_choice),
+                            selected_target.as_ref(),
                             &checked_package_indices(&widgets.package_checklist),
                         );
                         widgets.review_text.set_value(&review_lines.join("\n"));
@@ -180,6 +194,7 @@ pub fn run() {
                     &next,
                     &install,
                     can_install,
+                    target_is_valid(&model, &widgets),
                 );
             });
         }
@@ -205,6 +220,7 @@ pub fn run() {
                     &next,
                     &install,
                     can_install,
+                    target_is_valid(&model, &widgets),
                 );
                 back.enable(false);
                 next.enable(false);
@@ -214,14 +230,21 @@ pub fn run() {
                     .set_label(&model.text.progress_status_running);
                 widgets.progress_gauge.set_value(10);
 
-                let selected_target = selected_target_index(&widgets.target_choice);
+                let selected_target = selected_target_row(&model, &widgets);
                 let selected_packages = checked_package_indices(&widgets.package_checklist);
-                let request = match install_request_from_model(
-                    &model,
-                    selected_target,
-                    &selected_packages,
-                    WizardInstallOptions::default(),
-                ) {
+                let request = match selected_target
+                    .as_ref()
+                    .ok_or_else(|| rais_core::RaisError::PreflightFailed {
+                        message: model.text.review_no_target.clone(),
+                    })
+                    .and_then(|target| {
+                        install_request_from_target(
+                            &model,
+                            target,
+                            &selected_packages,
+                            WizardInstallOptions::default(),
+                        )
+                    }) {
                     Ok(request) => request,
                     Err(error) => {
                         widgets.progress_gauge.set_value(100);
@@ -241,6 +264,7 @@ pub fn run() {
                             &next,
                             &install,
                             can_install,
+                            target_is_valid(&model, &widgets),
                         );
                         return;
                     }
@@ -286,6 +310,7 @@ pub fn run() {
                             &next,
                             &install,
                             can_install,
+                            target_is_valid(&ui_model, &widgets),
                         );
                     }));
                 });
@@ -304,7 +329,7 @@ pub fn run() {
 
 fn add_pages(book: &SimpleBook, model: &WizardModel) -> WizardWidgets {
     let target_page = Panel::builder(book).build();
-    let target_choice = build_target_page(&target_page, model);
+    let (target_choice, portable_folder) = build_target_page(&target_page, model);
     book.add_page(&target_page, &model.steps[TARGET_STEP].label, true, None);
 
     let packages_page = Panel::builder(book).build();
@@ -335,6 +360,7 @@ fn add_pages(book: &SimpleBook, model: &WizardModel) -> WizardWidgets {
 
     WizardWidgets {
         target_choice,
+        portable_folder,
         package_checklist,
         review_text,
         progress_status,
@@ -343,7 +369,7 @@ fn add_pages(book: &SimpleBook, model: &WizardModel) -> WizardWidgets {
     }
 }
 
-fn build_target_page(page: &Panel, model: &WizardModel) -> Choice {
+fn build_target_page(page: &Panel, model: &WizardModel) -> (Choice, DirPickerCtrl) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(
         page,
@@ -360,18 +386,34 @@ fn build_target_page(page: &Panel, model: &WizardModel) -> Choice {
 
     let choice = Choice::builder(page).build();
     choice.set_name("rais-target-choice");
-    if model.target_rows.is_empty() {
-        choice.append(&model.text.target_empty);
-        choice.enable(false);
-    } else {
-        for row in &model.target_rows {
-            choice.append(&row.label);
-        }
-        if let Some(index) = model.selected_target_index {
-            choice.set_selection(index as u32);
-        }
+    for row in &model.target_rows {
+        choice.append(&row.label);
     }
+    let portable_index = portable_choice_index(model);
+    choice.append(&model.text.target_portable_choice);
+    choice.set_selection(model.selected_target_index.unwrap_or(portable_index) as u32);
     sizer.add(&choice, 0, SizerFlag::All | SizerFlag::Expand, 6);
+
+    add_label(
+        page,
+        &sizer,
+        &model.text.target_portable_folder_label,
+        "rais-target-portable-folder-label",
+    );
+    let portable_folder = DirPickerCtrl::builder(page)
+        .with_message(&model.text.target_portable_folder_message)
+        .with_size(Size::new(-1, -1))
+        .build();
+    portable_folder.set_name("rais-target-portable-folder");
+    portable_folder.add_style(WindowStyle::TabStop);
+    configure_portable_folder(
+        &portable_folder,
+        choice
+            .get_selection()
+            .map(|index| index as usize == portable_index)
+            .unwrap_or(false),
+    );
+    sizer.add(&portable_folder, 0, SizerFlag::All | SizerFlag::Expand, 6);
 
     add_label(
         page,
@@ -379,7 +421,7 @@ fn build_target_page(page: &Panel, model: &WizardModel) -> Choice {
         &model.text.target_details_label,
         "rais-target-details-label",
     );
-    let initial_details = selected_target_details(model);
+    let initial_details = selected_target_details(model, &choice, &portable_folder);
     let details = TextCtrl::builder(page)
         .with_value(&initial_details)
         .with_style(TextCtrlStyle::MultiLine | TextCtrlStyle::ReadOnly | TextCtrlStyle::WordWrap)
@@ -395,16 +437,47 @@ fn build_target_page(page: &Panel, model: &WizardModel) -> Choice {
             .map(|row| row.details.clone())
             .collect::<Vec<_>>(),
     );
+    let choice_model = model.clone();
+    let choice_portable_folder = portable_folder;
+    let choice_details = details;
+    let choice_detail_values = Rc::clone(&detail_values);
     choice.on_selection_changed(move |event| {
         if let Some(index) = event.get_selection() {
-            if let Some(value) = detail_values.get(index as usize) {
-                details.set_value(value);
-            }
+            let index = index as usize;
+            let portable_selected = index == portable_choice_index(&choice_model);
+            configure_portable_folder(&choice_portable_folder, portable_selected);
+            let value = if portable_selected {
+                portable_target_details(&choice_model, &choice_portable_folder)
+            } else {
+                choice_detail_values
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| choice_model.text.target_empty.clone())
+            };
+            choice_details.set_value(&value);
         }
     });
 
+    {
+        let model = model.clone();
+        let dir_choice = choice;
+        let dir_details = details;
+        portable_folder.on_dir_changed(move |_| {
+            let portable_index = portable_choice_index(&model);
+            if dir_choice
+                .get_selection()
+                .map(|index| index as usize != portable_index)
+                .unwrap_or(true)
+            {
+                dir_choice.set_selection(portable_index as u32);
+                configure_portable_folder(&portable_folder, true);
+            }
+            dir_details.set_value(&portable_target_details(&model, &portable_folder));
+        });
+    }
+
     page.set_sizer(sizer, true);
-    choice
+    (choice, portable_folder)
 }
 
 fn build_packages_page(page: &Panel, model: &WizardModel) -> CheckListBox {
@@ -548,12 +621,22 @@ fn add_label(page: &Panel, sizer: &BoxSizer, label: &str, name: &str) {
     );
 }
 
-fn selected_target_details(model: &WizardModel) -> String {
-    model
-        .selected_target_index
-        .and_then(|index| model.target_rows.get(index))
-        .map(|row| row.details.clone())
-        .unwrap_or_else(|| model.text.target_empty.clone())
+fn selected_target_details(
+    model: &WizardModel,
+    choice: &Choice,
+    portable_folder: &DirPickerCtrl,
+) -> String {
+    match choice.get_selection().map(|index| index as usize) {
+        Some(index) if index == portable_choice_index(model) => {
+            portable_target_details(model, portable_folder)
+        }
+        Some(index) => model
+            .target_rows
+            .get(index)
+            .map(|row| row.details.clone())
+            .unwrap_or_else(|| model.text.target_empty.clone()),
+        None => model.text.target_empty.clone(),
+    }
 }
 
 fn package_details(row: &rais_ui_wxdragon::PackageRow) -> String {
@@ -568,8 +651,13 @@ fn step_status(model: &WizardModel, step: usize) -> String {
         .unwrap_or_else(|| model.window_title.clone())
 }
 
-fn selected_target_index(choice: &Choice) -> Option<usize> {
-    choice.get_selection().map(|index| index as usize)
+fn selected_target_row(model: &WizardModel, widgets: &WizardWidgets) -> Option<TargetRow> {
+    let index = widgets.target_choice.get_selection()? as usize;
+    if index == portable_choice_index(model) {
+        return portable_folder_path(&widgets.portable_folder)
+            .map(|path| custom_portable_target_row(model, path, true));
+    }
+    model.target_rows.get(index).cloned()
 }
 
 fn checked_package_indices(checklist: &CheckListBox) -> Vec<usize> {
@@ -577,6 +665,65 @@ fn checked_package_indices(checklist: &CheckListBox) -> Vec<usize> {
         .filter(|index| checklist.is_checked(*index))
         .map(|index| index as usize)
         .collect()
+}
+
+fn portable_choice_index(model: &WizardModel) -> usize {
+    model.target_rows.len()
+}
+
+fn portable_folder_path(portable_folder: &DirPickerCtrl) -> Option<PathBuf> {
+    let path = portable_folder.get_path();
+    let path = path.trim();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
+}
+
+fn portable_target_details(model: &WizardModel, portable_folder: &DirPickerCtrl) -> String {
+    portable_folder_path(portable_folder)
+        .map(|path| custom_portable_target_row(model, path, true).details)
+        .unwrap_or_else(|| model.text.target_portable_pending_details.clone())
+}
+
+fn target_is_valid(model: &WizardModel, widgets: &WizardWidgets) -> bool {
+    selected_target_row(model, widgets)
+        .map(|target| target.writable)
+        .unwrap_or(false)
+}
+
+fn bind_target_navigation_updates(
+    model: &Arc<WizardModel>,
+    widgets: WizardWidgets,
+    current_step: &Arc<AtomicUsize>,
+    next: &Button,
+) {
+    {
+        let model = Arc::clone(model);
+        let current_step = Arc::clone(current_step);
+        let next = *next;
+        widgets.target_choice.on_selection_changed(move |_| {
+            if current_step.load(Ordering::SeqCst) == TARGET_STEP {
+                next.enable(target_is_valid(&model, &widgets));
+            }
+        });
+    }
+    {
+        let model = Arc::clone(model);
+        let current_step = Arc::clone(current_step);
+        let next = *next;
+        widgets.portable_folder.on_dir_changed(move |_| {
+            if current_step.load(Ordering::SeqCst) == TARGET_STEP {
+                next.enable(target_is_valid(&model, &widgets));
+            }
+        });
+    }
+}
+
+fn configure_portable_folder(portable_folder: &DirPickerCtrl, enabled: bool) {
+    portable_folder.enable(enabled);
+    portable_folder.set_can_focus(enabled);
 }
 
 fn update_navigation(
@@ -588,12 +735,17 @@ fn update_navigation(
     next: &Button,
     install: &Button,
     can_install: bool,
+    target_valid: bool,
 ) {
     book.set_selection(step);
     if let Some(label) = labels.get(step) {
         step_label.set_label(label);
     }
     back.enable(step > TARGET_STEP && step < DONE_STEP);
-    next.enable(matches!(step, TARGET_STEP | PACKAGES_STEP | PROGRESS_STEP));
+    next.enable(match step {
+        TARGET_STEP => target_valid,
+        PACKAGES_STEP | PROGRESS_STEP => true,
+        _ => false,
+    });
     install.enable(step == REVIEW_STEP && can_install);
 }

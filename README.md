@@ -74,6 +74,10 @@ background thread, updates the progress page, and writes a completion report to
 the Done page. Current engine support automatically copies direct extension
 binaries such as ReaPack; upstream installers and archives are downloaded or
 reported for manual attention until package-specific installer steps are added.
+The first wizard page lists detected REAPER installations and includes a
+separate portable target option. Choosing that portable option enables the
+native directory picker for selecting an existing portable REAPER folder or an
+empty folder where RAIS should create the portable resource layout.
 
 For accessibility and layout testing, run:
 

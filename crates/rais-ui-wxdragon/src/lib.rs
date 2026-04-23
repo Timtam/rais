@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 
 use rais_core::artifact::default_cache_dir;
@@ -54,6 +56,14 @@ pub struct WizardText {
     pub target_choice_label: String,
     pub target_details_label: String,
     pub target_empty: String,
+    pub target_portable_choice: String,
+    pub target_portable_folder_label: String,
+    pub target_portable_folder_message: String,
+    pub target_portable_pending_details: String,
+    pub target_custom_portable_label: String,
+    pub target_custom_portable_path_label: String,
+    pub target_custom_portable_writable_label: String,
+    pub target_custom_portable_note: String,
     pub packages_heading: String,
     pub packages_list_label: String,
     pub package_details_label: String,
@@ -245,6 +255,22 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         target_choice_label: localizer.text("wizard-target-choice-label").value,
         target_details_label: localizer.text("wizard-target-details-label").value,
         target_empty: localizer.text("wizard-target-empty").value,
+        target_portable_choice: localizer.text("wizard-target-portable-choice").value,
+        target_portable_folder_label: localizer.text("wizard-target-portable-folder-label").value,
+        target_portable_folder_message: localizer
+            .text("wizard-target-portable-folder-message")
+            .value,
+        target_portable_pending_details: localizer
+            .text("wizard-target-portable-pending-details")
+            .value,
+        target_custom_portable_label: localizer.text("wizard-target-custom-portable-label").value,
+        target_custom_portable_path_label: localizer
+            .text("wizard-target-custom-portable-path-label")
+            .value,
+        target_custom_portable_writable_label: localizer
+            .text("wizard-target-custom-portable-writable-label")
+            .value,
+        target_custom_portable_note: localizer.text("wizard-target-custom-portable-note").value,
         packages_heading: localizer.text("wizard-packages-heading").value,
         packages_list_label: localizer.text("wizard-packages-list-label").value,
         package_details_label: localizer.text("wizard-package-details-label").value,
@@ -339,6 +365,15 @@ pub fn install_request_from_model(
             message: "No REAPER installation target was selected.".to_string(),
         })?;
 
+    install_request_from_target(model, target, selected_package_indices, options)
+}
+
+pub fn install_request_from_target(
+    model: &WizardModel,
+    target: &TargetRow,
+    selected_package_indices: &[usize],
+    options: WizardInstallOptions,
+) -> Result<WizardInstallRequest> {
     if !target.writable {
         return Err(RaisError::PreflightFailed {
             message: format!(
@@ -386,8 +421,17 @@ pub fn review_lines_for_indices(
     selected_target_index: Option<usize>,
     selected_package_indices: &[usize],
 ) -> Vec<String> {
+    let target = selected_target_index.and_then(|index| model.target_rows.get(index));
+    review_lines_for_target(model, target, selected_package_indices)
+}
+
+pub fn review_lines_for_target(
+    model: &WizardModel,
+    target: Option<&TargetRow>,
+    selected_package_indices: &[usize],
+) -> Vec<String> {
     let mut lines = Vec::new();
-    if let Some(target) = selected_target_index.and_then(|index| model.target_rows.get(index)) {
+    if let Some(target) = target {
         lines.push(format!(
             "{}: {}",
             model.text.review_target_prefix,
@@ -417,6 +461,34 @@ pub fn review_lines_for_indices(
 
     lines.extend(model.notes.iter().cloned());
     lines
+}
+
+pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: bool) -> TargetRow {
+    let writable = is_probably_writable(&path);
+    let writable_text = if writable {
+        "yes".to_string()
+    } else {
+        "no".to_string()
+    };
+    TargetRow {
+        label: format!(
+            "{}: {}",
+            model.text.target_custom_portable_label,
+            path.display()
+        ),
+        details: format!(
+            "{}: {}\n{}: {}\n{}",
+            model.text.target_custom_portable_path_label,
+            path.display(),
+            model.text.target_custom_portable_writable_label,
+            writable_text,
+            model.text.target_custom_portable_note
+        ),
+        path,
+        portable: true,
+        selected,
+        writable,
+    }
 }
 
 pub fn execute_wizard_install(request: WizardInstallRequest) -> Result<SetupReport> {
@@ -601,6 +673,18 @@ fn yes_no(localizer: &Localizer, value: bool) -> String {
     }
 }
 
+fn is_probably_writable(path: &Path) -> bool {
+    let existing_path = if path.exists() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+
+    fs::metadata(existing_path)
+        .map(|metadata| !metadata.permissions().readonly())
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -612,7 +696,9 @@ mod tests {
     use rais_core::version::Version;
     use tempfile::tempdir;
 
-    use super::{UiBootstrapOptions, localizer_from_options, model_from_plan};
+    use super::{
+        UiBootstrapOptions, custom_portable_target_row, localizer_from_options, model_from_plan,
+    };
 
     #[test]
     fn default_options_use_embedded_localization() {
@@ -801,6 +887,32 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("No package"));
+    }
+
+    #[test]
+    fn builds_custom_portable_target_row() {
+        let dir = tempdir().unwrap();
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+
+        let row = custom_portable_target_row(&model, dir.path().join("PortableREAPER"), true);
+
+        assert!(row.selected);
+        assert!(row.portable);
+        assert!(row.writable);
+        assert!(row.label.contains("Portable REAPER folder"));
+        assert!(row.details.contains("Portable resource path"));
     }
 
     fn fake_installation() -> Installation {
