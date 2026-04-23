@@ -34,7 +34,9 @@ struct WizardWidgets {
     review_text: TextCtrl,
     progress_status: StaticText,
     progress_gauge: Gauge,
+    progress_details: TextCtrl,
     done_status: TextCtrl,
+    done_launch_reaper: Button,
     done_open_resource: Button,
     done_save_report: Button,
 }
@@ -71,6 +73,7 @@ pub fn run() {
         let package_notes = Rc::new(RefCell::new(model.notes.clone()));
         let can_install = Rc::new(Cell::new(model.controls.can_install));
         let last_report = Arc::new(Mutex::new(None::<SetupReport>));
+        let last_reaper_app_path = Arc::new(Mutex::new(None::<PathBuf>));
         let last_resource_path = Arc::new(Mutex::new(None::<PathBuf>));
         let wizard_widgets = add_pages(&book, &model, Rc::clone(&package_rows));
         root.add(&book, 1, SizerFlag::All | SizerFlag::Expand, 12);
@@ -133,7 +136,7 @@ pub fn run() {
             &back,
             &next,
             &install,
-            can_install.get(),
+            effective_can_install(&can_install, &wizard_widgets),
             target_is_valid(&model, &wizard_widgets),
         );
         bind_target_navigation_updates(&model, wizard_widgets, &current_step, &next);
@@ -160,7 +163,7 @@ pub fn run() {
                     &back,
                     &next,
                     &install,
-                    can_install.get(),
+                    effective_can_install(&can_install, &widgets),
                     target_is_valid(&model, &widgets),
                 );
             });
@@ -229,7 +232,7 @@ pub fn run() {
                     &back,
                     &next,
                     &install,
-                    can_install.get(),
+                    effective_can_install(&can_install, &widgets),
                     target_is_valid(&model, &widgets),
                 );
             });
@@ -248,6 +251,7 @@ pub fn run() {
             let package_rows = Rc::clone(&package_rows);
             let can_install = Rc::clone(&can_install);
             let last_report = Arc::clone(&last_report);
+            let last_reaper_app_path = Arc::clone(&last_reaper_app_path);
             let last_resource_path = Arc::clone(&last_resource_path);
             install.on_click(move |_| {
                 current_step.store(PROGRESS_STEP, Ordering::SeqCst);
@@ -259,12 +263,13 @@ pub fn run() {
                     &back,
                     &next,
                     &install,
-                    can_install.get(),
+                    effective_can_install(&can_install, &widgets),
                     target_is_valid(&model, &widgets),
                 );
                 back.enable(false);
                 next.enable(false);
                 install.enable(false);
+                widgets.done_launch_reaper.enable(false);
                 widgets.done_open_resource.enable(false);
                 widgets.done_save_report.enable(false);
                 widgets
@@ -274,12 +279,27 @@ pub fn run() {
                 set_last_report(&last_report, None);
 
                 let selected_target = selected_target_row(&model, &widgets);
+                set_last_path(
+                    &last_reaper_app_path,
+                    selected_target
+                        .as_ref()
+                        .and_then(|target| target.app_path.clone()),
+                );
                 set_last_resource_path(
                     &last_resource_path,
                     selected_target.as_ref().map(|target| target.path.clone()),
                 );
                 let selected_packages = checked_package_indices(&widgets.package_checklist);
                 let rows = package_rows.borrow();
+                widgets
+                    .progress_details
+                    .set_value(&progress_details_for_start(
+                        &model,
+                        selected_target.as_ref(),
+                        &selected_packages,
+                        &rows,
+                        None,
+                    ));
                 let request = match selected_target
                     .as_ref()
                     .ok_or_else(|| rais_core::RaisError::PreflightFailed {
@@ -304,8 +324,14 @@ pub fn run() {
                             .done_status
                             .set_value(&format!("{}\n\n{}", model.text.done_status_error, error));
                         widgets
+                            .progress_details
+                            .set_value(&format!("{}\n\n{}", model.text.done_status_error, error));
+                        widgets
                             .done_open_resource
                             .enable(clone_last_resource_path(&last_resource_path).is_some());
+                        widgets
+                            .done_launch_reaper
+                            .enable(clone_last_path(&last_reaper_app_path).is_some());
                         widgets.done_save_report.enable(false);
                         current_step.store(DONE_STEP, Ordering::SeqCst);
                         update_navigation(
@@ -316,20 +342,30 @@ pub fn run() {
                             &back,
                             &next,
                             &install,
-                            can_install.get(),
+                            effective_can_install(&can_install, &widgets),
                             target_is_valid(&model, &widgets),
                         );
                         return;
                     }
                 };
+                widgets
+                    .progress_details
+                    .set_value(&progress_details_for_start(
+                        &model,
+                        selected_target.as_ref(),
+                        &selected_packages,
+                        &rows,
+                        Some(&request.cache_dir),
+                    ));
                 drop(rows);
 
                 let ui_model = Arc::clone(&model);
                 let ui_current_step = Arc::clone(&current_step);
                 let ui_labels = Arc::clone(&labels);
                 let ui_last_report = Arc::clone(&last_report);
+                let ui_last_reaper_app_path = Arc::clone(&last_reaper_app_path);
                 let ui_last_resource_path = Arc::clone(&last_resource_path);
-                let can_install = can_install.get();
+                let can_install = effective_can_install(&can_install, &widgets);
                 std::thread::spawn(move || {
                     let result = execute_wizard_install(request);
                     wxdragon::call_after(Box::new(move || {
@@ -337,6 +373,11 @@ pub fn run() {
                         match result {
                             Ok(report) => {
                                 let summary = summarize_setup_report(&report);
+                                widgets.progress_details.set_value(&format!(
+                                    "{}\n\n{}",
+                                    summary.status_line,
+                                    summary.detail_lines.join("\n")
+                                ));
                                 set_last_resource_path(
                                     &ui_last_resource_path,
                                     Some(report.resource_path.clone()),
@@ -351,11 +392,18 @@ pub fn run() {
                                     summary.status_line,
                                     summary.detail_lines.join("\n")
                                 ));
+                                widgets
+                                    .done_launch_reaper
+                                    .enable(clone_last_path(&ui_last_reaper_app_path).is_some());
                                 widgets.done_open_resource.enable(true);
                                 widgets.done_save_report.enable(true);
                             }
                             Err(error) => {
                                 set_last_report(&ui_last_report, None);
+                                widgets.progress_details.set_value(&format!(
+                                    "{}\n\n{}",
+                                    ui_model.text.done_status_error, error
+                                ));
                                 widgets
                                     .progress_status
                                     .set_label(&ui_model.text.done_status_error);
@@ -363,6 +411,9 @@ pub fn run() {
                                     "{}\n\n{}",
                                     ui_model.text.done_status_error, error
                                 ));
+                                widgets
+                                    .done_launch_reaper
+                                    .enable(clone_last_path(&ui_last_reaper_app_path).is_some());
                                 widgets.done_open_resource.enable(
                                     clone_last_resource_path(&ui_last_resource_path).is_some(),
                                 );
@@ -390,6 +441,24 @@ pub fn run() {
         close.on_click(move |_| {
             frame_for_close.close(true);
         });
+
+        {
+            let model = Arc::clone(&model);
+            let widgets = wizard_widgets;
+            let last_reaper_app_path = Arc::clone(&last_reaper_app_path);
+            widgets.done_launch_reaper.on_click(move |_| {
+                let Some(app_path) = clone_last_path(&last_reaper_app_path) else {
+                    append_done_status(&widgets.done_status, &model.text.done_no_reaper_app);
+                    return;
+                };
+                if let Err(error) = launch_reaper(&app_path) {
+                    append_done_status(
+                        &widgets.done_status,
+                        &format!("{}: {}", model.text.done_launch_reaper_error_prefix, error),
+                    );
+                }
+            });
+        }
 
         {
             let model = Arc::clone(&model);
@@ -464,7 +533,8 @@ fn add_pages(
     book.add_page(&review_page, &model.steps[REVIEW_STEP].label, false, None);
 
     let progress_page = Panel::builder(book).build();
-    let (progress_status, progress_gauge) = build_progress_page(&progress_page, model);
+    let (progress_status, progress_gauge, progress_details) =
+        build_progress_page(&progress_page, model);
     book.add_page(
         &progress_page,
         &model.steps[PROGRESS_STEP].label,
@@ -473,7 +543,8 @@ fn add_pages(
     );
 
     let done_page = Panel::builder(book).build();
-    let (done_status, done_open_resource, done_save_report) = build_done_page(&done_page, model);
+    let (done_status, done_launch_reaper, done_open_resource, done_save_report) =
+        build_done_page(&done_page, model);
     book.add_page(&done_page, &model.steps[DONE_STEP].label, false, None);
 
     WizardWidgets {
@@ -485,7 +556,9 @@ fn add_pages(
         review_text,
         progress_status,
         progress_gauge,
+        progress_details,
         done_status,
+        done_launch_reaper,
         done_open_resource,
         done_save_report,
     }
@@ -699,7 +772,7 @@ fn build_review_page(page: &Panel, model: &WizardModel) -> TextCtrl {
     review
 }
 
-fn build_progress_page(page: &Panel, model: &WizardModel) -> (StaticText, Gauge) {
+fn build_progress_page(page: &Panel, model: &WizardModel) -> (StaticText, Gauge, TextCtrl) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(
         page,
@@ -715,11 +788,25 @@ fn build_progress_page(page: &Panel, model: &WizardModel) -> (StaticText, Gauge)
     let gauge = Gauge::builder(page).with_range(100).build();
     gauge.set_name("rais-progress-gauge");
     sizer.add(&gauge, 0, SizerFlag::All | SizerFlag::Expand, 6);
+
+    add_label(
+        page,
+        &sizer,
+        &model.text.progress_details_label,
+        "rais-progress-details-label",
+    );
+    let details = TextCtrl::builder(page)
+        .with_value(&model.text.progress_details_idle)
+        .with_style(TextCtrlStyle::MultiLine | TextCtrlStyle::ReadOnly | TextCtrlStyle::WordWrap)
+        .build();
+    details.set_name("rais-progress-details");
+    sizer.add(&details, 1, SizerFlag::All | SizerFlag::Expand, 6);
+
     page.set_sizer(sizer, true);
-    (status, gauge)
+    (status, gauge, details)
 }
 
-fn build_done_page(page: &Panel, model: &WizardModel) -> (TextCtrl, Button, Button) {
+fn build_done_page(page: &Panel, model: &WizardModel) -> (TextCtrl, Button, Button, Button) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(page, &sizer, &model.text.done_heading, "rais-done-heading");
     let status = TextCtrl::builder(page)
@@ -731,6 +818,15 @@ fn build_done_page(page: &Panel, model: &WizardModel) -> (TextCtrl, Button, Butt
 
     let actions = BoxSizer::builder(Orientation::Horizontal).build();
     actions.add_stretch_spacer(1);
+
+    let launch_reaper = Button::builder(page)
+        .with_label(&model.text.done_launch_reaper_label)
+        .build();
+    launch_reaper.set_name("rais-done-launch-reaper");
+    launch_reaper.add_style(WindowStyle::TabStop);
+    launch_reaper.set_can_focus(true);
+    launch_reaper.enable(false);
+    actions.add(&launch_reaper, 0, SizerFlag::All, 6);
 
     let open_resource = Button::builder(page)
         .with_label(&model.text.done_open_resource_label)
@@ -752,7 +848,7 @@ fn build_done_page(page: &Panel, model: &WizardModel) -> (TextCtrl, Button, Butt
 
     sizer.add_sizer(&actions, 0, SizerFlag::All | SizerFlag::Expand, 0);
     page.set_sizer(sizer, true);
-    (status, open_resource, save_report)
+    (status, launch_reaper, open_resource, save_report)
 }
 
 fn add_heading(page: &Panel, sizer: &BoxSizer, label: &str, name: &str) {
@@ -794,6 +890,45 @@ fn package_details(row: &rais_ui_wxdragon::PackageRow) -> String {
     format!("{}\n\n{}", row.summary, row.reason)
 }
 
+fn progress_details_for_start(
+    model: &WizardModel,
+    target: Option<&TargetRow>,
+    selected_package_indices: &[usize],
+    package_rows: &[rais_ui_wxdragon::PackageRow],
+    cache_dir: Option<&Path>,
+) -> String {
+    let mut lines = vec![model.text.progress_details_starting.clone()];
+    if let Some(target) = target {
+        lines.push(format!(
+            "{}: {}",
+            model.text.review_target_prefix,
+            target.path.display()
+        ));
+    } else {
+        lines.push(model.text.review_no_target.clone());
+    }
+
+    if selected_package_indices.is_empty() {
+        lines.push(model.text.review_no_package.clone());
+    } else {
+        for index in selected_package_indices {
+            if let Some(row) = package_rows.get(*index) {
+                lines.push(format!("{}: {}", row.display_name, row.action_label));
+            }
+        }
+    }
+
+    if let Some(cache_dir) = cache_dir {
+        lines.push(format!(
+            "{}: {}",
+            model.text.progress_details_cache_prefix,
+            cache_dir.display()
+        ));
+    }
+
+    lines.join("\n")
+}
+
 fn step_status(model: &WizardModel, step: usize) -> String {
     model
         .steps
@@ -816,6 +951,14 @@ fn checked_package_indices(checklist: &CheckListBox) -> Vec<usize> {
         .filter(|index| checklist.is_checked(*index))
         .map(|index| index as usize)
         .collect()
+}
+
+fn has_checked_packages(checklist: &CheckListBox) -> bool {
+    (0..checklist.get_count()).any(|index| checklist.is_checked(index))
+}
+
+fn effective_can_install(plan_can_install: &Cell<bool>, widgets: &WizardWidgets) -> bool {
+    plan_can_install.get() && has_checked_packages(&widgets.package_checklist)
 }
 
 fn refresh_package_checklist(
@@ -901,12 +1044,20 @@ fn clone_last_report(state: &Arc<Mutex<Option<SetupReport>>>) -> Option<SetupRep
 }
 
 fn set_last_resource_path(state: &Arc<Mutex<Option<PathBuf>>>, path: Option<PathBuf>) {
+    set_last_path(state, path);
+}
+
+fn clone_last_resource_path(state: &Arc<Mutex<Option<PathBuf>>>) -> Option<PathBuf> {
+    clone_last_path(state)
+}
+
+fn set_last_path(state: &Arc<Mutex<Option<PathBuf>>>, path: Option<PathBuf>) {
     if let Ok(mut slot) = state.lock() {
         *slot = path;
     }
 }
 
-fn clone_last_resource_path(state: &Arc<Mutex<Option<PathBuf>>>) -> Option<PathBuf> {
+fn clone_last_path(state: &Arc<Mutex<Option<PathBuf>>>) -> Option<PathBuf> {
     state.lock().ok().and_then(|slot| slot.clone())
 }
 
@@ -938,6 +1089,37 @@ fn open_resource_folder(path: &Path) -> std::io::Result<()> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "opening folders is only implemented on Windows and macOS",
+        ))
+    }
+}
+
+fn launch_reaper(path: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new(path).spawn()?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        {
+            Command::new("open").arg(path).spawn()?;
+        } else {
+            Command::new(path).spawn()?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = path;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "launching REAPER is only implemented on Windows and macOS",
         ))
     }
 }

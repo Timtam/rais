@@ -79,16 +79,23 @@ pub struct WizardText {
     pub progress_heading: String,
     pub progress_status: String,
     pub progress_status_running: String,
+    pub progress_details_label: String,
+    pub progress_details_idle: String,
+    pub progress_details_starting: String,
+    pub progress_details_cache_prefix: String,
     pub done_heading: String,
     pub done_status: String,
     pub done_status_success: String,
     pub done_status_error: String,
     pub done_status_no_packages: String,
+    pub done_launch_reaper_label: String,
     pub done_open_resource_label: String,
     pub done_save_report_label: String,
+    pub done_no_reaper_app: String,
     pub done_no_report: String,
     pub done_report_saved_prefix: String,
     pub done_report_save_error_prefix: String,
+    pub done_launch_reaper_error_prefix: String,
     pub done_open_resource_error_prefix: String,
 }
 
@@ -111,6 +118,7 @@ pub struct WizardStepLabel {
 pub struct TargetRow {
     pub label: String,
     pub details: String,
+    pub app_path: Option<PathBuf>,
     pub path: PathBuf,
     pub portable: bool,
     pub selected: bool,
@@ -327,14 +335,23 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         done_heading: localizer.text("wizard-done-heading").value,
         done_status: localizer.text("wizard-done-status-idle").value,
         progress_status_running: localizer.text("wizard-progress-status-running").value,
+        progress_details_label: localizer.text("wizard-progress-details-label").value,
+        progress_details_idle: localizer.text("wizard-progress-details-idle").value,
+        progress_details_starting: localizer.text("wizard-progress-details-starting").value,
+        progress_details_cache_prefix: localizer.text("wizard-progress-details-cache-prefix").value,
         done_status_success: localizer.text("wizard-done-status-success").value,
         done_status_error: localizer.text("wizard-done-status-error").value,
         done_status_no_packages: localizer.text("wizard-done-status-no-packages").value,
+        done_launch_reaper_label: localizer.text("wizard-done-launch-reaper").value,
         done_open_resource_label: localizer.text("wizard-done-open-resource").value,
         done_save_report_label: localizer.text("wizard-done-save-report").value,
+        done_no_reaper_app: localizer.text("wizard-done-no-reaper-app").value,
         done_no_report: localizer.text("wizard-done-no-report").value,
         done_report_saved_prefix: localizer.text("wizard-done-report-saved-prefix").value,
         done_report_save_error_prefix: localizer.text("wizard-done-report-save-error-prefix").value,
+        done_launch_reaper_error_prefix: localizer
+            .text("wizard-done-launch-reaper-error-prefix")
+            .value,
         done_open_resource_error_prefix: localizer
             .text("wizard-done-open-resource-error-prefix")
             .value,
@@ -396,6 +413,10 @@ fn target_rows(
                         ],
                     )
                     .value,
+                app_path: installation
+                    .app_path
+                    .exists()
+                    .then(|| installation.app_path.clone()),
                 path: installation.resource_path.clone(),
                 portable: installation.kind == InstallationKind::Portable,
                 selected: Some(index) == selected_target_index,
@@ -600,6 +621,7 @@ pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: 
             writable_text,
             model.text.target_custom_portable_note
         ),
+        app_path: portable_reaper_app_path(model.platform, &path),
         path,
         portable: true,
         selected,
@@ -615,13 +637,38 @@ fn installation_from_target_row(model: &WizardModel, target: &TargetRow) -> Inst
             InstallationKind::Standard
         },
         platform: model.platform,
-        app_path: target.path.clone(),
+        app_path: target
+            .app_path
+            .clone()
+            .unwrap_or_else(|| target.path.clone()),
         resource_path: target.path.clone(),
         version: None,
         architecture: Some(model.architecture),
         writable: target.writable,
         confidence: Confidence::Medium,
         evidence: Vec::new(),
+    }
+}
+
+fn portable_reaper_app_path(platform: Platform, resource_path: &Path) -> Option<PathBuf> {
+    match platform {
+        Platform::Windows => {
+            let app_path = resource_path.join("reaper.exe");
+            app_path.is_file().then_some(app_path)
+        }
+        Platform::MacOs => fs::read_dir(resource_path)
+            .ok()?
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.to_ascii_lowercase().contains("reaper"))
+            }),
     }
 }
 
@@ -1055,8 +1102,34 @@ mod tests {
         assert!(row.selected);
         assert!(row.portable);
         assert!(row.writable);
+        assert!(row.app_path.is_none());
         assert!(row.label.contains("Portable REAPER folder"));
         assert!(row.details.contains("Portable resource path"));
+    }
+
+    #[test]
+    fn custom_portable_target_uses_reaper_exe_when_present() {
+        let dir = tempdir().unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+        std::fs::create_dir_all(&resource_path).unwrap();
+        std::fs::write(resource_path.join("reaper.exe"), b"").unwrap();
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+
+        let row = custom_portable_target_row(&model, resource_path.clone(), true);
+
+        assert_eq!(row.app_path, Some(resource_path.join("reaper.exe")));
     }
 
     #[test]
