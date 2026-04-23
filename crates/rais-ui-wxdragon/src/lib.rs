@@ -14,7 +14,10 @@ use rais_core::plan::{
     AvailablePackage, InstallPlan, PlanAction, PlanActionKind, build_install_plan,
 };
 use rais_core::report::{default_report_path, save_json_report};
-use rais_core::resource::ResourceInitActionKind;
+use rais_core::resource::{
+    ResourceInitActionKind, ResourceInitItemKind, ResourceInitOptions, ResourceInitReport,
+    initialize_resource_path,
+};
 use rais_core::setup::{SetupOptions, SetupReport, execute_setup_operation};
 use rais_core::{RaisError, Result};
 
@@ -74,6 +77,14 @@ pub struct WizardText {
     pub package_details_label: String,
     pub review_heading: String,
     pub review_target_prefix: String,
+    pub review_cache_prefix: String,
+    pub review_resource_heading: String,
+    pub review_resource_create_directory_prefix: String,
+    pub review_resource_create_file_prefix: String,
+    pub review_resource_no_changes: String,
+    pub review_package_heading: String,
+    pub review_notes_heading: String,
+    pub review_preflight_prefix: String,
     pub review_no_target: String,
     pub review_no_package: String,
     pub progress_heading: String,
@@ -191,6 +202,12 @@ pub struct WizardInstallSummary {
 pub struct WizardPackagePlan {
     pub package_rows: Vec<PackageRow>,
     pub notes: Vec<String>,
+    pub can_install: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WizardReviewPreview {
+    pub lines: Vec<String>,
     pub can_install: bool,
 }
 
@@ -344,6 +361,18 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         package_details_label: localizer.text("wizard-package-details-label").value,
         review_heading: localizer.text("wizard-review-heading").value,
         review_target_prefix: localizer.text("wizard-review-target-prefix").value,
+        review_cache_prefix: localizer.text("wizard-review-cache-prefix").value,
+        review_resource_heading: localizer.text("wizard-review-resource-heading").value,
+        review_resource_create_directory_prefix: localizer
+            .text("wizard-review-resource-create-directory-prefix")
+            .value,
+        review_resource_create_file_prefix: localizer
+            .text("wizard-review-resource-create-file-prefix")
+            .value,
+        review_resource_no_changes: localizer.text("wizard-review-resource-no-changes").value,
+        review_package_heading: localizer.text("wizard-review-package-heading").value,
+        review_notes_heading: localizer.text("wizard-review-notes-heading").value,
+        review_preflight_prefix: localizer.text("wizard-review-preflight-prefix").value,
         review_no_target: localizer.text("wizard-review-no-target").value,
         review_no_package: localizer.text("wizard-review-no-package").value,
         progress_heading: localizer.text("wizard-progress-heading").value,
@@ -653,6 +682,95 @@ pub fn review_lines_for_package_rows(
     }
 
     lines.extend(notes.iter().cloned());
+    lines
+}
+
+pub fn build_review_preview_for_package_rows(
+    model: &WizardModel,
+    target: Option<&TargetRow>,
+    selected_package_indices: &[usize],
+    package_rows: &[PackageRow],
+    notes: &[String],
+) -> WizardReviewPreview {
+    let Some(target) = target else {
+        return WizardReviewPreview {
+            lines: vec![model.text.review_no_target.clone()],
+            can_install: false,
+        };
+    };
+
+    let mut lines = vec![
+        format!(
+            "{}: {}",
+            model.text.review_target_prefix,
+            target.path.display()
+        ),
+        format!(
+            "{}: {}",
+            model.text.review_cache_prefix,
+            default_cache_dir().display()
+        ),
+        String::new(),
+        model.text.review_resource_heading.clone(),
+    ];
+
+    let mut can_install = !selected_package_indices.is_empty();
+    match initialize_resource_path(
+        &target.path,
+        &ResourceInitOptions {
+            dry_run: true,
+            portable: target.portable,
+            allow_reaper_running: false,
+        },
+    ) {
+        Ok(report) => {
+            let resource_lines = review_resource_lines(model, &report);
+            if resource_lines.is_empty() {
+                lines.push(model.text.review_resource_no_changes.clone());
+            } else {
+                lines.extend(resource_lines);
+            }
+        }
+        Err(error) => {
+            can_install = false;
+            lines.push(format!("{}: {}", model.text.review_preflight_prefix, error));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push(model.text.review_package_heading.clone());
+    if selected_package_indices.is_empty() {
+        lines.push(model.text.review_no_package.clone());
+    } else {
+        for index in selected_package_indices {
+            if let Some(package) = package_rows.get(*index) {
+                lines.push(package.summary.clone());
+            }
+        }
+    }
+
+    if !notes.is_empty() {
+        lines.push(String::new());
+        lines.push(model.text.review_notes_heading.clone());
+        lines.extend(notes.iter().cloned());
+    }
+
+    WizardReviewPreview { lines, can_install }
+}
+
+fn review_resource_lines(model: &WizardModel, report: &ResourceInitReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    for action in &report.actions {
+        if action.action != ResourceInitActionKind::WouldCreate {
+            continue;
+        }
+
+        let prefix = match action.kind {
+            ResourceInitItemKind::Directory => &model.text.review_resource_create_directory_prefix,
+            ResourceInitItemKind::File => &model.text.review_resource_create_file_prefix,
+        };
+        lines.push(format!("{prefix}: {}", action.path.display()));
+    }
     lines
 }
 
@@ -967,7 +1085,9 @@ mod tests {
     use rais_core::package::{PACKAGE_OSARA, PACKAGE_REAPACK};
     use rais_core::plan::{InstallPlan, PlanAction, PlanActionKind};
     use rais_core::preflight::PreflightReport;
-    use rais_core::resource::ResourceInitReport;
+    use rais_core::resource::{
+        ResourceInitAction, ResourceInitActionKind, ResourceInitItemKind, ResourceInitReport,
+    };
     use rais_core::setup::SetupReport;
     use rais_core::version::Version;
     use tempfile::tempdir;
@@ -1288,6 +1408,57 @@ mod tests {
         assert_eq!(reapack.action, PlanActionKind::Keep);
         assert!(!reapack.selected);
         assert!(plan.package_rows.iter().any(|row| row.selected));
+    }
+
+    #[test]
+    fn review_resource_lines_only_include_pending_changes() {
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let report = ResourceInitReport {
+            resource_path: PathBuf::from("C:/PortableREAPER"),
+            dry_run: true,
+            portable: true,
+            preflight: PreflightReport {
+                passed: true,
+                checks: Vec::new(),
+            },
+            actions: vec![
+                ResourceInitAction {
+                    path: PathBuf::from("C:/PortableREAPER"),
+                    kind: ResourceInitItemKind::Directory,
+                    action: ResourceInitActionKind::AlreadyExists,
+                },
+                ResourceInitAction {
+                    path: PathBuf::from("C:/PortableREAPER/UserPlugins"),
+                    kind: ResourceInitItemKind::Directory,
+                    action: ResourceInitActionKind::WouldCreate,
+                },
+                ResourceInitAction {
+                    path: PathBuf::from("C:/PortableREAPER/reaper.ini"),
+                    kind: ResourceInitItemKind::File,
+                    action: ResourceInitActionKind::WouldCreate,
+                },
+            ],
+        };
+
+        let lines = super::review_resource_lines(&model, &report);
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("Create directory:"));
+        assert!(lines[0].contains("UserPlugins"));
+        assert!(lines[1].starts_with("Create file:"));
+        assert!(lines[1].contains("reaper.ini"));
     }
 
     #[test]

@@ -71,6 +71,14 @@ wizard-package-row = { $package }: { $action }. Installed: { $installed }. Avail
 
 wizard-review-heading = Review changes
 wizard-review-target-prefix = Target
+wizard-review-cache-prefix = Cache
+wizard-review-resource-heading = Resource setup
+wizard-review-resource-create-directory-prefix = Create directory
+wizard-review-resource-create-file-prefix = Create file
+wizard-review-resource-no-changes = No resource path changes are needed.
+wizard-review-package-heading = Selected packages
+wizard-review-notes-heading = Notes
+wizard-review-preflight-prefix = Cannot install yet
 
 # $path is the selected REAPER resource path.
 wizard-review-target = Target: { $path }

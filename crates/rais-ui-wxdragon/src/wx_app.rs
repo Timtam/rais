@@ -10,10 +10,10 @@ use std::sync::{
 
 use rais_core::setup::SetupReport;
 use rais_ui_wxdragon::{
-    TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel, custom_portable_target_row,
-    execute_wizard_install, install_request_from_target_and_rows, load_wizard_model,
-    review_lines_for_package_rows, save_wizard_setup_report, summarize_setup_report,
-    wizard_package_plan_for_target,
+    TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel,
+    build_review_preview_for_package_rows, custom_portable_target_row, execute_wizard_install,
+    install_request_from_target_and_rows, load_wizard_model, save_wizard_setup_report,
+    summarize_setup_report, wizard_package_plan_for_target,
 };
 use wxdragon::prelude::*;
 use wxdragon::widgets::SimpleBook;
@@ -72,6 +72,7 @@ pub fn run() {
         let package_rows = Rc::new(RefCell::new(model.package_rows.clone()));
         let package_notes = Rc::new(RefCell::new(model.notes.clone()));
         let can_install = Rc::new(Cell::new(model.controls.can_install));
+        let review_can_install = Rc::new(Cell::new(false));
         let last_report = Arc::new(Mutex::new(None::<SetupReport>));
         let last_reaper_app_path = Arc::new(Mutex::new(None::<PathBuf>));
         let last_resource_path = Arc::new(Mutex::new(None::<PathBuf>));
@@ -136,7 +137,7 @@ pub fn run() {
             &back,
             &next,
             &install,
-            effective_can_install(&can_install, &wizard_widgets),
+            effective_can_install(&can_install, &review_can_install),
             target_is_valid(&model, &wizard_widgets),
         );
         bind_target_navigation_updates(&model, wizard_widgets, &current_step, &next);
@@ -152,6 +153,7 @@ pub fn run() {
             let model = Arc::clone(&model);
             let widgets = wizard_widgets;
             let can_install = Rc::clone(&can_install);
+            let review_can_install = Rc::clone(&review_can_install);
             back.on_click(move |_| {
                 let step = current_step.load(Ordering::SeqCst).saturating_sub(1);
                 current_step.store(step, Ordering::SeqCst);
@@ -163,7 +165,7 @@ pub fn run() {
                     &back,
                     &next,
                     &install,
-                    effective_can_install(&can_install, &widgets),
+                    effective_can_install(&can_install, &review_can_install),
                     target_is_valid(&model, &widgets),
                 );
             });
@@ -182,6 +184,7 @@ pub fn run() {
             let package_rows = Rc::clone(&package_rows);
             let package_notes = Rc::clone(&package_notes);
             let can_install = Rc::clone(&can_install);
+            let review_can_install = Rc::clone(&review_can_install);
             next.on_click(move |_| {
                 let step = match current_step.load(Ordering::SeqCst) {
                     TARGET_STEP => {
@@ -193,6 +196,7 @@ pub fn run() {
                                 *package_rows.borrow_mut() = plan.package_rows;
                                 *package_notes.borrow_mut() = plan.notes;
                                 can_install.set(plan.can_install);
+                                review_can_install.set(false);
                                 refresh_package_checklist(
                                     &widgets.package_checklist,
                                     &widgets.package_details,
@@ -210,14 +214,17 @@ pub fn run() {
                         let selected_target = selected_target_row(&model, &widgets);
                         let rows = package_rows.borrow();
                         let notes = package_notes.borrow();
-                        let review_lines = review_lines_for_package_rows(
+                        let review_preview = build_review_preview_for_package_rows(
                             &model,
                             selected_target.as_ref(),
                             &checked_package_indices(&widgets.package_checklist),
                             &rows,
                             &notes,
                         );
-                        widgets.review_text.set_value(&review_lines.join("\n"));
+                        review_can_install.set(review_preview.can_install);
+                        widgets
+                            .review_text
+                            .set_value(&review_preview.lines.join("\n"));
                         REVIEW_STEP
                     }
                     PROGRESS_STEP => DONE_STEP,
@@ -232,7 +239,7 @@ pub fn run() {
                     &back,
                     &next,
                     &install,
-                    effective_can_install(&can_install, &widgets),
+                    effective_can_install(&can_install, &review_can_install),
                     target_is_valid(&model, &widgets),
                 );
             });
@@ -250,6 +257,7 @@ pub fn run() {
             let widgets = wizard_widgets;
             let package_rows = Rc::clone(&package_rows);
             let can_install = Rc::clone(&can_install);
+            let review_can_install = Rc::clone(&review_can_install);
             let last_report = Arc::clone(&last_report);
             let last_reaper_app_path = Arc::clone(&last_reaper_app_path);
             let last_resource_path = Arc::clone(&last_resource_path);
@@ -263,7 +271,7 @@ pub fn run() {
                     &back,
                     &next,
                     &install,
-                    effective_can_install(&can_install, &widgets),
+                    effective_can_install(&can_install, &review_can_install),
                     target_is_valid(&model, &widgets),
                 );
                 back.enable(false);
@@ -342,7 +350,7 @@ pub fn run() {
                             &back,
                             &next,
                             &install,
-                            effective_can_install(&can_install, &widgets),
+                            effective_can_install(&can_install, &review_can_install),
                             target_is_valid(&model, &widgets),
                         );
                         return;
@@ -365,7 +373,7 @@ pub fn run() {
                 let ui_last_report = Arc::clone(&last_report);
                 let ui_last_reaper_app_path = Arc::clone(&last_reaper_app_path);
                 let ui_last_resource_path = Arc::clone(&last_resource_path);
-                let can_install = effective_can_install(&can_install, &widgets);
+                let can_install = effective_can_install(&can_install, &review_can_install);
                 std::thread::spawn(move || {
                     let result = execute_wizard_install(request);
                     wxdragon::call_after(Box::new(move || {
@@ -953,12 +961,8 @@ fn checked_package_indices(checklist: &CheckListBox) -> Vec<usize> {
         .collect()
 }
 
-fn has_checked_packages(checklist: &CheckListBox) -> bool {
-    (0..checklist.get_count()).any(|index| checklist.is_checked(index))
-}
-
-fn effective_can_install(plan_can_install: &Cell<bool>, widgets: &WizardWidgets) -> bool {
-    plan_can_install.get() && has_checked_packages(&widgets.package_checklist)
+fn effective_can_install(plan_can_install: &Cell<bool>, review_can_install: &Cell<bool>) -> bool {
+    plan_can_install.get() && review_can_install.get()
 }
 
 fn refresh_package_checklist(
