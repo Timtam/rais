@@ -1,15 +1,19 @@
 use std::cell::{Cell, RefCell};
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::rc::Rc;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
+use rais_core::setup::SetupReport;
 use rais_ui_wxdragon::{
     TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel, custom_portable_target_row,
     execute_wizard_install, install_request_from_target_and_rows, load_wizard_model,
-    review_lines_for_package_rows, summarize_setup_report, wizard_package_plan_for_target,
+    review_lines_for_package_rows, save_wizard_setup_report, summarize_setup_report,
+    wizard_package_plan_for_target,
 };
 use wxdragon::prelude::*;
 use wxdragon::widgets::SimpleBook;
@@ -31,6 +35,8 @@ struct WizardWidgets {
     progress_status: StaticText,
     progress_gauge: Gauge,
     done_status: TextCtrl,
+    done_open_resource: Button,
+    done_save_report: Button,
 }
 
 pub fn run() {
@@ -64,6 +70,8 @@ pub fn run() {
         let package_rows = Rc::new(RefCell::new(model.package_rows.clone()));
         let package_notes = Rc::new(RefCell::new(model.notes.clone()));
         let can_install = Rc::new(Cell::new(model.controls.can_install));
+        let last_report = Arc::new(Mutex::new(None::<SetupReport>));
+        let last_resource_path = Arc::new(Mutex::new(None::<PathBuf>));
         let wizard_widgets = add_pages(&book, &model, Rc::clone(&package_rows));
         root.add(&book, 1, SizerFlag::All | SizerFlag::Expand, 12);
 
@@ -239,6 +247,8 @@ pub fn run() {
             let widgets = wizard_widgets;
             let package_rows = Rc::clone(&package_rows);
             let can_install = Rc::clone(&can_install);
+            let last_report = Arc::clone(&last_report);
+            let last_resource_path = Arc::clone(&last_resource_path);
             install.on_click(move |_| {
                 current_step.store(PROGRESS_STEP, Ordering::SeqCst);
                 update_navigation(
@@ -255,12 +265,19 @@ pub fn run() {
                 back.enable(false);
                 next.enable(false);
                 install.enable(false);
+                widgets.done_open_resource.enable(false);
+                widgets.done_save_report.enable(false);
                 widgets
                     .progress_status
                     .set_label(&model.text.progress_status_running);
                 widgets.progress_gauge.set_value(10);
+                set_last_report(&last_report, None);
 
                 let selected_target = selected_target_row(&model, &widgets);
+                set_last_resource_path(
+                    &last_resource_path,
+                    selected_target.as_ref().map(|target| target.path.clone()),
+                );
                 let selected_packages = checked_package_indices(&widgets.package_checklist);
                 let rows = package_rows.borrow();
                 let request = match selected_target
@@ -286,6 +303,10 @@ pub fn run() {
                         widgets
                             .done_status
                             .set_value(&format!("{}\n\n{}", model.text.done_status_error, error));
+                        widgets
+                            .done_open_resource
+                            .enable(clone_last_resource_path(&last_resource_path).is_some());
+                        widgets.done_save_report.enable(false);
                         current_step.store(DONE_STEP, Ordering::SeqCst);
                         update_navigation(
                             DONE_STEP,
@@ -306,6 +327,8 @@ pub fn run() {
                 let ui_model = Arc::clone(&model);
                 let ui_current_step = Arc::clone(&current_step);
                 let ui_labels = Arc::clone(&labels);
+                let ui_last_report = Arc::clone(&last_report);
+                let ui_last_resource_path = Arc::clone(&last_resource_path);
                 let can_install = can_install.get();
                 std::thread::spawn(move || {
                     let result = execute_wizard_install(request);
@@ -314,6 +337,11 @@ pub fn run() {
                         match result {
                             Ok(report) => {
                                 let summary = summarize_setup_report(&report);
+                                set_last_resource_path(
+                                    &ui_last_resource_path,
+                                    Some(report.resource_path.clone()),
+                                );
+                                set_last_report(&ui_last_report, Some(report));
                                 widgets
                                     .progress_status
                                     .set_label(&ui_model.text.done_status_success);
@@ -323,8 +351,11 @@ pub fn run() {
                                     summary.status_line,
                                     summary.detail_lines.join("\n")
                                 ));
+                                widgets.done_open_resource.enable(true);
+                                widgets.done_save_report.enable(true);
                             }
                             Err(error) => {
+                                set_last_report(&ui_last_report, None);
                                 widgets
                                     .progress_status
                                     .set_label(&ui_model.text.done_status_error);
@@ -332,6 +363,10 @@ pub fn run() {
                                     "{}\n\n{}",
                                     ui_model.text.done_status_error, error
                                 ));
+                                widgets.done_open_resource.enable(
+                                    clone_last_resource_path(&ui_last_resource_path).is_some(),
+                                );
+                                widgets.done_save_report.enable(false);
                             }
                         }
                         ui_current_step.store(DONE_STEP, Ordering::SeqCst);
@@ -355,6 +390,50 @@ pub fn run() {
         close.on_click(move |_| {
             frame_for_close.close(true);
         });
+
+        {
+            let model = Arc::clone(&model);
+            let widgets = wizard_widgets;
+            let last_resource_path = Arc::clone(&last_resource_path);
+            widgets.done_open_resource.on_click(move |_| {
+                let Some(path) = clone_last_resource_path(&last_resource_path) else {
+                    append_done_status(&widgets.done_status, &model.text.review_no_target);
+                    return;
+                };
+                if let Err(error) = open_resource_folder(&path) {
+                    append_done_status(
+                        &widgets.done_status,
+                        &format!("{}: {}", model.text.done_open_resource_error_prefix, error),
+                    );
+                }
+            });
+        }
+
+        {
+            let model = Arc::clone(&model);
+            let widgets = wizard_widgets;
+            let last_report = Arc::clone(&last_report);
+            widgets.done_save_report.on_click(move |_| {
+                let Some(report) = clone_last_report(&last_report) else {
+                    append_done_status(&widgets.done_status, &model.text.done_no_report);
+                    return;
+                };
+                match save_wizard_setup_report(&report) {
+                    Ok(path) => append_done_status(
+                        &widgets.done_status,
+                        &format!(
+                            "{}: {}",
+                            model.text.done_report_saved_prefix,
+                            path.display()
+                        ),
+                    ),
+                    Err(error) => append_done_status(
+                        &widgets.done_status,
+                        &format!("{}: {}", model.text.done_report_save_error_prefix, error),
+                    ),
+                }
+            });
+        }
 
         frame.centre();
         frame.show(true);
@@ -394,7 +473,7 @@ fn add_pages(
     );
 
     let done_page = Panel::builder(book).build();
-    let done_status = build_done_page(&done_page, model);
+    let (done_status, done_open_resource, done_save_report) = build_done_page(&done_page, model);
     book.add_page(&done_page, &model.steps[DONE_STEP].label, false, None);
 
     WizardWidgets {
@@ -407,6 +486,8 @@ fn add_pages(
         progress_status,
         progress_gauge,
         done_status,
+        done_open_resource,
+        done_save_report,
     }
 }
 
@@ -638,7 +719,7 @@ fn build_progress_page(page: &Panel, model: &WizardModel) -> (StaticText, Gauge)
     (status, gauge)
 }
 
-fn build_done_page(page: &Panel, model: &WizardModel) -> TextCtrl {
+fn build_done_page(page: &Panel, model: &WizardModel) -> (TextCtrl, Button, Button) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(page, &sizer, &model.text.done_heading, "rais-done-heading");
     let status = TextCtrl::builder(page)
@@ -647,8 +728,31 @@ fn build_done_page(page: &Panel, model: &WizardModel) -> TextCtrl {
         .build();
     status.set_name("rais-done-status");
     sizer.add(&status, 1, SizerFlag::All | SizerFlag::Expand, 6);
+
+    let actions = BoxSizer::builder(Orientation::Horizontal).build();
+    actions.add_stretch_spacer(1);
+
+    let open_resource = Button::builder(page)
+        .with_label(&model.text.done_open_resource_label)
+        .build();
+    open_resource.set_name("rais-done-open-resource");
+    open_resource.add_style(WindowStyle::TabStop);
+    open_resource.set_can_focus(true);
+    open_resource.enable(false);
+    actions.add(&open_resource, 0, SizerFlag::All, 6);
+
+    let save_report = Button::builder(page)
+        .with_label(&model.text.done_save_report_label)
+        .build();
+    save_report.set_name("rais-done-save-report");
+    save_report.add_style(WindowStyle::TabStop);
+    save_report.set_can_focus(true);
+    save_report.enable(false);
+    actions.add(&save_report, 0, SizerFlag::All, 6);
+
+    sizer.add_sizer(&actions, 0, SizerFlag::All | SizerFlag::Expand, 0);
     page.set_sizer(sizer, true);
-    status
+    (status, open_resource, save_report)
 }
 
 fn add_heading(page: &Panel, sizer: &BoxSizer, label: &str, name: &str) {
@@ -784,6 +888,58 @@ fn bind_target_navigation_updates(
 fn configure_portable_folder(portable_folder: &DirPickerCtrl, enabled: bool) {
     portable_folder.enable(enabled);
     portable_folder.set_can_focus(enabled);
+}
+
+fn set_last_report(state: &Arc<Mutex<Option<SetupReport>>>, report: Option<SetupReport>) {
+    if let Ok(mut slot) = state.lock() {
+        *slot = report;
+    }
+}
+
+fn clone_last_report(state: &Arc<Mutex<Option<SetupReport>>>) -> Option<SetupReport> {
+    state.lock().ok().and_then(|slot| slot.clone())
+}
+
+fn set_last_resource_path(state: &Arc<Mutex<Option<PathBuf>>>, path: Option<PathBuf>) {
+    if let Ok(mut slot) = state.lock() {
+        *slot = path;
+    }
+}
+
+fn clone_last_resource_path(state: &Arc<Mutex<Option<PathBuf>>>) -> Option<PathBuf> {
+    state.lock().ok().and_then(|slot| slot.clone())
+}
+
+fn append_done_status(status: &TextCtrl, message: &str) {
+    let current = status.get_value();
+    if current.trim().is_empty() {
+        status.set_value(message);
+    } else {
+        status.set_value(&format!("{current}\n\n{message}"));
+    }
+}
+
+fn open_resource_folder(path: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer.exe").arg(path).spawn()?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(path).spawn()?;
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = path;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "opening folders is only implemented on Windows and macOS",
+        ))
+    }
 }
 
 fn update_navigation(

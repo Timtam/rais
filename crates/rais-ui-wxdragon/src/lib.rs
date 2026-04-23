@@ -13,6 +13,7 @@ use rais_core::package::{PackageSpec, builtin_package_specs, default_desired_pac
 use rais_core::plan::{
     AvailablePackage, InstallPlan, PlanAction, PlanActionKind, build_install_plan,
 };
+use rais_core::report::{default_report_path, save_json_report};
 use rais_core::resource::ResourceInitActionKind;
 use rais_core::setup::{SetupOptions, SetupReport, execute_setup_operation};
 use rais_core::{RaisError, Result};
@@ -83,6 +84,12 @@ pub struct WizardText {
     pub done_status_success: String,
     pub done_status_error: String,
     pub done_status_no_packages: String,
+    pub done_open_resource_label: String,
+    pub done_save_report_label: String,
+    pub done_no_report: String,
+    pub done_report_saved_prefix: String,
+    pub done_report_save_error_prefix: String,
+    pub done_open_resource_error_prefix: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,6 +330,14 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         done_status_success: localizer.text("wizard-done-status-success").value,
         done_status_error: localizer.text("wizard-done-status-error").value,
         done_status_no_packages: localizer.text("wizard-done-status-no-packages").value,
+        done_open_resource_label: localizer.text("wizard-done-open-resource").value,
+        done_save_report_label: localizer.text("wizard-done-save-report").value,
+        done_no_report: localizer.text("wizard-done-no-report").value,
+        done_report_saved_prefix: localizer.text("wizard-done-report-saved-prefix").value,
+        done_report_save_error_prefix: localizer.text("wizard-done-report-save-error-prefix").value,
+        done_open_resource_error_prefix: localizer
+            .text("wizard-done-open-resource-error-prefix")
+            .value,
     }
 }
 
@@ -626,6 +641,12 @@ pub fn execute_wizard_install(request: WizardInstallRequest) -> Result<SetupRepo
     )
 }
 
+pub fn save_wizard_setup_report(report: &SetupReport) -> Result<PathBuf> {
+    let path = default_report_path(&report.resource_path, "setup");
+    save_json_report(&path, report)?;
+    Ok(path)
+}
+
 pub fn summarize_setup_report(report: &SetupReport) -> WizardInstallSummary {
     let created_resources = report
         .resource_init
@@ -810,8 +831,12 @@ mod tests {
 
     use rais_core::localization::{DEFAULT_LOCALE, Localizer};
     use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
+    use rais_core::operation::PackageOperationReport;
     use rais_core::package::{PACKAGE_OSARA, PACKAGE_REAPACK};
     use rais_core::plan::{InstallPlan, PlanAction, PlanActionKind};
+    use rais_core::preflight::PreflightReport;
+    use rais_core::resource::ResourceInitReport;
+    use rais_core::setup::SetupReport;
     use rais_core::version::Version;
     use tempfile::tempdir;
 
@@ -1067,6 +1092,19 @@ mod tests {
         assert!(plan.package_rows.iter().any(|row| row.selected));
     }
 
+    #[test]
+    fn saves_wizard_setup_report_under_resource_logs() {
+        let dir = tempdir().unwrap();
+        let report = empty_setup_report(dir.path().join("PortableREAPER"));
+
+        let path = super::save_wizard_setup_report(&report).unwrap();
+
+        assert!(path.starts_with(dir.path().join("PortableREAPER/RAIS/logs")));
+        assert!(path.is_file());
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("\"resource_path\""));
+    }
+
     fn fake_installation() -> Installation {
         Installation {
             kind: InstallationKind::Portable,
@@ -1078,6 +1116,29 @@ mod tests {
             writable: true,
             confidence: Confidence::High,
             evidence: Vec::new(),
+        }
+    }
+
+    fn empty_setup_report(resource_path: PathBuf) -> SetupReport {
+        SetupReport {
+            resource_path: resource_path.clone(),
+            dry_run: true,
+            resource_init: ResourceInitReport {
+                resource_path: resource_path.clone(),
+                dry_run: true,
+                portable: true,
+                preflight: PreflightReport {
+                    passed: true,
+                    checks: Vec::new(),
+                },
+                actions: Vec::new(),
+            },
+            package_operation: PackageOperationReport {
+                resource_path,
+                dry_run: true,
+                install_report: None,
+                items: Vec::new(),
+            },
         }
     }
 }
