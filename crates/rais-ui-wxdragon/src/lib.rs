@@ -105,6 +105,10 @@ pub struct WizardText {
     pub review_backup_heading: String,
     pub review_backup_file_prefix: String,
     pub review_backup_no_changes: String,
+    pub review_admin_heading: String,
+    pub review_admin_no_prompts: String,
+    pub review_admin_app_prefix: String,
+    pub review_admin_resource_prefix: String,
     pub review_package_heading: String,
     pub review_osara_keymap_heading: String,
     pub review_osara_keymap_preserve: String,
@@ -497,6 +501,10 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         review_backup_heading: localizer.text("wizard-review-backup-heading").value,
         review_backup_file_prefix: localizer.text("wizard-review-backup-file-prefix").value,
         review_backup_no_changes: localizer.text("wizard-review-backup-no-changes").value,
+        review_admin_heading: localizer.text("wizard-review-admin-heading").value,
+        review_admin_no_prompts: localizer.text("wizard-review-admin-no-prompts").value,
+        review_admin_app_prefix: localizer.text("wizard-review-admin-app-prefix").value,
+        review_admin_resource_prefix: localizer.text("wizard-review-admin-resource-prefix").value,
         review_package_heading: localizer.text("wizard-review-package-heading").value,
         review_osara_keymap_heading: localizer.text("wizard-review-osara-keymap-heading").value,
         review_osara_keymap_preserve: localizer.text("wizard-review-osara-keymap-preserve").value,
@@ -917,6 +925,15 @@ pub fn build_review_preview_for_package_rows(
     ));
 
     lines.push(String::new());
+    lines.push(model.text.review_admin_heading.clone());
+    lines.extend(review_admin_lines(
+        model,
+        target,
+        selected_package_indices,
+        package_rows,
+    ));
+
+    lines.push(String::new());
     lines.push(model.text.review_package_heading.clone());
     if selected_package_indices.is_empty() {
         lines.push(model.text.review_no_package.clone());
@@ -1009,6 +1026,50 @@ fn review_backup_lines(
                 )
             })
             .collect()
+    }
+}
+
+fn review_admin_lines(
+    model: &WizardModel,
+    target: &TargetRow,
+    selected_package_indices: &[usize],
+    package_rows: &[PackageRow],
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let reaper_selected = selected_package_indices
+        .iter()
+        .filter_map(|index| package_rows.get(*index))
+        .any(|package| {
+            package.package_id == rais_core::package::PACKAGE_REAPER
+                && matches!(
+                    package.action,
+                    PlanActionKind::Install | PlanActionKind::Update
+                )
+        });
+
+    if path_likely_requires_admin_prompt(model.platform, &target.path) {
+        lines.push(format!(
+            "{}: {}",
+            model.text.review_admin_resource_prefix,
+            target.path.display()
+        ));
+    }
+
+    if reaper_selected
+        && !path_is_same_or_nested(&target.planned_app_path, &target.path)
+        && path_likely_requires_admin_prompt(model.platform, &target.planned_app_path)
+    {
+        lines.push(format!(
+            "{}: {}",
+            model.text.review_admin_app_prefix,
+            target.planned_app_path.display()
+        ));
+    }
+
+    if lines.is_empty() {
+        vec![model.text.review_admin_no_prompts.clone()]
+    } else {
+        lines
     }
 }
 
@@ -1650,6 +1711,70 @@ fn is_probably_writable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn path_likely_requires_admin_prompt(platform: Platform, path: &Path) -> bool {
+    nearest_existing_ancestor(path)
+        .and_then(|existing_path| fs::metadata(existing_path).ok())
+        .is_some_and(|metadata| metadata.permissions().readonly())
+        || protected_system_roots(platform)
+            .iter()
+            .any(|root| path_is_same_or_nested(path, root))
+}
+
+fn protected_system_roots(platform: Platform) -> Vec<PathBuf> {
+    match platform {
+        Platform::Windows => {
+            let mut roots = Vec::new();
+            for key in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
+                if let Some(value) = std::env::var_os(key) {
+                    roots.push(PathBuf::from(value));
+                }
+            }
+            if roots.is_empty() {
+                roots.push(PathBuf::from(r"C:\Program Files"));
+                roots.push(PathBuf::from(r"C:\Program Files (x86)"));
+            }
+            roots
+        }
+        Platform::MacOs => vec![
+            PathBuf::from("/Applications"),
+            PathBuf::from("/Library"),
+            PathBuf::from("/System"),
+        ],
+    }
+}
+
+fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut current = if path.exists() {
+        path.to_path_buf()
+    } else {
+        path.parent()?.to_path_buf()
+    };
+
+    loop {
+        if current.exists() {
+            return Some(current);
+        }
+        current = current.parent()?.to_path_buf();
+    }
+}
+
+fn path_is_same_or_nested(path: &Path, root: &Path) -> bool {
+    if cfg!(target_os = "windows") {
+        let path = normalize_windows_path(path);
+        let root = normalize_windows_path(root);
+        path == root || path.starts_with(&(root + "\\"))
+    } else {
+        path == root || path.starts_with(root)
+    }
+}
+
+fn normalize_windows_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -2230,6 +2355,107 @@ mod tests {
                 .lines
                 .iter()
                 .any(|line| line.contains("install-state.json"))
+        );
+    }
+
+    #[test]
+    fn review_preview_lists_admin_prompt_for_standard_reaper_target() {
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let installation = fake_standard_installation();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            vec![installation.clone()],
+            Some(0),
+            InstallPlan {
+                target: Some(installation),
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let package_rows = vec![super::PackageRow {
+            package_id: PACKAGE_REAPER.to_string(),
+            display_name: "REAPER".to_string(),
+            selected: true,
+            summary: "REAPER: Install".to_string(),
+            details: "REAPER details".to_string(),
+            installed_version: "Version unknown".to_string(),
+            available_version: "7.69".to_string(),
+            action: PlanActionKind::Install,
+            action_label: "Install".to_string(),
+            reason: "Missing".to_string(),
+            handling_summary: model.text.package_handling_manual.clone(),
+            manual_attention_expected: true,
+        }];
+
+        let preview = super::build_review_preview_for_package_rows(
+            &model,
+            model.target_rows.first(),
+            &[0],
+            &package_rows,
+            &[],
+            OsaraKeymapChoice::PreserveCurrent,
+        );
+
+        assert!(
+            preview
+                .lines
+                .iter()
+                .any(|line| line == "Administrator prompts expected")
+        );
+        assert!(preview.lines.iter().any(|line| {
+            line.contains("Administrator approval may be required for the REAPER application path")
+                && line.contains("Program Files")
+        }));
+    }
+
+    #[test]
+    fn review_preview_reports_no_admin_prompt_for_user_portable_target() {
+        let dir = tempdir().unwrap();
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let target = custom_portable_target_row(&model, dir.path().join("PortableREAPER"), true);
+        let package_rows = vec![super::PackageRow {
+            package_id: PACKAGE_REAPACK.to_string(),
+            display_name: "ReaPack".to_string(),
+            selected: true,
+            summary: "ReaPack: Install".to_string(),
+            details: "ReaPack details".to_string(),
+            installed_version: "Version unknown".to_string(),
+            available_version: "1.2.6".to_string(),
+            action: PlanActionKind::Install,
+            action_label: "Install".to_string(),
+            reason: "Missing".to_string(),
+            handling_summary: model.text.package_handling_automatic.clone(),
+            manual_attention_expected: false,
+        }];
+
+        let preview = super::build_review_preview_for_package_rows(
+            &model,
+            Some(&target),
+            &[0],
+            &package_rows,
+            &[],
+            OsaraKeymapChoice::PreserveCurrent,
+        );
+
+        assert!(
+            preview
+                .lines
+                .iter()
+                .any(|line| { line == "No administrator prompt is currently expected." })
         );
     }
 
