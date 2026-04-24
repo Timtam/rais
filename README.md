@@ -78,8 +78,10 @@ localization and embedded package metadata so it can start without neighboring
 resource directories. The Install button now runs the shared setup engine on a
 background thread, updates the progress page, and writes a completion report to
 the Done page. Current engine support automatically copies direct extension
-binaries such as ReaPack; upstream installers and archives are downloaded or
-reported for manual attention until package-specific installer steps are added.
+binaries such as ReaPack, and it now includes the first unattended upstream
+installer path for REAPER on Windows. Other upstream installers and archives
+are still downloaded or reported for manual attention until their
+package-specific execution steps are added.
 The target design in [DESIGN.md](./DESIGN.md) is full unattended installation
 and update of REAPER, OSARA, SWS, and ReaPack, including RAIS launching
 executable installers itself during the install run where needed, so those

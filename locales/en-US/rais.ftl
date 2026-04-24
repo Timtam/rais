@@ -82,6 +82,7 @@ wizard-packages-osara-keymap-preserve-note = The current key map will be preserv
 wizard-packages-osara-keymap-replace-note = The current key map should be replaced only after backing up reaper-kb.ini.
 wizard-package-details-handling-prefix = Handling
 wizard-package-handling-automatic = RAIS can install this package directly.
+wizard-package-handling-unattended = RAIS can install this package unattended, including launching its installer when required.
 wizard-package-handling-planned = RAIS is designed to run this package's installer or setup routine itself and finish the installation unattended, but this build still reports the steps instead of executing them.
 wizard-package-handling-manual = RAIS will download this package and report the manual steps after the run.
 wizard-package-handling-unavailable = This package is not available for the selected platform or architecture.

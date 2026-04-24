@@ -18,6 +18,7 @@ pub mod report;
 pub mod resource;
 pub mod rollback;
 pub mod setup;
+pub mod upstream;
 pub mod version;
 
 pub use error::{RaisError, Result};

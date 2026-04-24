@@ -69,6 +69,18 @@ pub enum RaisError {
     #[error("preflight failed: {message}")]
     PreflightFailed { message: String },
 
+    #[error("invalid planned execution: {message}")]
+    InvalidPlannedExecution { message: String },
+
+    #[error("process failed for {program} with exit code {exit_code:?}")]
+    ProcessFailed {
+        program: String,
+        exit_code: Option<i32>,
+    },
+
+    #[error("post-install verification failed; missing paths: {missing_paths:?}")]
+    PostInstallVerificationFailed { missing_paths: Vec<PathBuf> },
+
     #[error("invalid version string: {0}")]
     InvalidVersion(String),
 

@@ -7,11 +7,12 @@ use crate::artifact::{
     ArtifactDescriptor, ArtifactKind, CachedArtifact, download_artifacts, expected_artifact_kind,
     resolve_latest_artifacts,
 };
-use crate::detection::detect_components;
+use crate::detection::{default_standard_installation, detect_components};
 use crate::install::{InstallFileReport, InstallOptions, InstallReport, install_cached_artifacts};
 use crate::model::{Architecture, ComponentDetection, Platform};
 use crate::plan::PlanActionKind;
 use crate::preflight::ensure_resource_path_ready;
+use crate::upstream::execute_planned_execution;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageOperationOptions {
@@ -80,6 +81,7 @@ pub struct PlannedExecutionPlan {
 #[serde(rename_all = "kebab-case")]
 pub enum PackageAutomationSupport {
     Direct,
+    AvailableUnattended(PlannedAutomationKind),
     PlannedUnattended(PlannedAutomationKind),
     Unavailable,
 }
@@ -88,6 +90,7 @@ pub enum PackageAutomationSupport {
 #[serde(rename_all = "kebab-case")]
 pub enum PackageOperationStatus {
     InstalledOrChecked,
+    PlannedUnattended,
     DeferredUnattended,
     SkippedCurrent,
     SkippedManualReview,
@@ -98,18 +101,26 @@ pub fn package_automation_support(
     platform: Platform,
     architecture: Architecture,
 ) -> PackageAutomationSupport {
-    match expected_artifact_kind(package_id, platform, architecture) {
-        Ok(ArtifactKind::ExtensionBinary) => PackageAutomationSupport::Direct,
-        Ok(ArtifactKind::Installer) => {
+    match (
+        package_id,
+        expected_artifact_kind(package_id, platform, architecture),
+    ) {
+        (_, Ok(ArtifactKind::ExtensionBinary)) => PackageAutomationSupport::Direct,
+        (crate::package::PACKAGE_REAPER, Ok(ArtifactKind::Installer))
+            if matches!(platform, Platform::Windows) =>
+        {
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
+        }
+        (_, Ok(ArtifactKind::Installer)) => {
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::VendorInstaller)
         }
-        Ok(ArtifactKind::Archive) => {
+        (_, Ok(ArtifactKind::Archive)) => {
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::ArchiveExtraction)
         }
-        Ok(ArtifactKind::DiskImage) => {
+        (_, Ok(ArtifactKind::DiskImage)) => {
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::DiskImageInstall)
         }
-        Err(_) => PackageAutomationSupport::Unavailable,
+        (_, Err(_)) => PackageAutomationSupport::Unavailable,
     }
 }
 
@@ -157,28 +168,40 @@ pub fn execute_resolved_package_operation_with_detections(
     ensure_resource_path_ready(resource_path, options.dry_run)?;
 
     let mut items = Vec::new();
-    let mut planned_artifacts = Vec::new();
+    let mut direct_installable = Vec::new();
+    let mut unattended_installable = Vec::new();
+    let mut deferred_installable = Vec::new();
 
     for artifact in artifacts {
         let plan_action = plan_action_for_artifact(&artifact, detections);
         match plan_action {
             PlanActionKind::Install | PlanActionKind::Update => {
-                planned_artifacts.push(PlannedArtifact {
-                    artifact,
-                    plan_action,
-                });
+                match automation_support_for_artifact(&artifact) {
+                    PackageAutomationSupport::Direct => direct_installable.push(PlannedArtifact {
+                        artifact,
+                        plan_action,
+                    }),
+                    PackageAutomationSupport::AvailableUnattended(_) => unattended_installable
+                        .push(PlannedArtifact {
+                            artifact,
+                            plan_action,
+                        }),
+                    PackageAutomationSupport::PlannedUnattended(_)
+                    | PackageAutomationSupport::Unavailable => {
+                        deferred_installable.push(PlannedArtifact {
+                            artifact,
+                            plan_action,
+                        })
+                    }
+                }
             }
             PlanActionKind::Keep => items.push(skipped_current_item(artifact, detections)),
             PlanActionKind::ManualReview => items.push(manual_review_item(artifact, detections)),
         }
     }
 
-    let (installable, unsupported): (Vec<_>, Vec<_>) = planned_artifacts
-        .into_iter()
-        .partition(|planned| planned.artifact.kind == ArtifactKind::ExtensionBinary);
-
-    let staged_unsupported = if options.stage_unsupported && !unsupported.is_empty() {
-        let artifacts = unsupported
+    let staged_deferred = if options.stage_unsupported && !deferred_installable.is_empty() {
+        let artifacts = deferred_installable
             .iter()
             .map(|planned| planned.artifact.clone())
             .collect::<Vec<_>>();
@@ -189,10 +212,10 @@ pub fn execute_resolved_package_operation_with_detections(
 
     if options.stage_unsupported {
         items.extend(
-            unsupported
+            deferred_installable
                 .iter()
                 .map(|planned| {
-                    let cached = staged_unsupported
+                    let cached = staged_deferred
                         .iter()
                         .find(|cached| cached.descriptor.package_id == planned.artifact.package_id)
                         .cloned();
@@ -209,7 +232,7 @@ pub fn execute_resolved_package_operation_with_detections(
         );
     } else {
         items.extend(
-            unsupported
+            deferred_installable
                 .into_iter()
                 .map(|planned| {
                     skipped_item(
@@ -225,10 +248,37 @@ pub fn execute_resolved_package_operation_with_detections(
         );
     }
 
-    let cached_artifacts = if installable.is_empty() {
+    if options.dry_run {
+        items.extend(unattended_installable.into_iter().map(|planned| {
+            planned_unattended_item(
+                planned.artifact,
+                planned.plan_action,
+                resource_path,
+                options.target_app_path.as_deref(),
+                options.replace_osara_keymap,
+            )
+        }));
+    } else if !unattended_installable.is_empty() {
+        let artifacts = unattended_installable
+            .iter()
+            .map(|planned| planned.artifact.clone())
+            .collect::<Vec<_>>();
+        let cached_unattended = download_artifacts(&artifacts, cache_dir)?;
+        for (planned, cached) in unattended_installable.iter().zip(cached_unattended.iter()) {
+            items.push(executed_unattended_item(
+                planned,
+                cached,
+                resource_path,
+                options.target_app_path.as_deref(),
+                options.replace_osara_keymap,
+            )?);
+        }
+    }
+
+    let cached_artifacts = if direct_installable.is_empty() {
         Vec::new()
     } else {
-        let artifacts = installable
+        let artifacts = direct_installable
             .iter()
             .map(|planned| planned.artifact.clone())
             .collect::<Vec<_>>();
@@ -250,7 +300,7 @@ pub fn execute_resolved_package_operation_with_detections(
     };
 
     if let Some(install_report) = &install_report {
-        for ((planned, cached), action) in installable
+        for ((planned, cached), action) in direct_installable
             .iter()
             .zip(cached_artifacts.iter())
             .zip(&install_report.actions)
@@ -277,6 +327,27 @@ pub fn execute_resolved_package_operation_with_detections(
         install_report,
         items,
     })
+}
+
+fn automation_support_for_artifact(artifact: &ArtifactDescriptor) -> PackageAutomationSupport {
+    match artifact.kind {
+        ArtifactKind::ExtensionBinary => PackageAutomationSupport::Direct,
+        ArtifactKind::Installer
+            if artifact.package_id == crate::package::PACKAGE_REAPER
+                && matches!(artifact.platform, Platform::Windows) =>
+        {
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
+        }
+        ArtifactKind::Installer => {
+            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::VendorInstaller)
+        }
+        ArtifactKind::Archive => {
+            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::ArchiveExtraction)
+        }
+        ArtifactKind::DiskImage => {
+            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::DiskImageInstall)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -400,6 +471,67 @@ fn skipped_item(
     }
 }
 
+fn planned_unattended_item(
+    artifact: ArtifactDescriptor,
+    plan_action: PlanActionKind,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+    replace_osara_keymap: bool,
+) -> PackageOperationItem {
+    let planned_execution = Some(planned_execution_for_artifact(
+        &artifact,
+        None,
+        resource_path,
+        target_app_path,
+        replace_osara_keymap,
+    ));
+    PackageOperationItem {
+        package_id: artifact.package_id.clone(),
+        plan_action,
+        status: PackageOperationStatus::PlannedUnattended,
+        message: format!(
+            "Dry run: RAIS would download and run this {} unattended.",
+            planned_automation_description(artifact.kind)
+        ),
+        artifact,
+        cached_artifact: None,
+        install_action: None,
+        planned_execution,
+        manual_instruction: None,
+    }
+}
+
+fn executed_unattended_item(
+    planned: &PlannedArtifact,
+    cached_artifact: &CachedArtifact,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+    replace_osara_keymap: bool,
+) -> Result<PackageOperationItem> {
+    let planned_execution = planned_execution_for_artifact(
+        &planned.artifact,
+        Some(cached_artifact),
+        resource_path,
+        target_app_path,
+        replace_osara_keymap,
+    );
+    execute_planned_execution(&planned_execution, false)?;
+
+    Ok(PackageOperationItem {
+        package_id: planned.artifact.package_id.clone(),
+        plan_action: planned.plan_action,
+        status: PackageOperationStatus::InstalledOrChecked,
+        message:
+            "RAIS ran the upstream installer unattended and verified the expected target paths."
+                .to_string(),
+        artifact: planned.artifact.clone(),
+        cached_artifact: Some(cached_artifact.clone()),
+        install_action: None,
+        planned_execution: Some(planned_execution),
+        manual_instruction: None,
+    })
+}
+
 fn planned_execution_for_artifact(
     artifact: &ArtifactDescriptor,
     cached_artifact: Option<&CachedArtifact>,
@@ -410,10 +542,12 @@ fn planned_execution_for_artifact(
     let artifact_location = cached_artifact
         .map(|cached| cached.path.display().to_string())
         .unwrap_or_else(|| artifact.url.clone());
+    let effective_target_app_path =
+        effective_target_app_path(artifact, resource_path, target_app_path);
     let verification_paths = planned_verification_paths(
         &artifact.package_id,
         resource_path,
-        target_app_path,
+        effective_target_app_path.as_deref(),
         replace_osara_keymap,
     );
 
@@ -421,7 +555,11 @@ fn planned_execution_for_artifact(
         ArtifactKind::Installer => PlannedExecutionPlan {
             kind: PlannedExecutionKind::LaunchInstallerExecutable,
             program: Some(artifact_location.clone()),
-            arguments: Vec::new(),
+            arguments: installer_arguments_for_artifact(
+                artifact,
+                resource_path,
+                effective_target_app_path.as_deref(),
+            ),
             working_directory: cached_artifact
                 .and_then(|cached| cached.path.parent().map(Path::to_path_buf)),
             artifact_location,
@@ -453,6 +591,64 @@ fn planned_execution_for_artifact(
             artifact_location,
             verification_paths,
         },
+    }
+}
+
+fn installer_arguments_for_artifact(
+    artifact: &ArtifactDescriptor,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+) -> Vec<String> {
+    if artifact.package_id == crate::package::PACKAGE_REAPER
+        && artifact.kind == ArtifactKind::Installer
+        && matches!(artifact.platform, Platform::Windows)
+    {
+        return reaper_windows_installer_arguments(resource_path, target_app_path);
+    }
+
+    Vec::new()
+}
+
+fn reaper_windows_installer_arguments(
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+) -> Vec<String> {
+    let install_destination = target_app_path
+        .map(reaper_install_destination)
+        .unwrap_or_else(|| resource_path.to_path_buf());
+    let mut arguments = Vec::new();
+    if target_likely_portable(resource_path, target_app_path) {
+        arguments.push("/PORTABLE".to_string());
+    }
+    arguments.push("/S".to_string());
+    arguments.push(format!("/D={}", install_destination.display()));
+    arguments
+}
+
+fn effective_target_app_path(
+    artifact: &ArtifactDescriptor,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+) -> Option<PathBuf> {
+    target_app_path
+        .map(Path::to_path_buf)
+        .or_else(|| inferred_target_app_path(artifact.platform, resource_path))
+}
+
+fn inferred_target_app_path(platform: Platform, resource_path: &Path) -> Option<PathBuf> {
+    if let Some(standard) = default_standard_installation(platform)
+        .filter(|installation| installation.resource_path == resource_path)
+    {
+        return Some(standard.app_path);
+    }
+
+    Some(portable_target_app_path(platform, resource_path))
+}
+
+fn portable_target_app_path(platform: Platform, resource_path: &Path) -> PathBuf {
+    match platform {
+        Platform::Windows => resource_path.join("reaper.exe"),
+        Platform::MacOs => resource_path.join("REAPER.app"),
     }
 }
 
@@ -823,7 +1019,18 @@ fn path_is_same_or_nested(path: &Path, root: &Path) -> bool {
 }
 
 fn normalize_path_for_match(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    strip_windows_verbatim_prefix(
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+    )
+}
+
+fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let raw = path.display().to_string();
+    if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path
+    }
 }
 
 #[cfg(test)]
@@ -1007,7 +1214,7 @@ mod tests {
     fn reports_planned_unattended_support_for_installer_artifacts() {
         assert_eq!(
             super::package_automation_support(PACKAGE_REAPER, Platform::Windows, Architecture::X64),
-            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::VendorInstaller)
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
         );
         assert_eq!(
             super::package_automation_support(PACKAGE_OSARA, Platform::MacOs, Architecture::Arm64),
@@ -1020,6 +1227,52 @@ mod tests {
                 Architecture::X64
             ),
             PackageAutomationSupport::Direct
+        );
+    }
+
+    #[test]
+    fn dry_run_reaper_windows_uses_unattended_plan() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+        std::fs::create_dir_all(&resource_path).unwrap();
+        std::fs::write(resource_path.join("reaper.ini"), b"portable").unwrap();
+
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact(
+                PACKAGE_REAPER,
+                ArtifactKind::Installer,
+                "reaper-install.exe",
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: true,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: Some(resource_path.join("reaper.exe")),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(
+            report.items[0].status,
+            PackageOperationStatus::PlannedUnattended
+        );
+        assert!(report.items[0].manual_instruction.is_none());
+        assert_eq!(
+            report.items[0]
+                .planned_execution
+                .as_ref()
+                .unwrap()
+                .arguments,
+            vec![
+                "/PORTABLE".to_string(),
+                "/S".to_string(),
+                format!("/D={}", resource_path.display()),
+            ]
         );
     }
 
@@ -1169,31 +1422,17 @@ mod tests {
     #[test]
     fn reaper_manual_instruction_mentions_portable_install_folder() {
         let dir = tempdir().unwrap();
-        let cache = tempdir().unwrap();
         let resource_path = dir.path().join("PortableREAPER");
-        let report = execute_resolved_package_operation(
+        let instruction = super::preview_manual_instruction(
+            PACKAGE_REAPER,
+            ArtifactKind::Installer,
             &resource_path,
-            vec![artifact(
-                PACKAGE_REAPER,
-                ArtifactKind::Installer,
-                "reaper-install.exe",
-            )],
-            cache.path(),
-            &PackageOperationOptions {
-                dry_run: true,
-                allow_reaper_running: false,
-                stage_unsupported: false,
-                replace_osara_keymap: false,
-                target_app_path: Some(resource_path.join("reaper.exe")),
-            },
-        )
-        .unwrap();
+            Some(&resource_path.join("reaper.exe")),
+            false,
+        );
 
         assert!(
-            report.items[0]
-                .manual_instruction
-                .as_ref()
-                .unwrap()
+            instruction
                 .steps
                 .iter()
                 .any(|step| step.contains("Portable install") && step.contains("PortableREAPER"))

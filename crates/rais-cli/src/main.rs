@@ -1000,6 +1000,22 @@ fn print_package_operation_report(report: &PackageOperationReport) {
         println!("  Version: {}", item.artifact.version);
         println!("  URL: {}", item.artifact.url);
         println!("  Message: {}", item.message);
+        if let Some(plan) = &item.planned_execution {
+            println!("  Planned execution: {:?}", plan.kind);
+            println!("    Artifact: {}", plan.artifact_location);
+            if let Some(program) = &plan.program {
+                println!("    Program: {program}");
+            }
+            if !plan.arguments.is_empty() {
+                println!("    Arguments: {}", plan.arguments.join(" "));
+            }
+            if let Some(path) = &plan.working_directory {
+                println!("    Working directory: {}", path.display());
+            }
+            for path in &plan.verification_paths {
+                println!("    Verify: {}", path.display());
+            }
+        }
         if let Some(instruction) = &item.manual_instruction {
             println!("  Manual step: {}", instruction.title);
             for step in &instruction.steps {

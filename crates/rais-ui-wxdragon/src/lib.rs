@@ -97,6 +97,7 @@ pub struct WizardText {
     pub packages_osara_keymap_replace_note: String,
     pub package_details_handling_prefix: String,
     pub package_handling_automatic: String,
+    pub package_handling_unattended: String,
     pub package_handling_planned: String,
     pub package_handling_manual: String,
     pub package_handling_unavailable: String,
@@ -492,6 +493,7 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
             .text("wizard-package-details-handling-prefix")
             .value,
         package_handling_automatic: localizer.text("wizard-package-handling-automatic").value,
+        package_handling_unattended: localizer.text("wizard-package-handling-unattended").value,
         package_handling_planned: localizer.text("wizard-package-handling-planned").value,
         package_handling_manual: localizer.text("wizard-package-handling-manual").value,
         package_handling_unavailable: localizer.text("wizard-package-handling-unavailable").value,
@@ -1857,6 +1859,9 @@ fn package_handling_summary(
 ) -> (String, bool) {
     match package_automation_support(package_id, platform, architecture) {
         PackageAutomationSupport::Direct => (text.package_handling_automatic.clone(), false),
+        PackageAutomationSupport::AvailableUnattended(_) => {
+            (text.package_handling_unattended.clone(), false)
+        }
         PackageAutomationSupport::PlannedUnattended(_) => {
             (text.package_handling_planned.clone(), true)
         }
@@ -2578,8 +2583,13 @@ mod tests {
 
         assert_eq!(reaper.display_name, "REAPER");
         assert_eq!(reaper.action, PlanActionKind::Install);
-        assert!(reaper.manual_attention_expected);
+        assert!(!reaper.manual_attention_expected);
         assert!(reaper.details.contains("Handling:"));
+        assert!(
+            reaper
+                .details
+                .contains(&model.text.package_handling_unattended)
+        );
         assert!(reaper.selected);
     }
 
@@ -2636,7 +2646,7 @@ mod tests {
             .package_rows
             .iter()
             .enumerate()
-            .filter_map(|(index, row)| (row.package_id == PACKAGE_REAPER).then_some(index))
+            .filter_map(|(index, row)| (row.package_id == PACKAGE_OSARA).then_some(index))
             .collect::<Vec<_>>();
 
         let preview = super::build_review_preview_for_package_rows(
@@ -2656,7 +2666,7 @@ mod tests {
                 .any(|line| line == "Manual attention expected")
         );
         assert!(preview.lines.iter().any(|line| {
-            line.contains("REAPER")
+            line.contains("OSARA")
                 && line.contains(
                     "RAIS is designed to run this package's installer or setup routine itself",
                 )
@@ -2665,9 +2675,41 @@ mod tests {
             line.contains("RAIS will download the upstream installer during the run.")
         }));
         assert!(
-            preview.lines.iter().any(|line| {
-                line.contains("Portable install") && line.contains("PortableREAPER")
-            })
+            preview
+                .lines
+                .iter()
+                .any(|line| line.contains("target, choose this resource or portable folder"))
+        );
+    }
+
+    #[test]
+    fn reaper_windows_row_uses_unattended_handling() {
+        let dir = tempdir().unwrap();
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let target = custom_portable_target_row(&model, dir.path().join("PortableREAPER"), true);
+        let plan = super::wizard_package_plan_for_target(&model, Some(&target)).unwrap();
+        let reaper_row = plan
+            .package_rows
+            .iter()
+            .find(|row| row.package_id == PACKAGE_REAPER)
+            .unwrap();
+
+        assert!(!reaper_row.manual_attention_expected);
+        assert_eq!(
+            reaper_row.handling_summary,
+            model.text.package_handling_unattended
         );
     }
 
@@ -2799,8 +2841,8 @@ mod tests {
             action: PlanActionKind::Install,
             action_label: "Install".to_string(),
             reason: "Missing".to_string(),
-            handling_summary: model.text.package_handling_manual.clone(),
-            manual_attention_expected: true,
+            handling_summary: model.text.package_handling_unattended.clone(),
+            manual_attention_expected: false,
         }];
 
         let preview = super::build_review_preview_for_package_rows(
