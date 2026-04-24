@@ -3,18 +3,18 @@
 Status: initial design, 2026-04-23
 
 RAIS means "REAPER Accessibility Installation Software" and is pronounced like
-"rice". Its job is to install and update REAPER, OSARA, SWS, ReaPack, and later
-additional packages, while keeping the workflow usable with screen readers on
-Windows and macOS.
+"rice". Its job is to install and update REAPER, OSARA, SWS, ReaPack,
+ReaKontrol, and later additional packages, while keeping the workflow usable
+with screen readers on Windows and macOS.
 
 ## Product Goals
 
 - Install into an existing standard REAPER installation.
 - Install into an existing portable REAPER installation.
 - Install REAPER and all selected accessibility packages from scratch.
-- Fully automate installation and update of REAPER, OSARA, SWS, and ReaPack
-  without requiring the user to run vendor installers or copy files manually in
-  the normal supported flow.
+- Fully automate installation and update of REAPER, OSARA, SWS, ReaPack, and
+  ReaKontrol without requiring the user to run vendor installers or copy files
+  manually in the normal supported flow.
 - Update REAPER and selected packages when newer versions are available.
 - Detect installed versions where technically possible and clearly report
   "installed, version unknown" where it is not reliable.
@@ -28,6 +28,13 @@ Windows and macOS.
 - Make RAIS itself as portable as possible: the preferred distribution is one
   executable file that can be downloaded, launched, used, and deleted without a
   RAIS installer, companion resource folder, or permanent RAIS installation.
+- Build Windows and macOS artifacts automatically for every push in GitHub
+  Actions so every commit can be tested from real binaries.
+- Publish signed release artifacts through a GitHub release pipeline so tagged
+  versions become downloadable binaries with checksums and update metadata.
+- Let RAIS detect when a newer RAIS version has been released and update itself
+  with as little user interaction as practical while preserving accessibility
+  and platform trust requirements.
 
 ## Source-Backed Facts
 
@@ -72,6 +79,14 @@ Windows and macOS.
   <https://raw.githubusercontent.com/cfillion/reapack/master/Extensions/ReaPack.ext>,
   <https://raw.githubusercontent.com/cfillion/reapack/master/src/buildinfo.rc>,
   and <https://raw.githubusercontent.com/cfillion/reapack/master/src/registry.cpp>
+- ReaKontrol is a REAPER extension for Native Instruments Komplete Kontrol
+  keyboards. Its site says the current version is 2026.2.16.100, it requires
+  REAPER 6.37 or later, and there is no installer: on Windows and macOS the
+  user installs it by copying the downloaded file into REAPER's `UserPlugins`
+  folder. The site also documents `reaKontrol/fxMaps` under the REAPER resource
+  path for additional mapping files. Sources:
+  <https://reakontrol.jantrid.net/> and
+  <https://github.com/jcsteh/reaKontrol>
 - wxWidgets can use native controls on Windows and has MSAA accessibility
   support through `wxAccessible`, but that documented custom accessibility class
   is Windows/MSAA-specific. Sources:
@@ -114,14 +129,14 @@ rewriting the installer engine.
 ## Primary Automation Requirement
 
 Full unattended installation is part of the product definition, not a stretch
-goal. For the first-class supported package set of REAPER, OSARA, SWS, and
-ReaPack, RAIS should converge on one shared unattended execution path used by
-both the GUI and CLI.
+goal. For the first-class supported package set of REAPER, OSARA, SWS,
+ReaPack, and ReaKontrol, RAIS should converge on one shared unattended
+execution path used by both the GUI and CLI.
 
 Design rules:
 
 - The normal supported path must not stop at "download and tell the user what to
-  do next" for REAPER, OSARA, SWS, or ReaPack.
+  do next" for REAPER, OSARA, SWS, ReaPack, or ReaKontrol.
 - For executable installers, RAIS itself must download, verify, launch, wait
   for completion, evaluate exit status, and validate the installed result in the
   same run.
@@ -184,6 +199,156 @@ Implementation rules:
   requires a signed app bundle layout.
 - Any temporary extraction of embedded helpers must go to a temporary directory,
   be integrity-checked, and be cleaned up best-effort.
+- The same portability rule applies to self-update: updated binaries should
+  replace the old RAIS binary or app bundle in place, not install a separate
+  long-lived updater application.
+
+## CI/CD And Release Delivery
+
+RAIS should have first-class delivery automation from the beginning. The design
+target is that every push produces testable platform artifacts and every tagged
+release produces end-user release assets plus update metadata.
+
+GitHub Actions build pipeline for every push:
+
+- Trigger on every push and pull request.
+- Build RAIS on at least:
+  - `windows-latest` for the Windows executable
+  - `macos-latest` for the macOS app or executable artifact
+- Run the normal Rust checks on both platforms:
+  - formatting
+  - unit/integration tests
+  - release-mode build
+- Build the distributable artifact shape, not only debug binaries:
+  - Windows: portable `RAIS.exe`
+  - macOS: self-contained signed app bundle if required for GUI launch, or a
+    single executable for CLI-only artifacts
+- Upload build artifacts to the workflow run so every push has downloadable test
+  binaries.
+- Publish checksums for workflow artifacts so testers can verify what they ran.
+
+GitHub release pipeline:
+
+- Trigger on a version tag such as `vX.Y.Z`, or on an explicit release workflow
+  dispatch that creates the tag as part of the release process.
+- Rebuild Windows and macOS release artifacts from the tagged commit in a clean
+  GitHub Actions environment.
+- Produce release attachments:
+  - Windows artifact
+  - macOS artifact
+  - SHA-256 checksums
+  - machine-readable release/update manifest
+- Apply code signing where available:
+  - Windows Authenticode signing for `RAIS.exe`
+  - macOS code signing and notarization for the app bundle or executable
+- Generate release notes from a changelog or tag diff, with manual override for
+  accessibility-relevant release notes.
+- Publish the GitHub Release only after artifacts, checksums, signing, and
+  update metadata are complete.
+
+Release metadata:
+
+- Each published release should expose enough machine-readable metadata for
+  RAIS self-update, including:
+  - semantic version
+  - release channel (`stable`, later optionally `beta`)
+  - publish timestamp
+  - per-platform download URL
+  - expected SHA-256
+  - minimum supported previous RAIS version if a breaking updater transition is
+    ever needed
+- The release workflow should emit a stable JSON manifest asset or equivalent
+  update feed derived from the GitHub Release so the updater does not need to
+  scrape human-written release notes.
+
+Suggested workflow layout:
+
+```text
+.github/
+  workflows/
+    ci.yml
+    release.yml
+```
+
+## RAIS Self-Update
+
+RAIS should be able to update itself from GitHub Releases with minimal user
+interaction while staying accessible and verifiable.
+
+Updater design goals:
+
+- Check for RAIS updates separately from package updates for REAPER and its
+  extensions.
+- Use the GitHub release/update manifest as the authoritative source for the
+  latest RAIS version and platform artifact URL.
+- Compare versions using strict semantic versioning for RAIS itself.
+- Default behavior should be:
+  - detect newer RAIS release
+  - present a short accessible prompt
+  - download in the background after confirmation
+  - apply the update with one restart/replace step
+- Advanced later option:
+  - support a user preference for automatically downloading stable RAIS updates
+    and applying them on the next restart
+
+Updater flow:
+
+1. On startup, or on explicit `Check for RAIS updates`, fetch the signed or
+   checksum-validated release manifest from the configured GitHub release
+   channel.
+2. If the current RAIS version is already current, report that plainly.
+3. If a newer version exists, show:
+   - current version
+   - available version
+   - release channel
+   - short release notes or a link to them
+4. After confirmation, download the platform artifact to a temporary update
+   staging directory.
+5. Verify:
+   - HTTPS transport
+   - expected SHA-256 from release metadata
+   - Windows signature or macOS code signing/notarization where applicable
+6. Stage the replacement.
+7. Replace RAIS with the new version using the smallest platform-appropriate
+   restart flow.
+8. Relaunch the updated RAIS instance and confirm the new version.
+
+Platform update strategy:
+
+- Windows single-executable build:
+  - RAIS cannot replace its own running `.exe` in place.
+  - Stage the new executable beside the current one or in a temporary
+    directory.
+  - Launch a very small temporary updater helper process or script whose only
+    job is to wait for RAIS to exit, swap the executable, and relaunch RAIS.
+  - The helper must be ephemeral, integrity-checked, and cleaned up best-effort.
+- macOS app bundle build:
+  - Stage the new signed/notarized app bundle in a temporary directory.
+  - After RAIS exits, replace the existing bundle atomically where possible and
+    relaunch it.
+  - Preserve the app bundle path so Dock aliases and user expectations do not
+    break.
+
+Updater safety rules:
+
+- Never apply a RAIS self-update while a package installation/update operation
+  is running.
+- Never replace RAIS with an unsigned or checksum-mismatched artifact.
+- Keep one rollback copy of the previously running RAIS binary or bundle until
+  the first successful restart of the updated version.
+- Log the update attempt and result in a plain text and machine-readable report.
+- If self-update fails, RAIS must continue running the existing version and
+  report the error without leaving itself half-replaced.
+
+CLI and UI expectations:
+
+- CLI should expose explicit commands later such as:
+  - `rais self-update check`
+  - `rais self-update apply`
+- GUI should expose:
+  - automatic startup check
+  - manual `Check for RAIS updates`
+  - accessible progress/status during download and replacement
 
 ## Accessibility Rules
 
@@ -217,7 +382,8 @@ The UI should be a short wizard with no hidden advanced requirements.
    - Let the user choose one target.
 
 3. Packages
-   - Check boxes for REAPER, OSARA, SWS, ReaPack, and later packages.
+   - Check boxes for REAPER, OSARA, SWS, ReaPack, ReaKontrol, and later
+     packages.
    - Each row shows installed version, available version, action, and notes.
    - Defaults: install or update missing/outdated recommended accessibility
      packages.
@@ -308,6 +474,7 @@ should rely on. Detection must be package-specific and confidence-scored.
 | OSARA | RAIS receipt after RAIS-managed install; Windows standard uninstall `DisplayVersion` | binary string scan for embedded `OSARA_VERSION`; presence of `reaper_osara*` | Portable/mac installs do not have a universal external version registry. Binary scan is useful but should be marked best-effort. |
 | SWS | RAIS receipt; Windows PE `ProductVersion`; ReaPack registry if installed by ReaPack | binary metadata/string scan; presence of `reaper_sws*` | Prefer ReaPack registry for ReaPack-managed SWS. |
 | ReaPack | RAIS receipt; Windows PE `ProductVersion`; ReaPack self-entry in `ReaPack/registry.db` after first launch | presence of `reaper_reapack*` | The registry DB may not exist until ReaPack has run inside REAPER. |
+| ReaKontrol | RAIS receipt after RAIS-managed install | best-effort binary metadata if available; presence of `reaper_kontrol*` | No installer or registry-based detector is expected; validate binary metadata quality during implementation. |
 | ReaPack packages | `ReaPack/registry.db` table `entries.version` | none | This is the best source for packages ReaPack knows about. |
 
 RAIS should keep its own receipt in each REAPER resource path:
@@ -391,6 +558,11 @@ strategies:
 - ReaPack:
   - install unattended by placing the correct verified binary into
     `UserPlugins` for the selected REAPER architecture.
+- ReaKontrol:
+  - install unattended by placing the correct verified binary into
+    `UserPlugins` for the selected REAPER architecture or platform,
+  - preserve existing `reaKontrol/fxMaps` user mapping data and treat it as
+    user content, not package-owned files.
 
 ## Install Targets
 
@@ -404,6 +576,8 @@ Resource path layout:
   KeyMaps/
   ReaPack/
     registry.db
+  reaKontrol/
+    fxMaps/
   osara/
     locale/
   RAIS/
@@ -428,6 +602,13 @@ Extension files:
 - ReaPack:
   - install the binary matching REAPER architecture, not merely the operating
     system architecture.
+- ReaKontrol Windows:
+  - `UserPlugins/reaper_kontrol.dll`
+- ReaKontrol macOS:
+  - `UserPlugins/reaper_kontrol.dylib`
+- ReaKontrol support data:
+  - preserve `reaKontrol/fxMaps/` and any user-created map files during
+    install and update.
 
 ## Update Flow
 
@@ -463,6 +644,8 @@ Extension files:
 - When OSARA is selected, back up `reaper-kb.ini` and replace it with the OSARA
   key map by default unless the user explicitly asks to preserve the current key
   map instead.
+- Do not overwrite or delete user-created `reaKontrol/fxMaps` content during a
+  ReaKontrol install or update.
 - Back up every overwritten file under `RAIS/backups/<timestamp>/`.
 - Keep a machine-readable operation report and a plain text report.
 - Treat non-writable targets as a planning error before downloading anything.
@@ -535,6 +718,10 @@ Automated tests:
 - backup and rollback
 - embedded-resource availability without external files
 - release packaging checks for accidental runtime file dependencies
+- GitHub Actions workflow validation for push builds and tagged releases
+- release-manifest generation and checksum publication
+- RAIS self-update version comparison and channel selection
+- self-update staging, verification, rollback, and restart handoff logic
 
 Manual accessibility tests:
 
@@ -557,11 +744,18 @@ Install tests:
 - unattended OSARA install end-to-end
 - unattended SWS install end-to-end
 - unattended ReaPack install end-to-end
+- unattended ReaKontrol install end-to-end
+- GitHub Actions push build produces downloadable Windows and macOS artifacts
+- GitHub release workflow publishes release assets, checksums, and update
+  metadata
 - launch RAIS from a temporary folder with no neighboring resource files
 - existing user key map preserved
 - OSARA key map replacement with backup
 - ReaPack already installed with populated registry
+- existing `reaKontrol/fxMaps` user maps preserved
 - extension installed manually with unknown version
+- RAIS self-update from one released version to the next on Windows
+- RAIS self-update from one released version to the next on macOS
 
 ## Open Questions
 
@@ -574,6 +768,20 @@ Install tests:
 - Confirm SWS and ReaPack macOS binaries expose reliable version metadata
   outside ReaPack's registry DB. If not, RAIS receipts and ReaPack DB should be
   treated as the reliable sources.
+- Confirm whether ReaKontrol release binaries expose reliable version metadata
+  on Windows and macOS. If not, RAIS receipts plus package-file presence should
+  be treated as the reliable sources.
+- Decide whether the RAIS update feed should be a GitHub release asset JSON
+  generated by `release.yml`, a repository-hosted appcast/manifest file, or
+  both.
+- Validate the exact Windows self-update replacement mechanism for a running
+  single executable: temporary helper executable, script, or another minimal
+  relaunch approach.
+- Validate the exact macOS self-update replacement mechanism for a signed and
+  notarized app bundle without breaking code signing, quarantine, or app path
+  stability.
+- Decide how stable and beta RAIS release channels should be represented in the
+  GitHub release/update metadata and in the UI.
 - Decide whether first-version RAIS should install SWS directly from SWS
   release assets or through an unattended ReaPack-driven path after ReaPack is
   present. The design target remains unattended either way.
