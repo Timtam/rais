@@ -1710,6 +1710,10 @@ mod tests {
         assert_eq!(model.controls.next_label, "&Next");
         assert_eq!(model.controls.install_label, "&Install");
         assert_eq!(model.controls.close_label, "&Close");
+        assert_eq!(
+            model.text.packages_osara_keymap_replace_label,
+            "Replace current key map with OSARA key map"
+        );
         assert_eq!(model.text.done_launch_reaper_label, "&Launch REAPER");
         assert_eq!(model.text.done_open_resource_label, "&Open resource folder");
         assert_eq!(model.text.done_save_report_label, "&Save report");

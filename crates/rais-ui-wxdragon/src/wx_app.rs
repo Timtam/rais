@@ -768,7 +768,8 @@ fn build_packages_page(
     let osara_keymap_replace = CheckBox::builder(page)
         .with_label(&model.text.packages_osara_keymap_replace_label)
         .build();
-    osara_keymap_replace.set_name("rais-osara-keymap-replace");
+    osara_keymap_replace.set_name(&model.text.packages_osara_keymap_replace_label);
+    osara_keymap_replace.set_label(&model.text.packages_osara_keymap_replace_label);
     osara_keymap_replace.add_style(WindowStyle::TabStop);
     osara_keymap_replace.set_can_focus(false);
     sizer.add(
@@ -784,6 +785,7 @@ fn build_packages_page(
         .with_size(Size::new(-1, 68))
         .build();
     osara_keymap_note.set_name("rais-osara-keymap-note");
+    osara_keymap_note.enable(false);
     osara_keymap_note.set_can_focus(false);
     sizer.add(&osara_keymap_note, 0, SizerFlag::All | SizerFlag::Expand, 6);
 
@@ -1146,6 +1148,8 @@ fn sync_osara_keymap_widgets(
         osara_selected,
         osara_keymap_choice(checkbox),
     ));
+    note.enable(osara_selected);
+    note.set_can_focus(osara_selected);
 }
 
 fn portable_choice_index(model: &WizardModel) -> usize {
