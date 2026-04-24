@@ -9,6 +9,7 @@ use rais_core::detection::{
 };
 use rais_core::latest::fetch_latest_versions;
 use rais_core::localization::{DEFAULT_LOCALE, Localizer};
+use rais_core::metadata::file_version;
 use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
 use rais_core::operation::{PackageOperationStatus, preview_manual_instruction};
 use rais_core::package::{
@@ -132,6 +133,7 @@ pub struct WizardText {
     pub done_status_no_packages: String,
     pub done_launch_reaper_label: String,
     pub done_open_resource_label: String,
+    pub done_rescan_label: String,
     pub done_save_report_label: String,
     pub done_no_reaper_app: String,
     pub done_no_report: String,
@@ -139,6 +141,7 @@ pub struct WizardText {
     pub done_report_save_error_prefix: String,
     pub done_launch_reaper_error_prefix: String,
     pub done_open_resource_error_prefix: String,
+    pub done_rescan_error_prefix: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -536,6 +539,11 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
             "wizard-done-open-resource",
             "wizard-done-open-resource-mnemonic",
         ),
+        done_rescan_label: localized_wx_mnemonic_label(
+            localizer,
+            "wizard-done-rescan",
+            "wizard-done-rescan-mnemonic",
+        ),
         done_save_report_label: localized_wx_mnemonic_label(
             localizer,
             "wizard-done-save-report",
@@ -551,6 +559,7 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         done_open_resource_error_prefix: localizer
             .text("wizard-done-open-resource-error-prefix")
             .value,
+        done_rescan_error_prefix: localizer.text("wizard-done-rescan-error-prefix").value,
     }
 }
 
@@ -636,53 +645,61 @@ fn target_rows(
         .iter()
         .enumerate()
         .map(|(index, installation)| {
-            let kind = format!("{:?}", installation.kind);
-            let version = installation
-                .version
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| localizer.text("detect-version-unknown").value);
-            let architecture = architecture_text(localizer, installation.architecture);
-            TargetRow {
-                label: localizer
-                    .format(
-                        "wizard-target-row",
-                        &[
-                            ("kind", kind.as_str()),
-                            ("version", version.as_str()),
-                            ("path", &installation.resource_path.display().to_string()),
-                        ],
-                    )
-                    .value,
-                details: localizer
-                    .format(
-                        "wizard-target-details",
-                        &[
-                            ("app_path", &installation.app_path.display().to_string()),
-                            ("version", version.as_str()),
-                            ("architecture", architecture.as_str()),
-                            ("path", &installation.resource_path.display().to_string()),
-                            (
-                                "writable",
-                                yes_no(localizer, installation.writable).as_str(),
-                            ),
-                            ("confidence", &format!("{:?}", installation.confidence)),
-                        ],
-                    )
-                    .value,
-                app_path: installation
-                    .app_path
-                    .exists()
-                    .then(|| installation.app_path.clone()),
-                planned_app_path: installation.app_path.clone(),
-                path: installation.resource_path.clone(),
-                version: installation.version.clone(),
-                portable: installation.kind == InstallationKind::Portable,
-                selected: Some(index) == selected_target_index,
-                writable: installation.writable,
-            }
+            target_row(
+                localizer,
+                installation,
+                Some(index) == selected_target_index,
+            )
         })
         .collect()
+}
+
+fn target_row(localizer: &Localizer, installation: &Installation, selected: bool) -> TargetRow {
+    let kind = format!("{:?}", installation.kind);
+    let version = installation
+        .version
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| localizer.text("detect-version-unknown").value);
+    let architecture = architecture_text(localizer, installation.architecture);
+    TargetRow {
+        label: localizer
+            .format(
+                "wizard-target-row",
+                &[
+                    ("kind", kind.as_str()),
+                    ("version", version.as_str()),
+                    ("path", &installation.resource_path.display().to_string()),
+                ],
+            )
+            .value,
+        details: localizer
+            .format(
+                "wizard-target-details",
+                &[
+                    ("app_path", &installation.app_path.display().to_string()),
+                    ("version", version.as_str()),
+                    ("architecture", architecture.as_str()),
+                    ("path", &installation.resource_path.display().to_string()),
+                    (
+                        "writable",
+                        yes_no(localizer, installation.writable).as_str(),
+                    ),
+                    ("confidence", &format!("{:?}", installation.confidence)),
+                ],
+            )
+            .value,
+        app_path: installation
+            .app_path
+            .exists()
+            .then(|| installation.app_path.clone()),
+        planned_app_path: installation.app_path.clone(),
+        path: installation.resource_path.clone(),
+        version: installation.version.clone(),
+        portable: installation.kind == InstallationKind::Portable,
+        selected,
+        writable: installation.writable,
+    }
 }
 
 pub fn install_request_from_model(
@@ -1161,7 +1178,13 @@ pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: 
         model.text.common_no.clone()
     };
     let app_path = portable_reaper_app_path(model.platform, &path);
-    let version_text = unknown_version_text(model);
+    let version = app_path
+        .as_ref()
+        .and_then(|path| file_version(path).ok().flatten());
+    let version_text = version
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| unknown_version_text(model));
     let architecture_text = if app_path.is_some() {
         match model.architecture {
             Architecture::X86 => "x86".to_string(),
@@ -1201,10 +1224,46 @@ pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: 
         planned_app_path: app_path
             .unwrap_or_else(|| default_portable_reaper_app_path(model.platform, &path)),
         path,
-        version: None,
+        version,
         portable: true,
         selected,
         writable,
+    }
+}
+
+pub fn refreshed_target_row(model: &WizardModel, target: &TargetRow) -> TargetRow {
+    if target.portable {
+        return custom_portable_target_row(model, target.path.clone(), target.selected);
+    }
+
+    let installation = Installation {
+        kind: InstallationKind::Standard,
+        platform: model.platform,
+        app_path: target.planned_app_path.clone(),
+        resource_path: target.path.clone(),
+        version: file_version(&target.planned_app_path).ok().flatten(),
+        architecture: Some(model.architecture),
+        writable: is_probably_writable(&target.path),
+        confidence: Confidence::Medium,
+        evidence: Vec::new(),
+    };
+
+    match localizer_from_options(&model.bootstrap_options) {
+        Ok(localizer) => target_row(&localizer, &installation, target.selected),
+        Err(_) => TargetRow {
+            label: target.label.clone(),
+            details: target.details.clone(),
+            app_path: installation
+                .app_path
+                .exists()
+                .then(|| installation.app_path.clone()),
+            planned_app_path: installation.app_path.clone(),
+            path: installation.resource_path.clone(),
+            version: installation.version.clone(),
+            portable: false,
+            selected: target.selected,
+            writable: installation.writable,
+        },
     }
 }
 
@@ -1999,7 +2058,7 @@ mod tests {
 
     use super::{
         OsaraKeymapChoice, UiBootstrapOptions, WizardInstallRequest, custom_portable_target_row,
-        localizer_from_options, model_from_plan,
+        localizer_from_options, model_from_plan, refreshed_target_row,
     };
 
     #[test]
@@ -2041,6 +2100,7 @@ mod tests {
         );
         assert_eq!(model.text.done_launch_reaper_label, "&Launch REAPER");
         assert_eq!(model.text.done_open_resource_label, "&Open resource folder");
+        assert_eq!(model.text.done_rescan_label, "&Rescan target");
         assert_eq!(model.text.done_save_report_label, "&Save report");
     }
 
@@ -2312,6 +2372,58 @@ mod tests {
 
         assert_eq!(row.app_path, Some(resource_path.join("reaper.exe")));
         assert_eq!(row.planned_app_path, resource_path.join("reaper.exe"));
+    }
+
+    #[test]
+    fn refreshed_standard_target_row_detects_app_that_appeared_after_startup() {
+        let dir = tempdir().unwrap();
+        let resource_path = dir.path().join("REAPER");
+        let app_path = dir
+            .path()
+            .join("Program Files")
+            .join("REAPER")
+            .join("reaper.exe");
+        std::fs::create_dir_all(&resource_path).unwrap();
+        std::fs::create_dir_all(app_path.parent().unwrap()).unwrap();
+
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let installation = Installation {
+            kind: InstallationKind::Standard,
+            platform: Platform::Windows,
+            app_path: app_path.clone(),
+            resource_path: resource_path.clone(),
+            version: None,
+            architecture: Some(Architecture::X64),
+            writable: true,
+            confidence: Confidence::Low,
+            evidence: Vec::new(),
+        };
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            vec![installation],
+            Some(0),
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+
+        assert!(model.target_rows[0].app_path.is_none());
+
+        std::fs::write(&app_path, b"").unwrap();
+
+        let refreshed = refreshed_target_row(&model, &model.target_rows[0]);
+
+        assert_eq!(refreshed.app_path, Some(app_path.clone()));
+        assert_eq!(refreshed.planned_app_path, app_path);
+        assert!(
+            refreshed
+                .details
+                .contains(&resource_path.display().to_string())
+        );
     }
 
     #[test]

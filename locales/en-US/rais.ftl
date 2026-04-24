@@ -137,6 +137,8 @@ wizard-done-launch-reaper = Launch REAPER
 wizard-done-launch-reaper-mnemonic = L
 wizard-done-open-resource = Open resource folder
 wizard-done-open-resource-mnemonic = O
+wizard-done-rescan = Rescan target
+wizard-done-rescan-mnemonic = R
 wizard-done-save-report = Save report
 wizard-done-save-report-mnemonic = S
 wizard-done-no-reaper-app = No launchable REAPER application is known for this target.
@@ -145,6 +147,7 @@ wizard-done-report-saved-prefix = Report saved
 wizard-done-report-save-error-prefix = Report could not be saved
 wizard-done-launch-reaper-error-prefix = REAPER could not be launched
 wizard-done-open-resource-error-prefix = Resource folder could not be opened
+wizard-done-rescan-error-prefix = Target could not be rescanned
 
 # Summary and report lines shown in the wizard progress/done views and saved outcome reports.
 wizard-summary-target = Target: { $path }

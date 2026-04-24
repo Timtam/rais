@@ -13,7 +13,7 @@ use rais_ui_wxdragon::{
     WizardOutcomeReport, build_review_preview_for_package_rows, custom_portable_target_row,
     execute_wizard_install, install_request_from_target_and_rows, load_wizard_model,
     osara_keymap_note, osara_selected_for_rows, preview_manual_instruction_lines,
-    save_wizard_outcome_report, wizard_outcome_report_from_error,
+    refreshed_target_row, save_wizard_outcome_report, wizard_outcome_report_from_error,
     wizard_outcome_report_from_success, wizard_package_plan_for_target,
 };
 use wxdragon::prelude::*;
@@ -41,6 +41,7 @@ struct WizardWidgets {
     done_status: TextCtrl,
     done_launch_reaper: Button,
     done_open_resource: Button,
+    done_rescan: Button,
     done_save_report: Button,
 }
 
@@ -286,6 +287,7 @@ pub fn run() {
                 install.enable(false);
                 widgets.done_launch_reaper.enable(false);
                 widgets.done_open_resource.enable(false);
+                widgets.done_rescan.enable(false);
                 widgets.done_save_report.enable(false);
                 widgets
                     .progress_status
@@ -354,6 +356,7 @@ pub fn run() {
                             .done_launch_reaper
                             .enable(clone_last_path(&last_reaper_app_path).is_some());
                         widgets.done_save_report.enable(false);
+                        widgets.done_rescan.enable(true);
                         current_step.store(DONE_STEP, Ordering::SeqCst);
                         update_navigation(
                             DONE_STEP,
@@ -423,6 +426,7 @@ pub fn run() {
                                     .done_launch_reaper
                                     .enable(clone_last_path(&ui_last_reaper_app_path).is_some());
                                 widgets.done_open_resource.enable(true);
+                                widgets.done_rescan.enable(true);
                                 widgets.done_save_report.enable(true);
                             }
                             Err(error) => {
@@ -451,6 +455,7 @@ pub fn run() {
                                 widgets.done_open_resource.enable(
                                     clone_last_resource_path(&ui_last_resource_path).is_some(),
                                 );
+                                widgets.done_rescan.enable(true);
                                 widgets.done_save_report.enable(true);
                             }
                         }
@@ -538,6 +543,75 @@ pub fn run() {
             });
         }
 
+        {
+            let book = book;
+            let step_label = step_label;
+            let back = back;
+            let next = next;
+            let install = install;
+            let current_step = Arc::clone(&current_step);
+            let labels = Arc::clone(&labels);
+            let model = Arc::clone(&model);
+            let widgets = wizard_widgets;
+            let package_rows = Rc::clone(&package_rows);
+            let package_notes = Rc::clone(&package_notes);
+            let can_install = Rc::clone(&can_install);
+            let review_can_install = Rc::clone(&review_can_install);
+            let last_reaper_app_path = Arc::clone(&last_reaper_app_path);
+            let last_resource_path = Arc::clone(&last_resource_path);
+            widgets.done_rescan.on_click(move |_| {
+                let Some(target) = selected_target_row(&model, &widgets) else {
+                    append_done_status(&widgets.done_status, &model.text.review_no_target);
+                    return;
+                };
+                let refreshed_target = refreshed_target_row(&model, &target);
+                match wizard_package_plan_for_target(&model, Some(&refreshed_target)) {
+                    Ok(plan) => {
+                        *package_rows.borrow_mut() = plan.package_rows;
+                        *package_notes.borrow_mut() = plan.notes;
+                        can_install.set(plan.can_install);
+                        review_can_install.set(false);
+                        refresh_package_checklist(
+                            &widgets.package_checklist,
+                            &widgets.package_details,
+                            &widgets.osara_keymap_replace,
+                            &widgets.osara_keymap_note,
+                            &model,
+                            &package_rows.borrow(),
+                        );
+                        refresh_target_choice(
+                            &model,
+                            &widgets.target_choice,
+                            refreshed_target_index(&model, &widgets),
+                            &refreshed_target,
+                        );
+                        widgets.target_details.set_value(&refreshed_target.details);
+                        set_last_path(&last_reaper_app_path, refreshed_target.app_path.clone());
+                        set_last_resource_path(
+                            &last_resource_path,
+                            Some(refreshed_target.path.clone()),
+                        );
+                        current_step.store(PACKAGES_STEP, Ordering::SeqCst);
+                        update_navigation(
+                            PACKAGES_STEP,
+                            &book,
+                            &step_label,
+                            labels.as_slice(),
+                            &back,
+                            &next,
+                            &install,
+                            effective_can_install(&can_install, &review_can_install),
+                            target_is_valid(&model, &widgets),
+                        );
+                    }
+                    Err(error) => append_done_status(
+                        &widgets.done_status,
+                        &format!("{}: {}", model.text.done_rescan_error_prefix, error),
+                    ),
+                }
+            });
+        }
+
         frame.centre();
         frame.show(true);
     });
@@ -577,7 +651,7 @@ fn add_pages(
     );
 
     let done_page = Panel::builder(book).build();
-    let (done_status, done_launch_reaper, done_open_resource, done_save_report) =
+    let (done_status, done_launch_reaper, done_open_resource, done_rescan, done_save_report) =
         build_done_page(&done_page, model);
     book.add_page(&done_page, &model.steps[DONE_STEP].label, false, None);
 
@@ -596,6 +670,7 @@ fn add_pages(
         done_status,
         done_launch_reaper,
         done_open_resource,
+        done_rescan,
         done_save_report,
     }
 }
@@ -661,17 +736,9 @@ fn build_target_page(page: &Panel, model: &WizardModel) -> (Choice, DirPickerCtr
     details.set_name("rais-target-details");
     sizer.add(&details, 1, SizerFlag::All | SizerFlag::Expand, 6);
 
-    let detail_values = Rc::new(
-        model
-            .target_rows
-            .iter()
-            .map(|row| row.details.clone())
-            .collect::<Vec<_>>(),
-    );
     let choice_model = model.clone();
     let choice_portable_folder = portable_folder;
     let choice_details = details;
-    let choice_detail_values = Rc::clone(&detail_values);
     choice.on_selection_changed(move |event| {
         if let Some(index) = event.get_selection() {
             let index = index as usize;
@@ -680,10 +747,7 @@ fn build_target_page(page: &Panel, model: &WizardModel) -> (Choice, DirPickerCtr
             let value = if portable_selected {
                 portable_target_details(&choice_model, &choice_portable_folder)
             } else {
-                choice_detail_values
-                    .get(index)
-                    .cloned()
-                    .unwrap_or_else(|| choice_model.text.target_empty.clone())
+                target_details_for_index(&choice_model, index)
             };
             choice_details.set_value(&value);
         }
@@ -919,7 +983,10 @@ fn build_progress_page(page: &Panel, model: &WizardModel) -> (StaticText, Gauge,
     (status, gauge, details)
 }
 
-fn build_done_page(page: &Panel, model: &WizardModel) -> (TextCtrl, Button, Button, Button) {
+fn build_done_page(
+    page: &Panel,
+    model: &WizardModel,
+) -> (TextCtrl, Button, Button, Button, Button) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(page, &sizer, &model.text.done_heading, "rais-done-heading");
     let status = TextCtrl::builder(page)
@@ -950,6 +1017,14 @@ fn build_done_page(page: &Panel, model: &WizardModel) -> (TextCtrl, Button, Butt
     open_resource.enable(false);
     actions.add(&open_resource, 0, SizerFlag::All, 6);
 
+    let rescan = Button::builder(page)
+        .with_label(&model.text.done_rescan_label)
+        .build();
+    rescan.set_name("rais-done-rescan");
+    rescan.add_style(WindowStyle::TabStop);
+    rescan.set_can_focus(true);
+    actions.add(&rescan, 0, SizerFlag::All, 6);
+
     let save_report = Button::builder(page)
         .with_label(&model.text.done_save_report_label)
         .build();
@@ -961,7 +1036,7 @@ fn build_done_page(page: &Panel, model: &WizardModel) -> (TextCtrl, Button, Butt
 
     sizer.add_sizer(&actions, 0, SizerFlag::All | SizerFlag::Expand, 0);
     page.set_sizer(sizer, true);
-    (status, launch_reaper, open_resource, save_report)
+    (status, launch_reaper, open_resource, rescan, save_report)
 }
 
 fn add_heading(page: &Panel, sizer: &BoxSizer, label: &str, name: &str) {
@@ -990,13 +1065,17 @@ fn selected_target_details(
         Some(index) if index == portable_choice_index(model) => {
             portable_target_details(model, portable_folder)
         }
-        Some(index) => model
-            .target_rows
-            .get(index)
-            .map(|row| row.details.clone())
-            .unwrap_or_else(|| model.text.target_empty.clone()),
+        Some(index) => target_details_for_index(model, index),
         None => model.text.target_empty.clone(),
     }
+}
+
+fn target_details_for_index(model: &WizardModel, index: usize) -> String {
+    model
+        .target_rows
+        .get(index)
+        .map(|row| refreshed_target_row(model, row).details)
+        .unwrap_or_else(|| model.text.target_empty.clone())
 }
 
 fn package_details(row: &rais_ui_wxdragon::PackageRow) -> String {
@@ -1095,7 +1174,40 @@ fn selected_target_row(model: &WizardModel, widgets: &WizardWidgets) -> Option<T
         return portable_folder_path(&widgets.portable_folder)
             .map(|path| custom_portable_target_row(model, path, true));
     }
-    model.target_rows.get(index).cloned()
+    model
+        .target_rows
+        .get(index)
+        .map(|row| refreshed_target_row(model, row))
+}
+
+fn refreshed_target_index(model: &WizardModel, widgets: &WizardWidgets) -> Option<usize> {
+    widgets.target_choice.get_selection().map(|index| {
+        let index = index as usize;
+        if index == portable_choice_index(model) {
+            portable_choice_index(model)
+        } else {
+            index
+        }
+    })
+}
+
+fn refresh_target_choice(
+    model: &WizardModel,
+    choice: &Choice,
+    selected_index: Option<usize>,
+    refreshed_target: &TargetRow,
+) {
+    let selected_index = selected_index.unwrap_or_else(|| portable_choice_index(model));
+    choice.clear();
+    for (index, row) in model.target_rows.iter().enumerate() {
+        if index == selected_index {
+            choice.append(&refreshed_target.label);
+        } else {
+            choice.append(&row.label);
+        }
+    }
+    choice.append(&model.text.target_portable_choice);
+    choice.set_selection(selected_index as u32);
 }
 
 fn checked_package_indices(checklist: &CheckListBox) -> Vec<usize> {
