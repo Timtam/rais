@@ -145,3 +145,25 @@ wizard-done-report-saved-prefix = Report saved
 wizard-done-report-save-error-prefix = Report could not be saved
 wizard-done-launch-reaper-error-prefix = REAPER could not be launched
 wizard-done-open-resource-error-prefix = Resource folder could not be opened
+
+# Summary and report lines shown in the wizard progress/done views and saved outcome reports.
+wizard-summary-target = Target: { $path }
+wizard-summary-portable = Portable target: { $value }
+wizard-summary-dry-run = Dry run: { $value }
+wizard-summary-packages-selected = Packages selected: { $packages }
+wizard-summary-cache = Cache: { $path }
+wizard-summary-planned-app = Planned app path: { $path }
+wizard-summary-error = Error: { $message }
+wizard-summary-resource-items-created = Resource items created: { $count }
+wizard-summary-packages-installed-or-checked = Packages installed or checked: { $count }
+wizard-summary-packages-current = Packages already current: { $count }
+wizard-summary-packages-manual = Packages requiring manual attention: { $count }
+wizard-summary-backup-files-created = Backup files created: { $count }
+wizard-summary-backup-file = Backup file: { $path }
+wizard-summary-receipt-backup = Receipt backup: { $path }
+wizard-summary-backup-manifest = Backup manifest: { $path }
+wizard-summary-package-message = { $package }: { $message }
+wizard-summary-manual-title = { $title }:
+wizard-summary-manual-step =   { $step }
+wizard-summary-manual-note =   Note: { $note }
+wizard-summary-status-finished = Finished. { $installed } package item(s) installed or checked; { $manual } require manual attention.

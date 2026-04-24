@@ -1270,6 +1270,7 @@ pub fn summarize_wizard_error(
     request: &WizardInstallRequest,
     error: &RaisError,
 ) -> WizardInstallSummary {
+    let localizer = localizer_from_options(&model.bootstrap_options).ok();
     let selected_packages = if request.package_ids.is_empty() {
         model.text.review_no_package.clone()
     } else {
@@ -1281,29 +1282,73 @@ pub fn summarize_wizard_error(
             .join(", ")
     };
     let mut detail_lines = vec![
-        format!("Target: {}", request.resource_path.display()),
-        format!(
-            "Portable target: {}",
-            if request.portable {
-                &model.text.common_yes
-            } else {
-                &model.text.common_no
-            }
+        format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-target",
+            &[("path", request.resource_path.display().to_string())],
+            format!("Target: {}", request.resource_path.display()),
         ),
-        format!(
-            "Dry run: {}",
-            if request.dry_run {
-                &model.text.common_yes
-            } else {
-                &model.text.common_no
-            }
+        format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-portable",
+            &[(
+                "value",
+                if request.portable {
+                    model.text.common_yes.clone()
+                } else {
+                    model.text.common_no.clone()
+                },
+            )],
+            format!(
+                "Portable target: {}",
+                if request.portable {
+                    &model.text.common_yes
+                } else {
+                    &model.text.common_no
+                }
+            ),
         ),
-        format!("Packages selected: {selected_packages}"),
-        format!("Cache: {}", request.cache_dir.display()),
+        format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-dry-run",
+            &[(
+                "value",
+                if request.dry_run {
+                    model.text.common_yes.clone()
+                } else {
+                    model.text.common_no.clone()
+                },
+            )],
+            format!(
+                "Dry run: {}",
+                if request.dry_run {
+                    &model.text.common_yes
+                } else {
+                    &model.text.common_no
+                }
+            ),
+        ),
+        format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-packages-selected",
+            &[("packages", selected_packages.clone())],
+            format!("Packages selected: {selected_packages}"),
+        ),
+        format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-cache",
+            &[("path", request.cache_dir.display().to_string())],
+            format!("Cache: {}", request.cache_dir.display()),
+        ),
     ];
 
     if let Some(target_app_path) = &request.target_app_path {
-        detail_lines.push(format!("Planned app path: {}", target_app_path.display()));
+        detail_lines.push(format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-planned-app",
+            &[("path", target_app_path.display().to_string())],
+            format!("Planned app path: {}", target_app_path.display()),
+        ));
     }
 
     if request
@@ -1318,7 +1363,12 @@ pub fn summarize_wizard_error(
         });
     }
 
-    detail_lines.push(format!("Error: {error}"));
+    detail_lines.push(format_localized_message(
+        localizer.as_ref(),
+        "wizard-summary-error",
+        &[("message", error.to_string())],
+        format!("Error: {error}"),
+    ));
 
     WizardInstallSummary {
         status_line: model.text.done_status_error.clone(),
@@ -1365,6 +1415,7 @@ pub fn save_wizard_setup_report(report: &SetupReport) -> Result<PathBuf> {
 }
 
 pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> WizardInstallSummary {
+    let localizer = localizer_from_options(&model.bootstrap_options).ok();
     let created_resources = report
         .resource_init
         .actions
@@ -1397,12 +1448,56 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
         .count();
 
     let mut detail_lines = vec![
-        format!("Target: {}", report.resource_path.display()),
-        format!("Dry run: {}", if report.dry_run { "yes" } else { "no" }),
-        format!("Resource items created: {created_resources}"),
-        format!("Packages installed or checked: {installed_or_checked}"),
-        format!("Packages already current: {skipped_current}"),
-        format!("Packages requiring manual attention: {manual_items}"),
+        format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-target",
+            &[("path", report.resource_path.display().to_string())],
+            format!("Target: {}", report.resource_path.display()),
+        ),
+        format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-dry-run",
+            &[(
+                "value",
+                if report.dry_run {
+                    model.text.common_yes.clone()
+                } else {
+                    model.text.common_no.clone()
+                },
+            )],
+            format!(
+                "Dry run: {}",
+                if report.dry_run {
+                    &model.text.common_yes
+                } else {
+                    &model.text.common_no
+                }
+            ),
+        ),
+        format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-resource-items-created",
+            &[("count", created_resources.to_string())],
+            format!("Resource items created: {created_resources}"),
+        ),
+        format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-packages-installed-or-checked",
+            &[("count", installed_or_checked.to_string())],
+            format!("Packages installed or checked: {installed_or_checked}"),
+        ),
+        format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-packages-current",
+            &[("count", skipped_current.to_string())],
+            format!("Packages already current: {skipped_current}"),
+        ),
+        format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-packages-manual",
+            &[("count", manual_items.to_string())],
+            format!("Packages requiring manual attention: {manual_items}"),
+        ),
     ];
 
     if let Some(install_report) = &report.package_operation.install_report {
@@ -1415,38 +1510,106 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
             || install_report.receipt_backup_path.is_some()
             || install_report.backup_manifest_path.is_some()
         {
-            detail_lines.push(format!("Backup files created: {}", backup_paths.len()));
+            detail_lines.push(format_localized_message(
+                localizer.as_ref(),
+                "wizard-summary-backup-files-created",
+                &[("count", backup_paths.len().to_string())],
+                format!("Backup files created: {}", backup_paths.len()),
+            ));
             for path in backup_paths {
-                detail_lines.push(format!("Backup file: {}", path.display()));
+                detail_lines.push(format_localized_message(
+                    localizer.as_ref(),
+                    "wizard-summary-backup-file",
+                    &[("path", path.display().to_string())],
+                    format!("Backup file: {}", path.display()),
+                ));
             }
             if let Some(path) = &install_report.receipt_backup_path {
-                detail_lines.push(format!("Receipt backup: {}", path.display()));
+                detail_lines.push(format_localized_message(
+                    localizer.as_ref(),
+                    "wizard-summary-receipt-backup",
+                    &[("path", path.display().to_string())],
+                    format!("Receipt backup: {}", path.display()),
+                ));
             }
             if let Some(path) = &install_report.backup_manifest_path {
-                detail_lines.push(format!("Backup manifest: {}", path.display()));
+                detail_lines.push(format_localized_message(
+                    localizer.as_ref(),
+                    "wizard-summary-backup-manifest",
+                    &[("path", path.display().to_string())],
+                    format!("Backup manifest: {}", path.display()),
+                ));
             }
         }
     }
 
     for item in &report.package_operation.items {
-        detail_lines.push(format!(
-            "{}: {}",
-            package_display_name(model, &item.package_id),
-            item.message
+        let package_name = package_display_name(model, &item.package_id);
+        detail_lines.push(format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-package-message",
+            &[
+                ("package", package_name.clone()),
+                ("message", item.message.clone()),
+            ],
+            format!("{package_name}: {}", item.message),
         ));
         if let Some(manual) = &item.manual_instruction {
-            detail_lines.push(format!("{}:", manual.title));
-            detail_lines.extend(manual.steps.iter().map(|step| format!("  {step}")));
-            detail_lines.extend(manual.notes.iter().map(|note| format!("  Note: {note}")));
+            detail_lines.push(format_localized_message(
+                localizer.as_ref(),
+                "wizard-summary-manual-title",
+                &[("title", manual.title.clone())],
+                format!("{}:", manual.title),
+            ));
+            detail_lines.extend(manual.steps.iter().map(|step| {
+                format_localized_message(
+                    localizer.as_ref(),
+                    "wizard-summary-manual-step",
+                    &[("step", step.clone())],
+                    format!("  {step}"),
+                )
+            }));
+            detail_lines.extend(manual.notes.iter().map(|note| {
+                format_localized_message(
+                    localizer.as_ref(),
+                    "wizard-summary-manual-note",
+                    &[("note", note.clone())],
+                    format!("  Note: {note}"),
+                )
+            }));
         }
     }
 
     WizardInstallSummary {
-        status_line: format!(
-            "Finished. {installed_or_checked} package item(s) installed or checked; {manual_items} require manual attention."
+        status_line: format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-status-finished",
+            &[
+                ("installed", installed_or_checked.to_string()),
+                ("manual", manual_items.to_string()),
+            ],
+            format!(
+                "Finished. {installed_or_checked} package item(s) installed or checked; {manual_items} require manual attention."
+            ),
         ),
         detail_lines,
     }
+}
+
+fn format_localized_message(
+    localizer: Option<&Localizer>,
+    id: &str,
+    args: &[(&str, String)],
+    fallback: String,
+) -> String {
+    let Some(localizer) = localizer else {
+        return fallback;
+    };
+    let borrowed_args = args
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect::<Vec<_>>();
+    localizer.format(id, &borrowed_args).value
 }
 
 fn package_rows(
