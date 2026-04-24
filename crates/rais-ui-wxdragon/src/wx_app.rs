@@ -301,7 +301,7 @@ pub fn run() {
                     &last_reaper_app_path,
                     selected_target
                         .as_ref()
-                        .and_then(|target| target.app_path.clone()),
+                        .map(planned_reaper_launch_path_for_target),
                 );
                 set_last_resource_path(
                     &last_resource_path,
@@ -355,7 +355,7 @@ pub fn run() {
                             .enable(clone_last_resource_path(&last_resource_path).is_some());
                         widgets
                             .done_launch_reaper
-                            .enable(clone_last_path(&last_reaper_app_path).is_some());
+                            .enable(can_launch_last_reaper_path(&last_reaper_app_path));
                         widgets.done_save_report.enable(false);
                         widgets.done_rescan.enable(true);
                         current_step.store(DONE_STEP, Ordering::SeqCst);
@@ -423,9 +423,17 @@ pub fn run() {
                                     outcome_report.status_line,
                                     outcome_report.detail_lines.join("\n")
                                 ));
+                                set_last_path(
+                                    &ui_last_reaper_app_path,
+                                    request_for_report
+                                        .target_app_path
+                                        .as_ref()
+                                        .filter(|path| path.exists())
+                                        .cloned(),
+                                );
                                 widgets
                                     .done_launch_reaper
-                                    .enable(clone_last_path(&ui_last_reaper_app_path).is_some());
+                                    .enable(can_launch_last_reaper_path(&ui_last_reaper_app_path));
                                 widgets.done_open_resource.enable(true);
                                 widgets.done_rescan.enable(true);
                                 widgets.done_save_report.enable(true);
@@ -452,7 +460,7 @@ pub fn run() {
                                 ));
                                 widgets
                                     .done_launch_reaper
-                                    .enable(clone_last_path(&ui_last_reaper_app_path).is_some());
+                                    .enable(can_launch_last_reaper_path(&ui_last_reaper_app_path));
                                 widgets.done_open_resource.enable(
                                     clone_last_resource_path(&ui_last_resource_path).is_some(),
                                 );
@@ -587,7 +595,10 @@ pub fn run() {
                             &refreshed_target,
                         );
                         widgets.target_details.set_value(&refreshed_target.details);
-                        set_last_path(&last_reaper_app_path, refreshed_target.app_path.clone());
+                        set_last_path(
+                            &last_reaper_app_path,
+                            Some(planned_reaper_launch_path_for_target(&refreshed_target)),
+                        );
                         set_last_resource_path(
                             &last_resource_path,
                             Some(refreshed_target.path.clone()),
@@ -1359,6 +1370,18 @@ fn clone_last_path(state: &Arc<Mutex<Option<PathBuf>>>) -> Option<PathBuf> {
     state.lock().ok().and_then(|slot| slot.clone())
 }
 
+fn planned_reaper_launch_path_for_target(target: &TargetRow) -> PathBuf {
+    target.planned_app_path.clone()
+}
+
+fn can_launch_reaper_path(path: Option<&Path>) -> bool {
+    path.is_some_and(Path::exists)
+}
+
+fn can_launch_last_reaper_path(state: &Arc<Mutex<Option<PathBuf>>>) -> bool {
+    can_launch_reaper_path(clone_last_path(state).as_deref())
+}
+
 fn append_done_status(status: &TextCtrl, message: &str) {
     let current = status.get_value();
     if current.trim().is_empty() {
@@ -1419,6 +1442,50 @@ fn launch_reaper(path: &Path) -> std::io::Result<()> {
             std::io::ErrorKind::Unsupported,
             "launching REAPER is only implemented on Windows and macOS",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use tempfile::tempdir;
+
+    use super::{can_launch_reaper_path, planned_reaper_launch_path_for_target};
+    use rais_ui_wxdragon::TargetRow;
+
+    #[test]
+    fn launchability_requires_existing_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("reaper.exe");
+
+        assert!(!can_launch_reaper_path(Some(&path)));
+
+        fs::write(&path, b"stub").unwrap();
+
+        assert!(can_launch_reaper_path(Some(&path)));
+        assert!(!can_launch_reaper_path(None));
+    }
+
+    #[test]
+    fn planned_launch_path_uses_target_planned_app_path() {
+        let target = TargetRow {
+            label: "Portable REAPER".to_string(),
+            details: String::new(),
+            app_path: None,
+            planned_app_path: PathBuf::from("C:/PortableREAPER/reaper.exe"),
+            path: PathBuf::from("C:/PortableREAPER"),
+            version: None,
+            portable: true,
+            selected: true,
+            writable: true,
+        };
+
+        assert_eq!(
+            planned_reaper_launch_path_for_target(&target),
+            PathBuf::from("C:/PortableREAPER/reaper.exe")
+        );
     }
 }
 
