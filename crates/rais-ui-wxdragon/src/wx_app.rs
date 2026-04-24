@@ -847,6 +847,10 @@ fn build_packages_page(
     osara_keymap_replace.set_name(&model.text.packages_osara_keymap_replace_label);
     osara_keymap_replace.set_label(&model.text.packages_osara_keymap_replace_label);
     osara_keymap_replace.add_style(WindowStyle::TabStop);
+    osara_keymap_replace.set_value(matches!(
+        WizardInstallOptions::default().osara_keymap_choice,
+        OsaraKeymapChoice::ReplaceCurrent
+    ));
     osara_keymap_replace.set_can_focus(false);
     sizer.add(
         &osara_keymap_replace,

@@ -174,7 +174,7 @@ enum Command {
         #[arg(long)]
         stage_unsupported: bool,
         #[arg(long)]
-        replace_osara_keymap: bool,
+        preserve_osara_keymap: bool,
         #[arg(long)]
         report_path: Option<PathBuf>,
         #[arg(long)]
@@ -202,7 +202,7 @@ enum Command {
         #[arg(long)]
         stage_unsupported: bool,
         #[arg(long)]
-        replace_osara_keymap: bool,
+        preserve_osara_keymap: bool,
         #[arg(long)]
         report_path: Option<PathBuf>,
         #[arg(long)]
@@ -560,7 +560,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             apply,
             allow_reaper_running,
             stage_unsupported,
-            replace_osara_keymap,
+            preserve_osara_keymap,
             report_path,
             save_report,
             json,
@@ -579,7 +579,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     dry_run: !apply,
                     allow_reaper_running,
                     stage_unsupported,
-                    replace_osara_keymap,
+                    replace_osara_keymap: !preserve_osara_keymap,
                     target_app_path,
                 },
             )?;
@@ -606,7 +606,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             apply,
             allow_reaper_running,
             stage_unsupported,
-            replace_osara_keymap,
+            preserve_osara_keymap,
             report_path,
             save_report,
             json,
@@ -626,7 +626,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     portable,
                     allow_reaper_running,
                     stage_unsupported,
-                    replace_osara_keymap,
+                    replace_osara_keymap: !preserve_osara_keymap,
                     target_app_path,
                 },
             )?;
@@ -1280,6 +1280,29 @@ mod tests {
                     Some(PathBuf::from("C:\\PortableREAPER\\reaper.exe"))
                 );
                 assert!(portable);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn setup_command_parses_preserve_osara_keymap_flag() {
+        let cli = Cli::try_parse_from([
+            "rais",
+            "setup",
+            "--resource-path",
+            "C:\\PortableREAPER",
+            "--portable",
+            "--preserve-osara-keymap",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Setup {
+                preserve_osara_keymap,
+                ..
+            } => {
+                assert!(preserve_osara_keymap);
             }
             other => panic!("unexpected command: {other:?}"),
         }

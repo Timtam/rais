@@ -20,7 +20,10 @@ Windows and macOS.
   "installed, version unknown" where it is not reliable.
 - Prefer user-level installation paths for extensions so admin rights are not
   needed unless installing REAPER itself into a protected location.
-- Preserve user configuration by default, especially key maps and ReaPack data.
+- Preserve user configuration by default where possible, but when OSARA is
+  selected RAIS should default to replacing the active key map with the OSARA
+  key map after backing up `reaper-kb.ini`; preserving the current key map
+  should be an explicit opt-out.
 - Make every user-visible string localizable from the beginning.
 - Make RAIS itself as portable as possible: the preferred distribution is one
   executable file that can be downloaded, launched, used, and deleted without a
@@ -220,9 +223,10 @@ The UI should be a short wizard with no hidden advanced requirements.
      packages.
    - OSARA key map option:
      - Install OSARA key map file.
-     - Preserve current key map by default.
-     - Offer "Replace current key map with OSARA key map" only with an explicit
-       backup explanation.
+     - Replace the current key map with the OSARA key map by default after
+       backing up `reaper-kb.ini`.
+     - Offer "Preserve the current key map instead" as an explicit non-default
+       opt-out in both the GUI and CLI.
 
 4. Review
    - Plain text summary of files to be changed, backups to be created, and any
@@ -379,7 +383,8 @@ strategies:
   - install unattended by either invoking a validated silent installer path or
     reproducing the upstream file layout directly into the selected REAPER
     resource path,
-  - manage the optional keymap replacement as a separate explicit RAIS choice.
+  - manage the keymap behavior as a RAIS choice with default replacement plus
+    backup, and an explicit preserve-current opt-out.
 - SWS:
   - install unattended by placing the correct verified binary into
     `UserPlugins` for the selected REAPER architecture.
@@ -455,8 +460,9 @@ Extension files:
 
 - If REAPER is running, stop before changing extension files and ask the user to
   close it.
-- Never overwrite `reaper-kb.ini` unless the user explicitly asks to replace the
-  key map.
+- When OSARA is selected, back up `reaper-kb.ini` and replace it with the OSARA
+  key map by default unless the user explicitly asks to preserve the current key
+  map instead.
 - Back up every overwritten file under `RAIS/backups/<timestamp>/`.
 - Keep a machine-readable operation report and a plain text report.
 - Treat non-writable targets as a planning error before downloading anything.

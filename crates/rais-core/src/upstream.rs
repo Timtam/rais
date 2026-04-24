@@ -20,6 +20,10 @@ pub fn execute_planned_execution(plan: &PlannedExecutionPlan, dry_run: bool) -> 
         }
     }
 
+    Ok(())
+}
+
+pub fn verify_planned_execution_paths(plan: &PlannedExecutionPlan) -> Result<()> {
     verify_paths(&plan.verification_paths)
 }
 
@@ -67,7 +71,7 @@ fn verify_paths(paths: &[PathBuf]) -> Result<()> {
 mod tests {
     use tempfile::tempdir;
 
-    use super::execute_planned_execution;
+    use super::{execute_planned_execution, verify_planned_execution_paths};
     use crate::operation::{PlannedExecutionKind, PlannedExecutionPlan};
 
     #[test]
@@ -88,6 +92,7 @@ mod tests {
         let plan = success_plan(&marker_path);
 
         execute_planned_execution(&plan, false).unwrap();
+        verify_planned_execution_paths(&plan).unwrap();
 
         assert!(marker_path.is_file());
     }
@@ -101,6 +106,28 @@ mod tests {
         let error = execute_planned_execution(&plan, false).unwrap_err();
 
         assert!(error.to_string().contains("process failed"));
+    }
+
+    #[test]
+    fn verification_fails_when_expected_output_is_missing() {
+        let dir = tempdir().unwrap();
+        let marker_path = dir.path().join("missing.txt");
+        let plan = PlannedExecutionPlan {
+            kind: PlannedExecutionKind::LaunchInstallerExecutable,
+            artifact_location: "noop".to_string(),
+            program: None,
+            arguments: Vec::new(),
+            working_directory: None,
+            verification_paths: vec![marker_path],
+        };
+
+        let error = verify_planned_execution_paths(&plan).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("post-install verification failed")
+        );
     }
 
     #[cfg(target_os = "windows")]

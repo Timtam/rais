@@ -23,7 +23,7 @@ use crate::receipt::{
     upsert_package_receipt,
 };
 use crate::rollback::{BackupManifest, BackupManifestFile, save_backup_manifest};
-use crate::upstream::execute_planned_execution;
+use crate::upstream::{execute_planned_execution, verify_planned_execution_paths};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageOperationOptions {
@@ -615,6 +615,7 @@ fn executed_unattended_item(
         target_app_path,
         replace_osara_keymap,
     )?;
+    verify_planned_execution_paths(&planned_execution)?;
 
     let message = if planned.artifact.package_id == crate::package::PACKAGE_OSARA
         && replace_osara_keymap
@@ -2088,6 +2089,52 @@ mod tests {
             b"old keymap"
         );
         assert!(report.items[0].backup_manifest_path.is_some());
+        assert!(
+            report.items[0]
+                .message
+                .contains("applied the OSARA key map replacement")
+        );
+        assert!(!resource_path.join("osara").join("uninstall.exe").exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn executes_osara_windows_installer_unattended_and_creates_keymap_for_new_portable_target() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let source_path = dir.path().join("osara-installer.cmd");
+        std::fs::write(&source_path, osara_mock_installer_script()).unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact_with_url(
+                PACKAGE_OSARA,
+                ArtifactKind::Installer,
+                "osara-installer.cmd",
+                &source_path.display().to_string(),
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: false,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: true,
+                target_app_path: Some(resource_path.join("reaper.exe")),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.items[0].status,
+            PackageOperationStatus::InstalledOrChecked
+        );
+        assert_eq!(
+            std::fs::read_to_string(resource_path.join("reaper-kb.ini")).unwrap(),
+            "osara keymap\r\n"
+        );
+        assert!(report.items[0].backup_paths.is_empty());
+        assert!(report.items[0].backup_manifest_path.is_none());
         assert!(
             report.items[0]
                 .message

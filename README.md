@@ -46,9 +46,11 @@ cargo run -p rais-cli -- install-extension --package reapack --resource-path "$e
 cargo run -p rais-cli -- install-extension --package reapack --resource-path "$env:APPDATA\REAPER" --apply --allow-reaper-running
 cargo run -p rais-cli -- apply-packages --resource-path "$env:APPDATA\REAPER"
 cargo run -p rais-cli -- apply-packages --resource-path "$env:APPDATA\REAPER" --apply
+cargo run -p rais-cli -- apply-packages --resource-path "$env:APPDATA\REAPER" --apply --preserve-osara-keymap
 cargo run -p rais-cli -- apply-packages --resource-path "$env:APPDATA\REAPER" --stage-unsupported
 cargo run -p rais-cli -- setup --resource-path C:\path\to\portable\REAPER --portable --stage-unsupported
 cargo run -p rais-cli -- setup --resource-path C:\path\to\portable\REAPER --portable --stage-unsupported --apply
+cargo run -p rais-cli -- setup --resource-path C:\path\to\portable\REAPER --portable --stage-unsupported --apply --preserve-osara-keymap
 cargo run -p rais-cli -- setup --resource-path C:\path\to\portable\REAPER --portable --stage-unsupported --save-report
 cargo run -p rais-cli -- setup --resource-path C:\path\to\portable\REAPER --portable --stage-unsupported --report-path C:\path\to\report.json
 cargo run -p rais-cli -- locales
@@ -81,7 +83,8 @@ the Done page. Current engine support automatically copies direct extension
 binaries such as ReaPack. It also now includes unattended upstream-installer
 paths for:
 - REAPER on Windows
-- OSARA on Windows, including optional key map replacement with backup
+- OSARA on Windows, including default key map replacement with backup and a
+  preserve-current opt-out
 - SWS on Windows
 
 Those unattended Windows installer paths now also update RAIS install receipts,

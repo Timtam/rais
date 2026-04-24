@@ -228,7 +228,7 @@ impl Default for WizardInstallOptions {
             dry_run: false,
             allow_reaper_running: false,
             stage_unsupported: true,
-            osara_keymap_choice: OsaraKeymapChoice::PreserveCurrent,
+            osara_keymap_choice: OsaraKeymapChoice::ReplaceCurrent,
             cache_dir: None,
         }
     }
@@ -3164,6 +3164,14 @@ mod tests {
         let note = super::osara_keymap_note(&model, false, OsaraKeymapChoice::PreserveCurrent);
 
         assert!(note.contains("Select OSARA"));
+    }
+
+    #[test]
+    fn default_install_options_replace_osara_keymap() {
+        assert_eq!(
+            super::WizardInstallOptions::default().osara_keymap_choice,
+            OsaraKeymapChoice::ReplaceCurrent
+        );
     }
 
     #[test]
