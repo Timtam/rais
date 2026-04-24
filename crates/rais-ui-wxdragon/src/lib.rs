@@ -26,7 +26,9 @@ use rais_core::resource::{
     ResourceInitActionKind, ResourceInitItemKind, ResourceInitOptions, ResourceInitReport,
     initialize_resource_path,
 };
-use rais_core::setup::{SetupOptions, SetupReport, execute_setup_operation};
+use rais_core::setup::{
+    SetupOptions, SetupReport, execute_setup_operation, setup_requires_extension_support,
+};
 use rais_core::version::Version;
 use rais_core::{RaisError, Result};
 use serde::Serialize;
@@ -921,6 +923,14 @@ pub fn build_review_preview_for_package_rows(
         &ResourceInitOptions {
             dry_run: true,
             portable: target.portable,
+            include_extension_support_dirs: target.portable
+                || setup_requires_extension_support(
+                    &selected_package_indices
+                        .iter()
+                        .filter_map(|index| package_rows.get(*index))
+                        .map(|package| package.package_id.clone())
+                        .collect::<Vec<_>>(),
+                ),
             allow_reaper_running: false,
             target_app_path: Some(target.planned_app_path.clone()),
         },
@@ -2237,8 +2247,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        OsaraKeymapChoice, UiBootstrapOptions, WizardInstallRequest, custom_portable_target_row,
-        localizer_from_options, model_from_plan, refreshed_target_row,
+        OsaraKeymapChoice, PackageRow, UiBootstrapOptions, WizardInstallRequest,
+        custom_portable_target_row, localizer_from_options, model_from_plan, refreshed_target_row,
     };
 
     #[test]
@@ -3088,6 +3098,51 @@ mod tests {
                 .iter()
                 .any(|line| { line == "No administrator prompt is currently expected." })
         );
+    }
+
+    #[test]
+    fn review_preview_uses_minimal_resource_layout_for_standard_reaper_only() {
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let installation = fake_standard_installation();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            vec![installation.clone()],
+            Some(0),
+            InstallPlan {
+                target: Some(installation),
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let package_rows = vec![PackageRow {
+            package_id: PACKAGE_REAPER.to_string(),
+            display_name: "REAPER".to_string(),
+            selected: true,
+            summary: "REAPER: Install".to_string(),
+            details: "REAPER details".to_string(),
+            installed_version: "Version unknown".to_string(),
+            available_version: "7.70".to_string(),
+            action: PlanActionKind::Install,
+            action_label: "Install".to_string(),
+            reason: "Missing".to_string(),
+            handling_summary: model.text.package_handling_unattended.clone(),
+            manual_attention_expected: false,
+        }];
+
+        let preview = super::build_review_preview_for_package_rows(
+            &model,
+            model.target_rows.first(),
+            &[0],
+            &package_rows,
+            &[],
+            OsaraKeymapChoice::PreserveCurrent,
+        );
+
+        assert!(!preview.lines.iter().any(|line| {
+            line.contains("UserPlugins") || line.contains("KeyMaps") || line.contains("reaper.ini")
+        }));
     }
 
     #[test]

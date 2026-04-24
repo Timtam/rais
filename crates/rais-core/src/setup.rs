@@ -9,6 +9,7 @@ use crate::operation::{
     PackageOperationOptions, PackageOperationReport, execute_package_operation,
     execute_resolved_package_operation,
 };
+use crate::package::PACKAGE_REAPER;
 use crate::resource::{ResourceInitOptions, ResourceInitReport, initialize_resource_path};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +30,12 @@ pub struct SetupReport {
     pub package_operation: PackageOperationReport,
 }
 
+pub fn setup_requires_extension_support(package_ids: &[String]) -> bool {
+    package_ids
+        .iter()
+        .any(|package_id| package_id != PACKAGE_REAPER)
+}
+
 pub fn execute_setup_operation(
     resource_path: &Path,
     package_ids: &[String],
@@ -42,6 +49,8 @@ pub fn execute_setup_operation(
         &ResourceInitOptions {
             dry_run: options.dry_run,
             portable: options.portable,
+            include_extension_support_dirs: options.portable
+                || setup_requires_extension_support(package_ids),
             allow_reaper_running: options.allow_reaper_running,
             target_app_path: options.target_app_path.clone(),
         },
@@ -80,6 +89,8 @@ pub fn execute_resolved_setup_operation(
         &ResourceInitOptions {
             dry_run: options.dry_run,
             portable: options.portable,
+            include_extension_support_dirs: options.portable
+                || setup_requires_extension_support_for_artifacts(&artifacts),
             allow_reaper_running: options.allow_reaper_running,
             target_app_path: options.target_app_path.clone(),
         },
@@ -105,6 +116,12 @@ pub fn execute_resolved_setup_operation(
     })
 }
 
+fn setup_requires_extension_support_for_artifacts(artifacts: &[ArtifactDescriptor]) -> bool {
+    artifacts
+        .iter()
+        .any(|artifact| artifact.package_id != PACKAGE_REAPER)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -115,7 +132,7 @@ mod tests {
     use crate::artifact::{ArtifactDescriptor, ArtifactKind};
     use crate::install::InstallFileAction;
     use crate::model::{Architecture, Platform};
-    use crate::package::PACKAGE_REAPACK;
+    use crate::package::{PACKAGE_REAPACK, PACKAGE_REAPER};
     use crate::version::Version;
 
     #[test]
@@ -184,6 +201,65 @@ mod tests {
         assert_eq!(
             install_report.actions[0].action,
             InstallFileAction::Installed
+        );
+    }
+
+    #[test]
+    fn dry_run_reaper_only_standard_setup_uses_minimal_resource_layout() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let resource_path = dir.path().join("AppData").join("Roaming").join("REAPER");
+        let app_path = dir
+            .path()
+            .join("Program Files")
+            .join("REAPER")
+            .join("reaper.exe");
+
+        let report = execute_resolved_setup_operation(
+            &resource_path,
+            vec![ArtifactDescriptor {
+                package_id: PACKAGE_REAPER.to_string(),
+                version: Version::parse("7.69").unwrap(),
+                platform: Platform::Windows,
+                architecture: Architecture::X64,
+                kind: ArtifactKind::Installer,
+                url: "https://example.test/reaper-install.exe".to_string(),
+                file_name: "reaper-install.exe".to_string(),
+            }],
+            cache.path(),
+            &SetupOptions {
+                dry_run: true,
+                portable: false,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: Some(app_path.clone()),
+            },
+        )
+        .unwrap();
+
+        let action_paths = report
+            .resource_init
+            .actions
+            .iter()
+            .map(|action| action.path.clone())
+            .collect::<Vec<_>>();
+
+        assert!(action_paths.contains(&resource_path));
+        assert!(action_paths.contains(&resource_path.join("RAIS")));
+        assert!(action_paths.contains(&resource_path.join("RAIS").join("logs")));
+        assert!(action_paths.contains(&resource_path.join("RAIS").join("backups")));
+        assert!(!action_paths.contains(&resource_path.join("UserPlugins")));
+        assert!(!action_paths.contains(&resource_path.join("KeyMaps")));
+        assert!(!action_paths.contains(&resource_path.join("reaper.ini")));
+        assert_eq!(report.package_operation.items.len(), 1);
+        assert_eq!(
+            report.package_operation.items[0]
+                .planned_execution
+                .as_ref()
+                .unwrap()
+                .verification_paths,
+            vec![app_path]
         );
     }
 

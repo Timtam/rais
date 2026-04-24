@@ -453,6 +453,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &rais_core::resource::ResourceInitOptions {
                     dry_run: !apply,
                     portable,
+                    include_extension_support_dirs: true,
                     allow_reaper_running,
                     target_app_path,
                 },

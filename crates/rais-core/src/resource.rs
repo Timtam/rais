@@ -10,6 +10,7 @@ use crate::preflight::{PreflightOptions, PreflightReport, run_install_preflight}
 pub struct ResourceInitOptions {
     pub dry_run: bool,
     pub portable: bool,
+    pub include_extension_support_dirs: bool,
     pub allow_reaper_running: bool,
     pub target_app_path: Option<PathBuf>,
 }
@@ -71,7 +72,7 @@ pub fn initialize_resource_path(
         actions: Vec::new(),
     };
 
-    for directory in resource_directories(resource_path) {
+    for directory in resource_directories(resource_path, options.include_extension_support_dirs) {
         report
             .actions
             .push(ensure_directory(&directory, options.dry_run)?);
@@ -87,15 +88,23 @@ pub fn initialize_resource_path(
     Ok(report)
 }
 
-fn resource_directories(resource_path: &Path) -> Vec<PathBuf> {
-    vec![
+fn resource_directories(
+    resource_path: &Path,
+    include_extension_support_dirs: bool,
+) -> Vec<PathBuf> {
+    let mut directories = vec![
         resource_path.to_path_buf(),
-        resource_path.join("UserPlugins"),
-        resource_path.join("KeyMaps"),
         resource_path.join("RAIS"),
         resource_path.join("RAIS").join("logs"),
         resource_path.join("RAIS").join("backups"),
-    ]
+    ];
+
+    if include_extension_support_dirs {
+        directories.push(resource_path.join("UserPlugins"));
+        directories.push(resource_path.join("KeyMaps"));
+    }
+
+    directories
 }
 
 fn ensure_directory(path: &Path, dry_run: bool) -> Result<ResourceInitAction> {
@@ -184,6 +193,7 @@ mod tests {
             &ResourceInitOptions {
                 dry_run: true,
                 portable: true,
+                include_extension_support_dirs: true,
                 allow_reaper_running: false,
                 target_app_path: None,
             },
@@ -209,6 +219,7 @@ mod tests {
             &ResourceInitOptions {
                 dry_run: false,
                 portable: true,
+                include_extension_support_dirs: true,
                 allow_reaper_running: true,
                 target_app_path: None,
             },
@@ -239,6 +250,7 @@ mod tests {
             &ResourceInitOptions {
                 dry_run: false,
                 portable: false,
+                include_extension_support_dirs: true,
                 allow_reaper_running: true,
                 target_app_path: None,
             },
@@ -246,5 +258,38 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("not a directory"));
+    }
+
+    #[test]
+    fn standard_reaper_only_layout_stays_minimal() {
+        let dir = tempdir().unwrap();
+        let resource_path = dir.path().join("REAPER");
+
+        let report = initialize_resource_path(
+            &resource_path,
+            &ResourceInitOptions {
+                dry_run: false,
+                portable: false,
+                include_extension_support_dirs: false,
+                allow_reaper_running: true,
+                target_app_path: Some(
+                    dir.path()
+                        .join("Program Files")
+                        .join("REAPER")
+                        .join("reaper.exe"),
+                ),
+            },
+        )
+        .unwrap();
+
+        assert!(resource_path.is_dir());
+        assert!(resource_path.join("RAIS/logs").is_dir());
+        assert!(resource_path.join("RAIS/backups").is_dir());
+        assert!(!resource_path.join("UserPlugins").exists());
+        assert!(!resource_path.join("KeyMaps").exists());
+        assert!(!resource_path.join("reaper.ini").exists());
+        assert!(report.actions.iter().all(
+            |action| !action.path.ends_with("UserPlugins") && !action.path.ends_with("KeyMaps")
+        ));
     }
 }
