@@ -8,6 +8,7 @@ use crate::artifact::{
     resolve_latest_artifacts,
 };
 use crate::detection::{default_standard_installation, detect_components};
+use crate::error::IoPathContext;
 use crate::install::{InstallFileReport, InstallOptions, InstallReport, install_cached_artifacts};
 use crate::model::{Architecture, ComponentDetection, Platform};
 use crate::plan::PlanActionKind;
@@ -111,6 +112,11 @@ pub fn package_automation_support(
         {
             PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
         }
+        (crate::package::PACKAGE_OSARA, Ok(ArtifactKind::Installer))
+            if matches!(platform, Platform::Windows) =>
+        {
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
+        }
         (_, Ok(ArtifactKind::Installer)) => {
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::VendorInstaller)
         }
@@ -176,7 +182,7 @@ pub fn execute_resolved_package_operation_with_detections(
         let plan_action = plan_action_for_artifact(&artifact, detections);
         match plan_action {
             PlanActionKind::Install | PlanActionKind::Update => {
-                match automation_support_for_artifact(&artifact) {
+                match automation_support_for_artifact(&artifact, options) {
                     PackageAutomationSupport::Direct => direct_installable.push(PlannedArtifact {
                         artifact,
                         plan_action,
@@ -329,12 +335,22 @@ pub fn execute_resolved_package_operation_with_detections(
     })
 }
 
-fn automation_support_for_artifact(artifact: &ArtifactDescriptor) -> PackageAutomationSupport {
+fn automation_support_for_artifact(
+    artifact: &ArtifactDescriptor,
+    options: &PackageOperationOptions,
+) -> PackageAutomationSupport {
     match artifact.kind {
         ArtifactKind::ExtensionBinary => PackageAutomationSupport::Direct,
         ArtifactKind::Installer
             if artifact.package_id == crate::package::PACKAGE_REAPER
                 && matches!(artifact.platform, Platform::Windows) =>
+        {
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
+        }
+        ArtifactKind::Installer
+            if artifact.package_id == crate::package::PACKAGE_OSARA
+                && matches!(artifact.platform, Platform::Windows)
+                && !options.replace_osara_keymap =>
         {
             PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
         }
@@ -516,6 +532,12 @@ fn executed_unattended_item(
         replace_osara_keymap,
     );
     execute_planned_execution(&planned_execution, false)?;
+    post_execute_unattended_artifact(
+        &planned.artifact,
+        resource_path,
+        target_app_path,
+        replace_osara_keymap,
+    )?;
 
     Ok(PackageOperationItem {
         package_id: planned.artifact.package_id.clone(),
@@ -530,6 +552,26 @@ fn executed_unattended_item(
         planned_execution: Some(planned_execution),
         manual_instruction: None,
     })
+}
+
+fn post_execute_unattended_artifact(
+    artifact: &ArtifactDescriptor,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+    replace_osara_keymap: bool,
+) -> Result<()> {
+    if artifact.package_id == crate::package::PACKAGE_OSARA
+        && matches!(artifact.platform, Platform::Windows)
+        && !replace_osara_keymap
+        && target_likely_portable(resource_path, target_app_path)
+    {
+        let uninstall_path = resource_path.join("osara").join("uninstall.exe");
+        if uninstall_path.is_file() {
+            std::fs::remove_file(&uninstall_path).with_path(&uninstall_path)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn planned_execution_for_artifact(
@@ -605,6 +647,12 @@ fn installer_arguments_for_artifact(
     {
         return reaper_windows_installer_arguments(resource_path, target_app_path);
     }
+    if artifact.package_id == crate::package::PACKAGE_OSARA
+        && artifact.kind == ArtifactKind::Installer
+        && matches!(artifact.platform, Platform::Windows)
+    {
+        return osara_windows_installer_arguments(resource_path);
+    }
 
     Vec::new()
 }
@@ -623,6 +671,10 @@ fn reaper_windows_installer_arguments(
     arguments.push("/S".to_string());
     arguments.push(format!("/D={}", install_destination.display()));
     arguments
+}
+
+fn osara_windows_installer_arguments(resource_path: &Path) -> Vec<String> {
+    vec!["/S".to_string(), format!("/D={}", resource_path.display())]
 }
 
 fn effective_target_app_path(
@@ -824,6 +876,7 @@ fn planned_verification_paths(
         crate::package::PACKAGE_OSARA => {
             let mut paths = vec![
                 resource_path.join("UserPlugins"),
+                resource_path.join("KeyMaps").join("OSARA.ReaperKeyMap"),
                 resource_path.join("osara"),
             ];
             if replace_osara_keymap {
@@ -1067,7 +1120,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: false,
-                replace_osara_keymap: false,
+                replace_osara_keymap: true,
                 target_app_path: None,
             },
         )
@@ -1087,7 +1140,7 @@ mod tests {
                 .unwrap()
                 .notes
                 .iter()
-                .any(|note| note.contains("preserves the current key map"))
+                .any(|note| note.contains("manual completion"))
         );
     }
 
@@ -1136,7 +1189,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: true,
-                replace_osara_keymap: false,
+                replace_osara_keymap: true,
                 target_app_path: None,
             },
         )
@@ -1217,6 +1270,10 @@ mod tests {
             PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
         );
         assert_eq!(
+            super::package_automation_support(PACKAGE_OSARA, Platform::Windows, Architecture::X64),
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
+        );
+        assert_eq!(
             super::package_automation_support(PACKAGE_OSARA, Platform::MacOs, Architecture::Arm64),
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::ArchiveExtraction)
         );
@@ -1274,6 +1331,120 @@ mod tests {
                 format!("/D={}", resource_path.display()),
             ]
         );
+    }
+
+    #[test]
+    fn dry_run_osara_windows_preserve_uses_unattended_plan() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact(
+                PACKAGE_OSARA,
+                ArtifactKind::Installer,
+                "osara.exe",
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: true,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: Some(resource_path.join("reaper.exe")),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(
+            report.items[0].status,
+            PackageOperationStatus::PlannedUnattended
+        );
+        assert!(report.items[0].manual_instruction.is_none());
+        assert_eq!(
+            report.items[0]
+                .planned_execution
+                .as_ref()
+                .unwrap()
+                .arguments,
+            vec!["/S".to_string(), format!("/D={}", resource_path.display()),]
+        );
+    }
+
+    #[test]
+    fn osara_replace_keymap_stays_deferred() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact(
+                PACKAGE_OSARA,
+                ArtifactKind::Installer,
+                "osara.exe",
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: true,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: true,
+                target_app_path: Some(resource_path.join("reaper.exe")),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.items[0].status,
+            PackageOperationStatus::DeferredUnattended
+        );
+        assert!(report.items[0].manual_instruction.is_some());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn executes_osara_windows_installer_unattended_and_cleans_portable_uninstaller() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let source_path = dir.path().join("osara-installer.cmd");
+        std::fs::write(&source_path, osara_mock_installer_script()).unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact_with_url(
+                PACKAGE_OSARA,
+                ArtifactKind::Installer,
+                "osara-installer.cmd",
+                &source_path.display().to_string(),
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: false,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: Some(resource_path.join("reaper.exe")),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.items[0].status,
+            PackageOperationStatus::InstalledOrChecked
+        );
+        assert!(resource_path.join("UserPlugins").is_dir());
+        assert!(
+            resource_path
+                .join("KeyMaps")
+                .join("OSARA.ReaperKeyMap")
+                .is_file()
+        );
+        assert!(resource_path.join("osara").join("locale").is_dir());
+        assert!(!resource_path.join("osara").join("uninstall.exe").exists());
     }
 
     #[test]
@@ -1395,7 +1566,7 @@ mod tests {
                 dry_run: true,
                 allow_reaper_running: false,
                 stage_unsupported: true,
-                replace_osara_keymap: false,
+                replace_osara_keymap: true,
                 target_app_path: None,
             },
         )
@@ -1482,30 +1653,16 @@ mod tests {
     #[test]
     fn osara_manual_instruction_mentions_selected_resource_path() {
         let dir = tempdir().unwrap();
-        let cache = tempdir().unwrap();
-        let report = execute_resolved_package_operation(
+        let instruction = super::preview_manual_instruction(
+            PACKAGE_OSARA,
+            ArtifactKind::Installer,
             dir.path(),
-            vec![artifact(
-                PACKAGE_OSARA,
-                ArtifactKind::Installer,
-                "osara.exe",
-            )],
-            cache.path(),
-            &PackageOperationOptions {
-                dry_run: true,
-                allow_reaper_running: false,
-                stage_unsupported: false,
-                replace_osara_keymap: false,
-                target_app_path: None,
-            },
-        )
-        .unwrap();
+            None,
+            false,
+        );
 
         assert!(
-            report.items[0]
-                .manual_instruction
-                .as_ref()
-                .unwrap()
+            instruction
                 .steps
                 .iter()
                 .any(|step| step.contains(&dir.path().display().to_string()))
@@ -1610,5 +1767,29 @@ mod tests {
             files: Vec::new(),
             notes: Vec::new(),
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn osara_mock_installer_script() -> &'static str {
+        r#"@echo off
+setlocal EnableExtensions EnableDelayedExpansion
+set "DEST="
+:next
+if "%~1"=="" goto args_done
+set "ARG=%~1"
+if /I "!ARG:~0,3!"=="/D=" set "DEST=!ARG:~3!"
+shift
+goto next
+:args_done
+if "%DEST%"=="" exit /b 4
+mkdir "%DEST%\UserPlugins" 2>nul
+mkdir "%DEST%\KeyMaps" 2>nul
+mkdir "%DEST%\osara\locale" 2>nul
+type nul > "%DEST%\UserPlugins\reaper_osara64.dll"
+type nul > "%DEST%\KeyMaps\OSARA.ReaperKeyMap"
+type nul > "%DEST%\osara\locale\en.po"
+type nul > "%DEST%\osara\uninstall.exe"
+exit /b 0
+"#
     }
 }

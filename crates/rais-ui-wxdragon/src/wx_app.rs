@@ -12,8 +12,9 @@ use rais_ui_wxdragon::{
     OsaraKeymapChoice, TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel,
     WizardOutcomeReport, build_review_preview_for_package_rows, custom_portable_target_row,
     execute_wizard_install, install_request_from_target_and_rows, load_wizard_model,
-    osara_keymap_note, osara_selected_for_rows, preview_manual_instruction_lines,
-    refreshed_target_row, save_wizard_outcome_report, wizard_outcome_report_from_error,
+    manual_attention_handling_summary, osara_keymap_note, osara_selected_for_rows,
+    package_requires_manual_attention, preview_manual_instruction_lines, refreshed_target_row,
+    save_wizard_outcome_report, wizard_outcome_report_from_error,
     wizard_outcome_report_from_success, wizard_package_plan_for_target,
 };
 use wxdragon::prelude::*;
@@ -1122,21 +1123,15 @@ fn progress_details_for_start(
     let manual_items = selected_package_indices
         .iter()
         .filter_map(|index| package_rows.get(*index))
-        .filter(|package| {
-            package.manual_attention_expected
-                && matches!(
-                    package.action,
-                    rais_core::plan::PlanActionKind::Install
-                        | rais_core::plan::PlanActionKind::Update
-                )
-        })
+        .filter(|package| package_requires_manual_attention(model, package, osara_keymap_choice))
         .collect::<Vec<_>>();
     if !manual_items.is_empty() {
         lines.push(model.text.review_manual_heading.clone());
         for package in manual_items {
             lines.push(format!(
                 "{}: {}",
-                package.display_name, package.handling_summary
+                package.display_name,
+                manual_attention_handling_summary(model, package, osara_keymap_choice)
             ));
             if let Some(target) = target {
                 lines.extend(preview_manual_instruction_lines(

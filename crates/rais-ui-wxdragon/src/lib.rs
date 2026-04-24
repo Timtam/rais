@@ -946,6 +946,7 @@ pub fn build_review_preview_for_package_rows(
         target,
         selected_package_indices,
         package_rows,
+        osara_keymap_choice,
     ));
 
     lines.push(String::new());
@@ -981,13 +982,7 @@ pub fn build_review_preview_for_package_rows(
     let manual_items = selected_package_indices
         .iter()
         .filter_map(|index| package_rows.get(*index))
-        .filter(|package| {
-            package.manual_attention_expected
-                && matches!(
-                    package.action,
-                    PlanActionKind::Install | PlanActionKind::Update
-                )
-        })
+        .filter(|package| package_requires_manual_attention(model, package, osara_keymap_choice))
         .collect::<Vec<_>>();
     if !manual_items.is_empty() {
         lines.push(String::new());
@@ -995,7 +990,8 @@ pub fn build_review_preview_for_package_rows(
         for package in manual_items {
             lines.push(format!(
                 "{}: {}",
-                package.display_name, package.handling_summary
+                package.display_name,
+                manual_attention_handling_summary(model, package, osara_keymap_choice)
             ));
             lines.extend(preview_manual_instruction_lines(
                 model,
@@ -1013,6 +1009,35 @@ pub fn build_review_preview_for_package_rows(
     }
 
     WizardReviewPreview { lines, can_install }
+}
+
+pub fn package_requires_manual_attention(
+    model: &WizardModel,
+    package: &PackageRow,
+    osara_keymap_choice: OsaraKeymapChoice,
+) -> bool {
+    matches!(
+        package.action,
+        PlanActionKind::Install | PlanActionKind::Update
+    ) && (package.manual_attention_expected
+        || (package.package_id == PACKAGE_OSARA
+            && matches!(model.platform, Platform::Windows)
+            && matches!(osara_keymap_choice, OsaraKeymapChoice::ReplaceCurrent)))
+}
+
+pub fn manual_attention_handling_summary(
+    model: &WizardModel,
+    package: &PackageRow,
+    osara_keymap_choice: OsaraKeymapChoice,
+) -> String {
+    if package.package_id == PACKAGE_OSARA
+        && matches!(model.platform, Platform::Windows)
+        && matches!(osara_keymap_choice, OsaraKeymapChoice::ReplaceCurrent)
+    {
+        model.text.package_handling_planned.clone()
+    } else {
+        package.handling_summary.clone()
+    }
 }
 
 fn review_resource_lines(model: &WizardModel, report: &ResourceInitReport) -> Vec<String> {
@@ -1036,12 +1061,14 @@ fn review_backup_lines(
     target: &TargetRow,
     selected_package_indices: &[usize],
     package_rows: &[PackageRow],
+    osara_keymap_choice: OsaraKeymapChoice,
 ) -> Vec<String> {
     let backup_paths = predicted_backup_paths_for_package_rows(
         model,
         target,
         selected_package_indices,
         package_rows,
+        osara_keymap_choice,
     );
     if backup_paths.is_empty() {
         vec![model.text.review_backup_no_changes.clone()]
@@ -1891,6 +1918,7 @@ fn predicted_backup_paths_for_package_rows(
     target: &TargetRow,
     selected_package_indices: &[usize],
     package_rows: &[PackageRow],
+    osara_keymap_choice: OsaraKeymapChoice,
 ) -> Vec<PathBuf> {
     let package_specs = package_specs_by_id(model.platform);
     let mut backup_paths = Vec::new();
@@ -1899,12 +1927,7 @@ fn predicted_backup_paths_for_package_rows(
         let Some(package) = package_rows.get(*index) else {
             continue;
         };
-        if package.manual_attention_expected
-            || !matches!(
-                package.action,
-                PlanActionKind::Install | PlanActionKind::Update
-            )
-        {
+        if package_requires_manual_attention(model, package, osara_keymap_choice) {
             continue;
         }
 
@@ -2184,6 +2207,10 @@ mod tests {
         assert_eq!(model.controls.install_label, "&Install");
         assert_eq!(model.controls.close_label, "&Close");
         assert_eq!(
+            model.text.package_handling_unattended,
+            "RAIS can install this package unattended, including launching its installer when required."
+        );
+        assert_eq!(
             model.text.package_handling_planned,
             "RAIS is designed to run this package's installer or setup routine itself and finish the installation unattended, but this build still reports the steps instead of executing them."
         );
@@ -2287,10 +2314,10 @@ mod tests {
         assert!(model.package_rows[0].summary.contains("OSARA"));
         assert!(model.package_rows[0].details.contains("Handling:"));
         assert_eq!(model.package_rows[0].action_label, "Install");
-        assert!(model.package_rows[0].manual_attention_expected);
+        assert!(!model.package_rows[0].manual_attention_expected);
         assert_eq!(
             model.package_rows[0].handling_summary,
-            model.text.package_handling_planned
+            model.text.package_handling_unattended
         );
         assert!(model.package_rows[0].selected);
         assert_eq!(model.package_rows[1].action_label, "Keep");
@@ -2655,7 +2682,7 @@ mod tests {
             &selected,
             &plan.package_rows,
             &plan.notes,
-            OsaraKeymapChoice::PreserveCurrent,
+            OsaraKeymapChoice::ReplaceCurrent,
         );
 
         assert!(preview.can_install);
