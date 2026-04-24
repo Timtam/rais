@@ -79,6 +79,40 @@ pub fn save_install_state(resource_path: &Path, state: &InstallState) -> Result<
     Ok(())
 }
 
+pub fn upsert_package_receipt(
+    state: &mut InstallState,
+    resource_path: &Path,
+    package_id: &str,
+    version: Option<Version>,
+    source_url: Option<String>,
+    source_sha256: Option<String>,
+    installed_paths: &[PathBuf],
+    installed_at: Option<String>,
+    architecture: Option<Architecture>,
+) -> Result<()> {
+    let mut installed_files = installed_paths
+        .iter()
+        .map(|path| build_installed_file_receipt(resource_path, path))
+        .collect::<Result<Vec<_>>>()?;
+    installed_files.sort_by(|left, right| left.path.cmp(&right.path));
+    installed_files.dedup_by(|left, right| left.path == right.path);
+
+    state.packages.insert(
+        package_id.to_string(),
+        PackageReceipt {
+            id: package_id.to_string(),
+            version,
+            source_url,
+            source_sha256,
+            installed_files,
+            installed_at,
+            rais_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            architecture,
+        },
+    );
+    Ok(())
+}
+
 pub fn verify_package_receipt(
     resource_path: &Path,
     state: Option<&InstallState>,
@@ -121,6 +155,37 @@ pub fn verify_package_receipt(
     } else {
         Ok(ReceiptVerification::Mismatch(receipt.clone()))
     }
+}
+
+fn build_installed_file_receipt(
+    resource_path: &Path,
+    installed_path: &Path,
+) -> Result<InstalledFileReceipt> {
+    let absolute_path = if installed_path.is_absolute() {
+        installed_path.to_path_buf()
+    } else {
+        resource_path.join(installed_path)
+    };
+    let metadata = fs::metadata(&absolute_path).with_path(&absolute_path)?;
+    let relative_or_absolute = absolute_path
+        .strip_prefix(resource_path)
+        .map(|path| {
+            if path.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                path.to_path_buf()
+            }
+        })
+        .unwrap_or_else(|_| absolute_path.clone());
+
+    Ok(InstalledFileReceipt {
+        path: relative_or_absolute,
+        sha256: metadata
+            .is_file()
+            .then(|| sha256_file(&absolute_path))
+            .transpose()?,
+        size: metadata.is_file().then_some(metadata.len()),
+    })
 }
 
 #[cfg(test)]

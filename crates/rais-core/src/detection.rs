@@ -237,7 +237,7 @@ fn osara_version_from_text(text: &str) -> Option<crate::version::Version> {
     None
 }
 
-fn matching_user_plugin_files(
+pub(crate) fn matching_user_plugin_files(
     resource_path: &Path,
     _platform: Platform,
     spec: &PackageSpec,

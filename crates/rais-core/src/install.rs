@@ -9,8 +9,8 @@ use crate::error::{IoPathContext, RaisError, Result};
 use crate::hash::sha256_file;
 use crate::preflight::{PreflightOptions, PreflightReport, run_install_preflight};
 use crate::receipt::{
-    InstallState, InstalledFileReceipt, PackageReceipt, RECEIPT_RELATIVE_PATH, load_install_state,
-    receipt_path, save_install_state,
+    RECEIPT_RELATIVE_PATH, load_install_state, receipt_path, save_install_state,
+    upsert_package_receipt,
 };
 use crate::rollback::{BackupManifest, BackupManifestFile, save_backup_manifest};
 
@@ -126,7 +126,17 @@ pub fn install_cached_artifacts(
             install_extension_file(artifact, &target_path, backup_path.as_deref())?;
         }
 
-        write_package_receipt(&mut state, resource_path, artifact, relative_target)?;
+        upsert_package_receipt(
+            &mut state,
+            resource_path,
+            &artifact.descriptor.package_id,
+            Some(artifact.descriptor.version.clone()),
+            Some(artifact.descriptor.url.clone()),
+            Some(artifact.sha256.clone()),
+            &[target_path],
+            Some(install_timestamp()),
+            Some(artifact.descriptor.architecture),
+        )?;
     }
 
     if !options.dry_run && !artifacts.is_empty() {
@@ -284,35 +294,6 @@ fn write_backup_manifest(
             receipt_backup_path,
         },
     )
-}
-
-fn write_package_receipt(
-    state: &mut InstallState,
-    resource_path: &Path,
-    artifact: &CachedArtifact,
-    relative_target: PathBuf,
-) -> Result<()> {
-    let absolute_target = resource_path.join(&relative_target);
-    let metadata = fs::metadata(&absolute_target).with_path(&absolute_target)?;
-    let receipt = PackageReceipt {
-        id: artifact.descriptor.package_id.clone(),
-        version: Some(artifact.descriptor.version.clone()),
-        source_url: Some(artifact.descriptor.url.clone()),
-        source_sha256: Some(artifact.sha256.clone()),
-        installed_files: vec![InstalledFileReceipt {
-            path: relative_target,
-            sha256: Some(sha256_file(&absolute_target)?),
-            size: Some(metadata.len()),
-        }],
-        installed_at: Some(install_timestamp()),
-        rais_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        architecture: Some(artifact.descriptor.architecture),
-    };
-
-    state
-        .packages
-        .insert(artifact.descriptor.package_id.clone(), receipt);
-    Ok(())
 }
 
 fn install_timestamp() -> String {

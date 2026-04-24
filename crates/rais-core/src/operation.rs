@@ -8,13 +8,20 @@ use crate::artifact::{
     ArtifactDescriptor, ArtifactKind, CachedArtifact, download_artifacts, expected_artifact_kind,
     resolve_latest_artifacts,
 };
-use crate::detection::{default_standard_installation, detect_components};
-use crate::error::IoPathContext;
+use crate::detection::{
+    default_standard_installation, detect_components, matching_user_plugin_files,
+};
+use crate::error::{IoPathContext, RaisError};
 use crate::hash::sha256_file;
 use crate::install::{InstallFileReport, InstallOptions, InstallReport, install_cached_artifacts};
 use crate::model::{Architecture, ComponentDetection, Platform};
+use crate::package::package_specs_by_id;
 use crate::plan::PlanActionKind;
 use crate::preflight::ensure_resource_path_ready;
+use crate::receipt::{
+    InstallState, RECEIPT_RELATIVE_PATH, load_install_state, receipt_path, save_install_state,
+    upsert_package_receipt,
+};
 use crate::rollback::{BackupManifest, BackupManifestFile, save_backup_manifest};
 use crate::upstream::execute_planned_execution;
 
@@ -32,6 +39,8 @@ pub struct PackageOperationReport {
     pub resource_path: PathBuf,
     pub dry_run: bool,
     pub install_report: Option<InstallReport>,
+    pub receipt_backup_path: Option<PathBuf>,
+    pub receipt_backup_manifest_path: Option<PathBuf>,
     pub items: Vec<PackageOperationItem>,
 }
 
@@ -270,6 +279,15 @@ pub fn execute_resolved_package_operation_with_detections(
         );
     }
 
+    let mut receipt_backup_path = None;
+    let mut receipt_backup_manifest_path = None;
+    let mut unattended_state = if options.dry_run || unattended_installable.is_empty() {
+        None
+    } else {
+        Some(load_install_state(resource_path)?.unwrap_or_default())
+    };
+    let mut unattended_receipts_updated = false;
+
     if options.dry_run {
         items.extend(unattended_installable.into_iter().map(|planned| {
             planned_unattended_item(
@@ -294,6 +312,32 @@ pub fn execute_resolved_package_operation_with_detections(
                 options.target_app_path.as_deref(),
                 options.replace_osara_keymap,
             )?);
+            if let Some(state) = &mut unattended_state {
+                upsert_unattended_package_receipt(
+                    state,
+                    resource_path,
+                    &planned.artifact,
+                    cached,
+                    options.target_app_path.as_deref(),
+                    options.replace_osara_keymap,
+                )?;
+                unattended_receipts_updated = true;
+            }
+        }
+        if unattended_receipts_updated {
+            let backup_id = operation_timestamp();
+            let backup_set = resource_path.join("RAIS").join("backups").join(&backup_id);
+            receipt_backup_path = backup_receipt_if_present(resource_path, &backup_set)?;
+            if let Some(path) = &receipt_backup_path {
+                receipt_backup_manifest_path = Some(write_receipt_backup_manifest(
+                    &backup_set,
+                    &backup_id,
+                    path,
+                )?);
+            }
+            if let Some(state) = &unattended_state {
+                save_install_state(resource_path, state)?;
+            }
         }
     }
 
@@ -349,6 +393,8 @@ pub fn execute_resolved_package_operation_with_detections(
         resource_path: resource_path.to_path_buf(),
         dry_run: options.dry_run,
         install_report,
+        receipt_backup_path,
+        receipt_backup_manifest_path,
         items,
     })
 }
@@ -574,14 +620,14 @@ fn executed_unattended_item(
         && replace_osara_keymap
     {
         if post_install.backup_paths.is_empty() {
-            "RAIS ran the upstream installer unattended and applied the OSARA key map replacement."
+            "RAIS ran the upstream installer unattended, applied the OSARA key map replacement, and updated the RAIS receipt."
                 .to_string()
         } else {
-            "RAIS ran the upstream installer unattended, backed up reaper-kb.ini, and applied the OSARA key map replacement."
+            "RAIS ran the upstream installer unattended, backed up reaper-kb.ini, applied the OSARA key map replacement, and updated the RAIS receipt."
                 .to_string()
         }
     } else {
-        "RAIS ran the upstream installer unattended and verified the expected target paths."
+        "RAIS ran the upstream installer unattended, verified the expected target paths, and updated the RAIS receipt."
             .to_string()
     };
 
@@ -598,6 +644,116 @@ fn executed_unattended_item(
         planned_execution: Some(planned_execution),
         manual_instruction: None,
     })
+}
+
+fn upsert_unattended_package_receipt(
+    state: &mut InstallState,
+    resource_path: &Path,
+    artifact: &ArtifactDescriptor,
+    cached_artifact: &CachedArtifact,
+    target_app_path: Option<&Path>,
+    replace_osara_keymap: bool,
+) -> Result<()> {
+    let installed_paths = receipt_paths_for_artifact(
+        artifact,
+        resource_path,
+        target_app_path,
+        replace_osara_keymap,
+    )?;
+    upsert_package_receipt(
+        state,
+        resource_path,
+        &artifact.package_id,
+        Some(artifact.version.clone()),
+        Some(artifact.url.clone()),
+        Some(cached_artifact.sha256.clone()),
+        &installed_paths,
+        Some(operation_timestamp()),
+        Some(artifact.architecture),
+    )
+}
+
+fn receipt_paths_for_artifact(
+    artifact: &ArtifactDescriptor,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+    replace_osara_keymap: bool,
+) -> Result<Vec<PathBuf>> {
+    let effective_target_app_path =
+        effective_target_app_path(artifact, resource_path, target_app_path);
+    let mut paths = Vec::new();
+
+    if artifact.package_id == crate::package::PACKAGE_REAPER {
+        if let Some(path) = effective_target_app_path
+            .as_ref()
+            .filter(|path| path.exists())
+        {
+            paths.push(path.clone());
+            if target_likely_portable(resource_path, Some(path)) {
+                let ini_path = resource_path.join("reaper.ini");
+                if ini_path.exists() {
+                    paths.push(ini_path);
+                }
+            } else if resource_path.exists() {
+                paths.push(resource_path.to_path_buf());
+            }
+        }
+    }
+
+    let package_specs = package_specs_by_id(artifact.platform);
+    if let Some(spec) = package_specs.get(&artifact.package_id) {
+        paths.extend(matching_user_plugin_files(
+            resource_path,
+            artifact.platform,
+            spec,
+        )?);
+    }
+
+    match artifact.package_id.as_str() {
+        crate::package::PACKAGE_OSARA => {
+            let keymap_path = resource_path.join("KeyMaps").join("OSARA.ReaperKeyMap");
+            if keymap_path.exists() {
+                paths.push(keymap_path);
+            }
+            let support_dir = resource_path.join("osara");
+            if support_dir.exists() {
+                paths.push(support_dir);
+            }
+            if replace_osara_keymap {
+                let current_keymap = resource_path.join("reaper-kb.ini");
+                if current_keymap.exists() {
+                    paths.push(current_keymap);
+                }
+            }
+        }
+        crate::package::PACKAGE_SWS => {
+            let script_path = resource_path.join("Scripts").join("sws_python.py");
+            if script_path.exists() {
+                paths.push(script_path);
+            }
+            let grooves_path = resource_path.join("Data").join("Grooves");
+            if grooves_path.exists() {
+                paths.push(grooves_path);
+            }
+        }
+        _ => {}
+    }
+
+    paths.sort();
+    paths.dedup();
+
+    if paths.is_empty() {
+        return Err(RaisError::PostInstallVerificationFailed {
+            missing_paths: planned_verification_paths(
+                artifact,
+                resource_path,
+                effective_target_app_path.as_deref(),
+                replace_osara_keymap,
+            ),
+        });
+    }
+
+    Ok(paths)
 }
 
 fn post_execute_unattended_artifact(
@@ -699,6 +855,46 @@ fn backup_file_for_unattended_change(
     Ok((backup_path, manifest_path))
 }
 
+fn backup_receipt_if_present(resource_path: &Path, backup_set: &Path) -> Result<Option<PathBuf>> {
+    let source_path = receipt_path(resource_path);
+    if !source_path.is_file() {
+        return Ok(None);
+    }
+
+    let backup_path = backup_set.join(RECEIPT_RELATIVE_PATH);
+    if let Some(parent) = backup_path.parent() {
+        std::fs::create_dir_all(parent).with_path(parent)?;
+    }
+    std::fs::copy(&source_path, &backup_path).with_path(&backup_path)?;
+    Ok(Some(backup_path))
+}
+
+fn write_receipt_backup_manifest(
+    backup_set: &Path,
+    created_at: &str,
+    receipt_backup_path: &Path,
+) -> Result<PathBuf> {
+    save_backup_manifest(
+        backup_set,
+        &BackupManifest {
+            schema_version: 1,
+            rais_version: env!("CARGO_PKG_VERSION").to_string(),
+            created_at: created_at.to_string(),
+            reason: "unattended-receipt-update".to_string(),
+            files: vec![BackupManifestFile {
+                package_id: None,
+                original_path: PathBuf::from(RECEIPT_RELATIVE_PATH),
+                backup_path: receipt_backup_path.to_path_buf(),
+                size: std::fs::metadata(receipt_backup_path)
+                    .with_path(receipt_backup_path)?
+                    .len(),
+                sha256: sha256_file(receipt_backup_path)?,
+            }],
+            receipt_backup_path: Some(receipt_backup_path.to_path_buf()),
+        },
+    )
+}
+
 fn replace_file_from_source(source_path: &Path, target_path: &Path) -> Result<()> {
     if let Some(parent) = target_path.parent() {
         std::fs::create_dir_all(parent).with_path(parent)?;
@@ -727,11 +923,14 @@ fn temporary_target_path(target_path: &Path) -> PathBuf {
 }
 
 fn operation_timestamp() -> String {
-    let seconds = SystemTime::now()
+    let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
         .unwrap_or_default();
-    format!("unattended-unix-{seconds}")
+    format!(
+        "unattended-unix-{}-{:09}",
+        duration.as_secs(),
+        duration.subsec_nanos()
+    )
 }
 
 fn planned_execution_for_artifact(
@@ -1279,6 +1478,7 @@ fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
     use tempfile::tempdir;
 
@@ -1288,10 +1488,12 @@ mod tests {
         execute_resolved_package_operation_with_detections,
     };
     use crate::artifact::{ArtifactDescriptor, ArtifactKind};
+    use crate::detection::detect_components;
     use crate::error::RaisError;
     use crate::model::{Architecture, ComponentDetection, Confidence, Platform};
     use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS};
     use crate::plan::PlanActionKind;
+    use crate::receipt::{InstallState, load_install_state, save_install_state};
     use crate::version::Version;
 
     #[test]
@@ -1655,6 +1857,66 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn executes_reaper_windows_portable_installer_unattended_and_writes_receipt() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let source_path = dir.path().join("reaper-installer.cmd");
+        std::fs::write(&source_path, reaper_mock_installer_script()).unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact_with_url(
+                PACKAGE_REAPER,
+                ArtifactKind::Installer,
+                "reaper-installer.cmd",
+                &source_path.display().to_string(),
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: false,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: Some(resource_path.join("reaper.exe")),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.items[0].status,
+            PackageOperationStatus::InstalledOrChecked
+        );
+        assert!(report.items[0].message.contains("updated the RAIS receipt"));
+
+        let state = load_install_state(&resource_path).unwrap().unwrap();
+        let receipt = state.packages.get(PACKAGE_REAPER).unwrap();
+        assert_eq!(receipt.version.as_ref().unwrap().raw(), "1.2.3");
+        assert!(
+            receipt
+                .installed_files
+                .iter()
+                .any(|file| file.path == PathBuf::from("reaper.exe"))
+        );
+        assert!(
+            receipt
+                .installed_files
+                .iter()
+                .any(|file| file.path == PathBuf::from("reaper.ini"))
+        );
+
+        let detections = detect_components(&resource_path, Platform::Windows).unwrap();
+        let reaper = detections
+            .iter()
+            .find(|detection| detection.package_id == PACKAGE_REAPER)
+            .unwrap();
+        assert!(reaper.installed);
+        assert_eq!(reaper.detector, "rais-receipt");
+        assert_eq!(reaper.version.as_ref().unwrap().raw(), "1.2.3");
+    }
+
     #[test]
     fn executes_osara_windows_installer_unattended_and_cleans_portable_uninstaller() {
         let dir = tempdir().unwrap();
@@ -1794,6 +2056,70 @@ mod tests {
                 .is_file()
         );
         assert!(resource_path.join("Data").join("Grooves").is_dir());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn unattended_installers_backup_existing_receipt_once_and_merge_package_state() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let osara_source = dir.path().join("osara-installer.cmd");
+        std::fs::write(&osara_source, osara_mock_installer_script()).unwrap();
+        let sws_source = dir.path().join("sws-installer.cmd");
+        std::fs::write(&sws_source, sws_mock_installer_script()).unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+        std::fs::create_dir_all(&resource_path).unwrap();
+        save_install_state(&resource_path, &InstallState::default()).unwrap();
+
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![
+                artifact_with_url(
+                    PACKAGE_OSARA,
+                    ArtifactKind::Installer,
+                    "osara-installer.cmd",
+                    &osara_source.display().to_string(),
+                ),
+                artifact_with_url(
+                    PACKAGE_SWS,
+                    ArtifactKind::Installer,
+                    "sws-installer.cmd",
+                    &sws_source.display().to_string(),
+                ),
+            ],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: false,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: Some(resource_path.join("reaper.exe")),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            report
+                .receipt_backup_path
+                .as_ref()
+                .is_some_and(|path| path.is_file())
+        );
+        assert!(
+            report
+                .receipt_backup_manifest_path
+                .as_ref()
+                .is_some_and(|path| path.is_file())
+        );
+        assert_eq!(
+            std::fs::read_dir(resource_path.join("RAIS").join("backups"))
+                .unwrap()
+                .count(),
+            1
+        );
+
+        let state = load_install_state(&resource_path).unwrap().unwrap();
+        assert!(state.packages.contains_key(PACKAGE_OSARA));
+        assert!(state.packages.contains_key(PACKAGE_SWS));
     }
 
     #[test]
@@ -2124,6 +2450,28 @@ echo osara dll> "%DEST%\UserPlugins\reaper_osara64.dll"
 echo osara keymap> "%DEST%\KeyMaps\OSARA.ReaperKeyMap"
 echo en locale> "%DEST%\osara\locale\en.po"
 echo uninstall> "%DEST%\osara\uninstall.exe"
+exit /b 0
+"#
+    }
+
+    #[cfg(target_os = "windows")]
+    fn reaper_mock_installer_script() -> &'static str {
+        r#"@echo off
+setlocal EnableExtensions EnableDelayedExpansion
+set "DEST="
+set "PORTABLE=0"
+:next
+if "%~1"=="" goto args_done
+set "ARG=%~1"
+if /I "!ARG!"=="/PORTABLE" set "PORTABLE=1"
+if /I "!ARG:~0,3!"=="/D=" set "DEST=!ARG:~3!"
+shift
+goto next
+:args_done
+if "%DEST%"=="" exit /b 4
+mkdir "%DEST%" 2>nul
+echo reaper exe> "%DEST%\reaper.exe"
+if "%PORTABLE%"=="1" echo portable ini> "%DEST%\reaper.ini"
 exit /b 0
 "#
     }

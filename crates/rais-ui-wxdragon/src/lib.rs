@@ -1675,14 +1675,29 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
         .iter()
         .filter_map(|item| item.backup_manifest_path.as_ref())
         .collect::<Vec<_>>();
+    let package_receipt_backup_path = report.package_operation.receipt_backup_path.as_ref();
+    let package_receipt_backup_manifest_path = report
+        .package_operation
+        .receipt_backup_manifest_path
+        .as_ref();
     if report.package_operation.install_report.is_none()
-        && (!item_backup_paths.is_empty() || !item_backup_manifest_paths.is_empty())
+        && (!item_backup_paths.is_empty()
+            || !item_backup_manifest_paths.is_empty()
+            || package_receipt_backup_path.is_some()
+            || package_receipt_backup_manifest_path.is_some())
     {
         detail_lines.push(format_localized_message(
             localizer.as_ref(),
             "wizard-summary-backup-files-created",
-            &[("count", item_backup_paths.len().to_string())],
-            format!("Backup files created: {}", item_backup_paths.len()),
+            &[(
+                "count",
+                (item_backup_paths.len() + usize::from(package_receipt_backup_path.is_some()))
+                    .to_string(),
+            )],
+            format!(
+                "Backup files created: {}",
+                item_backup_paths.len() + usize::from(package_receipt_backup_path.is_some())
+            ),
         ));
     }
     for path in item_backup_paths {
@@ -1694,6 +1709,22 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
         ));
     }
     for path in item_backup_manifest_paths {
+        detail_lines.push(format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-backup-manifest",
+            &[("path", path.display().to_string())],
+            format!("Backup manifest: {}", path.display()),
+        ));
+    }
+    if let Some(path) = package_receipt_backup_path {
+        detail_lines.push(format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-receipt-backup",
+            &[("path", path.display().to_string())],
+            format!("Receipt backup: {}", path.display()),
+        ));
+    }
+    if let Some(path) = package_receipt_backup_manifest_path {
         detail_lines.push(format_localized_message(
             localizer.as_ref(),
             "wizard-summary-backup-manifest",
@@ -3112,6 +3143,8 @@ mod tests {
                 resource_path: PathBuf::from("C:/PortableREAPER"),
                 dry_run: true,
                 install_report: None,
+                receipt_backup_path: None,
+                receipt_backup_manifest_path: None,
                 items: vec![PackageOperationItem {
                     package_id: PACKAGE_OSARA.to_string(),
                     plan_action: PlanActionKind::Install,
@@ -3229,6 +3262,8 @@ mod tests {
                         sha256: "hash".to_string(),
                     }],
                 }),
+                receipt_backup_path: None,
+                receipt_backup_manifest_path: None,
                 items: vec![PackageOperationItem {
                     package_id: PACKAGE_REAPACK.to_string(),
                     plan_action: PlanActionKind::Update,
@@ -3261,6 +3296,84 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Backup file:"))
         );
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line.contains("Receipt backup:"))
+        );
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line.contains("Backup manifest:"))
+        );
+    }
+
+    #[test]
+    fn setup_summary_includes_unattended_receipt_backup_paths() {
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let report = SetupReport {
+            resource_path: PathBuf::from("C:/PortableREAPER"),
+            dry_run: false,
+            resource_init: ResourceInitReport {
+                resource_path: PathBuf::from("C:/PortableREAPER"),
+                dry_run: false,
+                portable: true,
+                preflight: PreflightReport {
+                    passed: true,
+                    checks: Vec::new(),
+                },
+                actions: Vec::new(),
+            },
+            package_operation: PackageOperationReport {
+                resource_path: PathBuf::from("C:/PortableREAPER"),
+                dry_run: false,
+                install_report: None,
+                receipt_backup_path: Some(PathBuf::from(
+                    "C:/PortableREAPER/RAIS/backups/unattended-1/RAIS/install-state.json",
+                )),
+                receipt_backup_manifest_path: Some(PathBuf::from(
+                    "C:/PortableREAPER/RAIS/backups/unattended-1/backup-manifest.json",
+                )),
+                items: vec![PackageOperationItem {
+                    package_id: PACKAGE_OSARA.to_string(),
+                    plan_action: PlanActionKind::Install,
+                    status: PackageOperationStatus::InstalledOrChecked,
+                    artifact: ArtifactDescriptor {
+                        package_id: PACKAGE_OSARA.to_string(),
+                        version: Version::parse("2026.1").unwrap(),
+                        platform: Platform::Windows,
+                        architecture: Architecture::X64,
+                        kind: ArtifactKind::Installer,
+                        url: "https://example.test/osara.exe".to_string(),
+                        file_name: "osara.exe".to_string(),
+                    },
+                    cached_artifact: None,
+                    install_action: None,
+                    backup_paths: Vec::new(),
+                    backup_manifest_path: None,
+                    planned_execution: None,
+                    manual_instruction: None,
+                    message: "RAIS ran the upstream installer unattended, verified the expected target paths, and updated the RAIS receipt.".to_string(),
+                }],
+            },
+        };
+
+        let summary = super::summarize_setup_report(&model, &report);
+
         assert!(
             summary
                 .detail_lines
@@ -3473,6 +3586,8 @@ mod tests {
                 resource_path,
                 dry_run: true,
                 install_report: None,
+                receipt_backup_path: None,
+                receipt_backup_manifest_path: None,
                 items: Vec::new(),
             },
         }

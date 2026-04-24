@@ -84,6 +84,10 @@ paths for:
 - OSARA on Windows, including optional key map replacement with backup
 - SWS on Windows
 
+Those unattended Windows installer paths now also update RAIS install receipts,
+so later detection can verify the installed state through `RAIS/install-state.json`
+instead of relying only on best-effort file presence or metadata fallbacks.
+
 Other upstream installers and archives are still downloaded or reported for
 manual attention until their package-specific execution steps are added.
 The target design in [DESIGN.md](./DESIGN.md) is full unattended installation

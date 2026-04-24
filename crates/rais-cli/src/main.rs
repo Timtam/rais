@@ -991,6 +991,12 @@ fn print_package_operation_report(report: &PackageOperationReport) {
     if let Some(install_report) = &report.install_report {
         print_preflight_report(&install_report.preflight);
     }
+    if let Some(path) = &report.receipt_backup_path {
+        println!("Receipt backup: {}", path.display());
+    }
+    if let Some(path) = &report.receipt_backup_manifest_path {
+        println!("Backup manifest: {}", path.display());
+    }
 
     for item in &report.items {
         println!("{}", item.package_id);
