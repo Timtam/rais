@@ -4,7 +4,9 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use rais_core::artifact::{ArtifactKind, default_cache_dir, expected_artifact_kind};
-use rais_core::detection::{DiscoveryOptions, detect_components, discover_installations};
+use rais_core::detection::{
+    DiscoveryOptions, default_standard_installation, detect_components, discover_installations,
+};
 use rais_core::latest::fetch_latest_versions;
 use rais_core::localization::{DEFAULT_LOCALE, Localizer};
 use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
@@ -280,10 +282,11 @@ pub fn load_wizard_model(options: UiBootstrapOptions) -> Result<WizardModel> {
     let platform = Platform::current().ok_or(RaisError::UnsupportedPlatform)?;
     let architecture = Architecture::current();
     let localizer = localizer_from_options(&options)?;
-    let installations = discover_installations(&DiscoveryOptions {
+    let discovered_installations = discover_installations(&DiscoveryOptions {
         include_standard: true,
         portable_roots: options.portable_roots.clone(),
     })?;
+    let installations = selectable_installations(platform, discovered_installations);
     let selected_target_index = installations
         .iter()
         .position(|installation| installation.writable);
@@ -310,6 +313,21 @@ pub fn load_wizard_model(options: UiBootstrapOptions) -> Result<WizardModel> {
         available,
         plan,
     ))
+}
+
+fn selectable_installations(
+    platform: Platform,
+    mut installations: Vec<Installation>,
+) -> Vec<Installation> {
+    if !installations
+        .iter()
+        .any(|installation| installation.kind == InstallationKind::Standard)
+    {
+        if let Some(standard) = default_standard_installation(platform) {
+            installations.push(standard);
+        }
+    }
+    installations
 }
 
 fn localizer_from_options(options: &UiBootstrapOptions) -> Result<Localizer> {
@@ -1962,6 +1980,37 @@ mod tests {
     }
 
     #[test]
+    fn selectable_installations_appends_standard_target_when_missing() {
+        let installations =
+            super::selectable_installations(Platform::Windows, vec![fake_installation()]);
+
+        assert_eq!(installations[0].kind, InstallationKind::Portable);
+        assert_eq!(
+            installations
+                .iter()
+                .filter(|installation| installation.kind == InstallationKind::Standard)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn selectable_installations_does_not_duplicate_detected_standard_target() {
+        let installations = super::selectable_installations(
+            Platform::Windows,
+            vec![fake_standard_installation(), fake_installation()],
+        );
+
+        assert_eq!(
+            installations
+                .iter()
+                .filter(|installation| installation.kind == InstallationKind::Standard)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn review_preview_lists_manual_attention_for_selected_packages() {
         let dir = tempdir().unwrap();
         let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
@@ -2456,6 +2505,20 @@ mod tests {
             platform: Platform::Windows,
             app_path: PathBuf::from("C:/REAPER/reaper.exe"),
             resource_path: PathBuf::from("C:/REAPER"),
+            version: Some(Version::parse("7.69").unwrap()),
+            architecture: Some(Architecture::X64),
+            writable: true,
+            confidence: Confidence::High,
+            evidence: Vec::new(),
+        }
+    }
+
+    fn fake_standard_installation() -> Installation {
+        Installation {
+            kind: InstallationKind::Standard,
+            platform: Platform::Windows,
+            app_path: PathBuf::from("C:/Program Files/REAPER/reaper.exe"),
+            resource_path: PathBuf::from("C:/Users/Test/AppData/Roaming/REAPER"),
             version: Some(Version::parse("7.69").unwrap()),
             architecture: Some(Architecture::X64),
             writable: true,

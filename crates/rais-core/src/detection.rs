@@ -49,6 +49,13 @@ pub fn discover_installations(options: &DiscoveryOptions) -> Result<Vec<Installa
     Ok(installations)
 }
 
+pub fn default_standard_installation(platform: Platform) -> Option<Installation> {
+    match platform {
+        Platform::Windows => standard_windows_installation(false),
+        Platform::MacOs => standard_macos_installation(false),
+    }
+}
+
 pub fn detect_components(
     resource_path: &Path,
     platform: Platform,
@@ -273,8 +280,8 @@ fn matching_user_plugin_files(
 
 fn discover_standard_installation(platform: Platform) -> Option<Installation> {
     match platform {
-        Platform::Windows => discover_standard_windows(),
-        Platform::MacOs => discover_standard_macos(),
+        Platform::Windows => standard_windows_installation(true),
+        Platform::MacOs => standard_macos_installation(true),
     }
 }
 
@@ -285,7 +292,7 @@ fn discover_portable_installation(platform: Platform, root: &Path) -> Option<Ins
     }
 }
 
-fn discover_standard_windows() -> Option<Installation> {
+fn standard_windows_installation(require_existing: bool) -> Option<Installation> {
     let resource_path = env::var_os("APPDATA")
         .map(PathBuf::from)
         .map(|path| path.join("REAPER"))?;
@@ -295,7 +302,7 @@ fn discover_standard_windows() -> Option<Installation> {
         .find(|path| path.is_file())
         .unwrap_or_else(|| PathBuf::from(r"C:\Program Files\REAPER\reaper.exe"));
 
-    if !app_path.exists() && !resource_path.exists() {
+    if require_existing && !app_path.exists() && !resource_path.exists() {
         return None;
     }
 
@@ -332,7 +339,9 @@ fn discover_standard_windows() -> Option<Installation> {
         version,
         architecture: Some(Architecture::current()),
         writable: is_probably_writable(&resource_path),
-        confidence: if evidence.len() > 1 {
+        confidence: if !require_existing && evidence.is_empty() {
+            Confidence::Low
+        } else if evidence.len() > 1 {
             Confidence::High
         } else {
             Confidence::Medium
@@ -401,7 +410,7 @@ fn discover_portable_windows(root: &Path) -> Option<Installation> {
     })
 }
 
-fn discover_standard_macos() -> Option<Installation> {
+fn standard_macos_installation(require_existing: bool) -> Option<Installation> {
     let home = env::var_os("HOME").map(PathBuf::from)?;
     let resource_path = home
         .join("Library")
@@ -417,7 +426,7 @@ fn discover_standard_macos() -> Option<Installation> {
     .find(|path| path.exists())
     .unwrap_or_else(|| PathBuf::from("/Applications/REAPER.app"));
 
-    if !app_path.exists() && !resource_path.exists() {
+    if require_existing && !app_path.exists() && !resource_path.exists() {
         return None;
     }
 
@@ -454,7 +463,9 @@ fn discover_standard_macos() -> Option<Installation> {
         version,
         architecture: Some(Architecture::current()),
         writable: is_probably_writable(&resource_path),
-        confidence: if evidence.len() > 1 {
+        confidence: if !require_existing && evidence.is_empty() {
+            Confidence::Low
+        } else if evidence.len() > 1 {
             Confidence::High
         } else {
             Confidence::Medium
@@ -536,7 +547,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        DiscoveryOptions, detect_components, discover_installations, osara_version_from_text,
+        DiscoveryOptions, default_standard_installation, detect_components, discover_installations,
+        osara_version_from_text,
     };
     use crate::model::Platform;
     use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_SWS};
@@ -606,5 +618,27 @@ mod tests {
 
         assert_eq!(osara.version.as_ref().unwrap().raw(), "2024.3.6.1332");
         assert_eq!(osara.detector, "osara-binary-version-string");
+    }
+
+    #[test]
+    fn exposes_default_standard_installation_target() {
+        let Some(platform) = Platform::current() else {
+            return;
+        };
+
+        let installation = default_standard_installation(platform).unwrap();
+
+        assert_eq!(installation.kind, crate::model::InstallationKind::Standard);
+        assert_eq!(installation.platform, platform);
+        match platform {
+            Platform::Windows => {
+                assert!(installation.resource_path.ends_with("REAPER"));
+                assert!(installation.app_path.ends_with("reaper.exe"));
+            }
+            Platform::MacOs => {
+                assert!(installation.resource_path.ends_with("REAPER"));
+                assert!(installation.app_path.ends_with("REAPER.app"));
+            }
+        }
     }
 }
