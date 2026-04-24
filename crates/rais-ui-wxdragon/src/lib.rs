@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
-use rais_core::artifact::{ArtifactKind, default_cache_dir, expected_artifact_kind};
+use rais_core::artifact::{default_cache_dir, expected_artifact_kind};
 use rais_core::detection::{
     DiscoveryOptions, default_standard_installation, detect_components, discover_installations,
 };
@@ -11,7 +11,10 @@ use rais_core::latest::fetch_latest_versions;
 use rais_core::localization::{DEFAULT_LOCALE, Localizer};
 use rais_core::metadata::file_version;
 use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
-use rais_core::operation::{PackageOperationStatus, preview_manual_instruction};
+use rais_core::operation::{
+    PackageAutomationSupport, PackageOperationStatus, package_automation_support,
+    preview_manual_instruction,
+};
 use rais_core::package::{
     BackupPolicy, PACKAGE_OSARA, PackageSpec, builtin_package_specs, package_specs_by_id,
 };
@@ -94,6 +97,7 @@ pub struct WizardText {
     pub packages_osara_keymap_replace_note: String,
     pub package_details_handling_prefix: String,
     pub package_handling_automatic: String,
+    pub package_handling_planned: String,
     pub package_handling_manual: String,
     pub package_handling_unavailable: String,
     pub review_heading: String,
@@ -488,6 +492,7 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
             .text("wizard-package-details-handling-prefix")
             .value,
         package_handling_automatic: localizer.text("wizard-package-handling-automatic").value,
+        package_handling_planned: localizer.text("wizard-package-handling-planned").value,
         package_handling_manual: localizer.text("wizard-package-handling-manual").value,
         package_handling_unavailable: localizer.text("wizard-package-handling-unavailable").value,
         review_heading: localizer.text("wizard-review-heading").value,
@@ -1537,7 +1542,7 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
         .filter(|item| {
             matches!(
                 item.status,
-                PackageOperationStatus::SkippedUnsupported
+                PackageOperationStatus::DeferredUnattended
                     | PackageOperationStatus::SkippedManualReview
             )
         })
@@ -1773,10 +1778,12 @@ fn package_handling_summary(
     platform: Platform,
     architecture: Architecture,
 ) -> (String, bool) {
-    match expected_artifact_kind(package_id, platform, architecture) {
-        Ok(ArtifactKind::ExtensionBinary) => (text.package_handling_automatic.clone(), false),
-        Ok(_) => (text.package_handling_manual.clone(), true),
-        Err(_) => (text.package_handling_unavailable.clone(), true),
+    match package_automation_support(package_id, platform, architecture) {
+        PackageAutomationSupport::Direct => (text.package_handling_automatic.clone(), false),
+        PackageAutomationSupport::PlannedUnattended(_) => {
+            (text.package_handling_planned.clone(), true)
+        }
+        PackageAutomationSupport::Unavailable => (text.package_handling_unavailable.clone(), true),
     }
 }
 
@@ -2095,6 +2102,10 @@ mod tests {
         assert_eq!(model.controls.install_label, "&Install");
         assert_eq!(model.controls.close_label, "&Close");
         assert_eq!(
+            model.text.package_handling_planned,
+            "RAIS is designed to run this package's installer or setup routine itself and finish the installation unattended, but this build still reports the steps instead of executing them."
+        );
+        assert_eq!(
             model.text.packages_osara_keymap_replace_label,
             "Replace current key map with OSARA key map"
         );
@@ -2195,6 +2206,10 @@ mod tests {
         assert!(model.package_rows[0].details.contains("Handling:"));
         assert_eq!(model.package_rows[0].action_label, "Install");
         assert!(model.package_rows[0].manual_attention_expected);
+        assert_eq!(
+            model.package_rows[0].handling_summary,
+            model.text.package_handling_planned
+        );
         assert!(model.package_rows[0].selected);
         assert_eq!(model.package_rows[1].action_label, "Keep");
         assert!(!model.package_rows[1].manual_attention_expected);
@@ -2565,7 +2580,9 @@ mod tests {
         );
         assert!(preview.lines.iter().any(|line| {
             line.contains("REAPER")
-                && line.contains("RAIS will download this package and report the manual steps")
+                && line.contains(
+                    "RAIS is designed to run this package's installer or setup routine itself",
+                )
         }));
         assert!(preview.lines.iter().any(|line| {
             line.contains("RAIS will download the upstream installer during the run.")
@@ -2835,7 +2852,7 @@ mod tests {
                 items: vec![PackageOperationItem {
                     package_id: PACKAGE_OSARA.to_string(),
                     plan_action: PlanActionKind::Install,
-                    status: PackageOperationStatus::SkippedUnsupported,
+                    status: PackageOperationStatus::DeferredUnattended,
                     artifact: ArtifactDescriptor {
                         package_id: PACKAGE_OSARA.to_string(),
                         version: Version::parse("2026.1").unwrap(),
@@ -2854,7 +2871,7 @@ mod tests {
                             "The selected workflow preserves the current key map. Leave reaper-kb.ini unchanged.".to_string(),
                         ],
                     }),
-                    message: "Artifact kind Installer requires a dedicated installer implementation and was not downloaded or executed.".to_string(),
+                    message: "This build has not implemented the planned unattended vendor installer execution path yet. RAIS did not download or run the artifact.".to_string(),
                 }],
             },
         };

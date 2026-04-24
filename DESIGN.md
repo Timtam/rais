@@ -12,6 +12,9 @@ Windows and macOS.
 - Install into an existing standard REAPER installation.
 - Install into an existing portable REAPER installation.
 - Install REAPER and all selected accessibility packages from scratch.
+- Fully automate installation and update of REAPER, OSARA, SWS, and ReaPack
+  without requiring the user to run vendor installers or copy files manually in
+  the normal supported flow.
 - Update REAPER and selected packages when newer versions are available.
 - Detect installed versions where technically possible and clearly report
   "installed, version unknown" where it is not reliable.
@@ -104,6 +107,40 @@ younger Rust layer over a mature toolkit, so RAIS should keep the GUI thin and
 well tested. If wxDragon blocks required accessibility behavior, the fallback
 should be a direct wxWidgets shell with the same view-model boundary rather than
 rewriting the installer engine.
+
+## Primary Automation Requirement
+
+Full unattended installation is part of the product definition, not a stretch
+goal. For the first-class supported package set of REAPER, OSARA, SWS, and
+ReaPack, RAIS should converge on one shared unattended execution path used by
+both the GUI and CLI.
+
+Design rules:
+
+- The normal supported path must not stop at "download and tell the user what to
+  do next" for REAPER, OSARA, SWS, or ReaPack.
+- For executable installers, RAIS itself must download, verify, launch, wait
+  for completion, evaluate exit status, and validate the installed result in the
+  same run.
+- The supported flow must not require the user to manually open an `.exe`,
+  `.pkg`, `.app`, disk image, or extracted archive and click through its setup
+  UI on their own.
+- Any manual-attention flow for those packages is a temporary implementation
+  gap, not acceptable steady-state product behavior.
+- The GUI wizard and CLI must call the same package execution engine so
+  unattended behavior is consistent and testable.
+- RAIS should prefer direct verified file installation for extensions when that
+  is technically reliable, because it is more deterministic and accessible than
+  driving third-party interactive installers.
+- When RAIS must use a vendor installer, it should do so with documented or
+  validated silent arguments, explicit exit-code handling, integrity checks, and
+  a post-install verification pass.
+- "Run upstream installer" in the package model means RAIS invokes the installer
+  itself as part of the installation operation. It does not mean "download the
+  installer and ask the user to run it manually later".
+- If a package cannot currently be installed unattended on a platform, RAIS
+  should mark that as unsupported for that build/platform combination, not treat
+  permanent manual installation as the finished design.
 
 ## RAIS Portability
 
@@ -314,6 +351,42 @@ Initial package kinds:
 - `reapack_package`: install/update through ReaPack later, once ReaPack is
   present and REAPER has been launched.
 
+For the initial supported package set, RAIS should implement these unattended
+strategies:
+
+- REAPER Windows standard install:
+  - download the official installer,
+  - verify signature and version,
+  - invoke it itself with unattended arguments for standard installation,
+  - wait for completion and treat non-zero or unexpected exit codes as failure,
+  - verify `reaper.exe` and the target resource path after completion.
+- REAPER Windows portable install:
+  - either invoke the official installer itself with unattended portable-install
+    arguments or use another validated vendor-supported unattended method,
+  - wait for completion and treat non-zero or unexpected exit codes as failure,
+  - verify both `reaper.exe` and `reaper.ini` in the selected portable folder.
+- REAPER macOS standard install:
+  - download the official disk image or app distribution,
+  - verify signature/notarization,
+  - mount or extract it non-interactively,
+  - copy/install REAPER unattended into `/Applications` or the chosen target,
+  - verify the final app bundle and version.
+- REAPER macOS portable install:
+  - create the portable folder layout unattended,
+  - place the REAPER app bundle there using a verified unattended copy flow,
+  - create or preserve `reaper.ini` as required for portable mode.
+- OSARA:
+  - install unattended by either invoking a validated silent installer path or
+    reproducing the upstream file layout directly into the selected REAPER
+    resource path,
+  - manage the optional keymap replacement as a separate explicit RAIS choice.
+- SWS:
+  - install unattended by placing the correct verified binary into
+    `UserPlugins` for the selected REAPER architecture.
+- ReaPack:
+  - install unattended by placing the correct verified binary into
+    `UserPlugins` for the selected REAPER architecture.
+
 ## Install Targets
 
 Resource path layout:
@@ -368,8 +441,15 @@ Extension files:
    - macOS code signing/notarization checks where available.
 8. Ensure REAPER is not running.
 9. Create backups.
-10. Apply changes using temp files and atomic rename where possible.
+10. Apply changes unattended:
+   - invoke verified silent REAPER install steps where required,
+   - launch installer executables or equivalent package routines directly from
+     RAIS where the package model says so,
+   - copy verified extension files directly where possible,
+   - use temp files and atomic rename where possible.
 11. Write receipt and report.
+12. Verify the final installed state against the plan and report any mismatch as
+    an installation failure, not a silent warning.
 
 ## Safety Behavior
 
@@ -464,6 +544,13 @@ Install tests:
 - clean macOS standard install
 - clean macOS portable install
 - update from older REAPER plus older extensions
+- unattended REAPER Windows standard install end-to-end
+- unattended REAPER Windows portable install end-to-end
+- unattended REAPER macOS standard install end-to-end
+- unattended REAPER macOS portable install end-to-end
+- unattended OSARA install end-to-end
+- unattended SWS install end-to-end
+- unattended ReaPack install end-to-end
 - launch RAIS from a temporary folder with no neighboring resource files
 - existing user key map preserved
 - OSARA key map replacement with backup
@@ -472,15 +559,18 @@ Install tests:
 
 ## Open Questions
 
-- Verify whether the REAPER Windows installer has documented silent install
-  arguments suitable for accessible unattended standard and portable installs.
+- Select and validate the exact unattended invocation strategy for the REAPER
+  Windows installer for both standard and portable targets, including exit
+  codes, logging, and upgrade behavior.
+- Select and validate the exact unattended install strategy for REAPER on macOS:
+  mounted DMG copy flow, packaged installer flow, or another vendor-supported
+  non-interactive path.
 - Confirm SWS and ReaPack macOS binaries expose reliable version metadata
   outside ReaPack's registry DB. If not, RAIS receipts and ReaPack DB should be
   treated as the reliable sources.
-- Decide whether first-version RAIS should install SWS directly from the SWS
-  installer/assets or use ReaPack. Direct file install is simpler before REAPER
-  has launched; ReaPack gives better future package management after it is
-  initialized.
+- Decide whether first-version RAIS should install SWS directly from SWS
+  release assets or through an unattended ReaPack-driven path after ReaPack is
+  present. The design target remains unattended either way.
 - Build a small wxDragon proof of concept and test it with NVDA, Narrator, and
   VoiceOver before expanding it into the full wizard.
 - Verify whether wxDragon exposes the wxWidgets accessibility hooks RAIS needs

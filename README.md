@@ -80,6 +80,11 @@ background thread, updates the progress page, and writes a completion report to
 the Done page. Current engine support automatically copies direct extension
 binaries such as ReaPack; upstream installers and archives are downloaded or
 reported for manual attention until package-specific installer steps are added.
+The target design in [DESIGN.md](./DESIGN.md) is full unattended installation
+and update of REAPER, OSARA, SWS, and ReaPack, including RAIS launching
+executable installers itself during the install run where needed, so those
+manual-attention paths are current implementation gaps rather than intended
+product behavior.
 The first wizard page lists detected REAPER installations and includes a
 separate portable target option. Choosing that portable option enables the
 native directory picker for selecting an existing portable REAPER folder or an

@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 use crate::artifact::{
-    ArtifactDescriptor, ArtifactKind, CachedArtifact, download_artifacts, resolve_latest_artifacts,
+    ArtifactDescriptor, ArtifactKind, CachedArtifact, download_artifacts, expected_artifact_kind,
+    resolve_latest_artifacts,
 };
 use crate::detection::detect_components;
 use crate::install::{InstallFileReport, InstallOptions, InstallReport, install_cached_artifacts};
@@ -50,11 +51,47 @@ pub struct ManualInstallInstruction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum PlannedAutomationKind {
+    VendorInstaller,
+    ArchiveExtraction,
+    DiskImageInstall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PackageAutomationSupport {
+    Direct,
+    PlannedUnattended(PlannedAutomationKind),
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum PackageOperationStatus {
     InstalledOrChecked,
-    SkippedUnsupported,
+    DeferredUnattended,
     SkippedCurrent,
     SkippedManualReview,
+}
+
+pub fn package_automation_support(
+    package_id: &str,
+    platform: Platform,
+    architecture: Architecture,
+) -> PackageAutomationSupport {
+    match expected_artifact_kind(package_id, platform, architecture) {
+        Ok(ArtifactKind::ExtensionBinary) => PackageAutomationSupport::Direct,
+        Ok(ArtifactKind::Installer) => {
+            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::VendorInstaller)
+        }
+        Ok(ArtifactKind::Archive) => {
+            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::ArchiveExtraction)
+        }
+        Ok(ArtifactKind::DiskImage) => {
+            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::DiskImageInstall)
+        }
+        Err(_) => PackageAutomationSupport::Unavailable,
+    }
 }
 
 pub fn execute_package_operation(
@@ -314,16 +351,16 @@ fn skipped_item(
     PackageOperationItem {
         package_id: artifact.package_id.clone(),
         plan_action,
-        status: PackageOperationStatus::SkippedUnsupported,
+        status: PackageOperationStatus::DeferredUnattended,
         message: if cached_artifact.is_some() {
             format!(
-                "Artifact kind {:?} requires a dedicated installer implementation. It was staged in the cache but not executed.",
-                artifact.kind
+                "This build has not implemented the planned unattended {} execution path yet. RAIS staged the artifact in the cache but did not run it.",
+                planned_automation_description(artifact.kind)
             )
         } else {
             format!(
-                "Artifact kind {:?} requires a dedicated installer implementation and was not downloaded or executed.",
-                artifact.kind
+                "This build has not implemented the planned unattended {} execution path yet. RAIS did not download or run the artifact.",
+                planned_automation_description(artifact.kind)
             )
         },
         artifact,
@@ -380,7 +417,10 @@ fn build_manual_instruction(
 ) -> ManualInstallInstruction {
     let mut steps = vec![artifact_access];
     let mut notes = vec![
-        "RAIS has not yet implemented a package-specific automated installer for this artifact kind.".to_string(),
+        format!(
+            "RAIS is designed to launch and complete this package through an unattended {} flow, but this build still requires manual completion.",
+            planned_automation_description(kind)
+        ),
         "Close REAPER before running the installer or copying extension files.".to_string(),
     ];
 
@@ -421,7 +461,7 @@ fn build_manual_instruction(
         crate::package::PACKAGE_REAPER => {
             steps.extend(reaper_manual_steps(kind, resource_path, target_app_path));
             notes.push(
-                "REAPER application installers are not executed by this RAIS engine slice yet."
+                "REAPER application installers should be launched and completed by RAIS itself in supported builds, but this engine slice does not execute them yet."
                     .to_string(),
             );
             if target_likely_portable(resource_path, target_app_path) {
@@ -466,6 +506,15 @@ fn artifact_access_step(kind: ArtifactKind, artifact_location: &str) -> String {
         ArtifactKind::Archive => format!("Extract this archive: {artifact_location}"),
         ArtifactKind::DiskImage => format!("Open this disk image: {artifact_location}"),
         ArtifactKind::ExtensionBinary => format!("Use this extension file: {artifact_location}"),
+    }
+}
+
+fn planned_automation_description(kind: ArtifactKind) -> &'static str {
+    match kind {
+        ArtifactKind::Installer => "vendor installer",
+        ArtifactKind::Archive => "archive extraction",
+        ArtifactKind::DiskImage => "disk image install",
+        ArtifactKind::ExtensionBinary => "direct file install",
     }
 }
 
@@ -656,7 +705,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        PackageOperationOptions, PackageOperationStatus, execute_resolved_package_operation,
+        PackageAutomationSupport, PackageOperationOptions, PackageOperationStatus,
+        PlannedAutomationKind, execute_resolved_package_operation,
         execute_resolved_package_operation_with_detections,
     };
     use crate::artifact::{ArtifactDescriptor, ArtifactKind};
@@ -692,7 +742,7 @@ mod tests {
         assert_eq!(report.items.len(), 1);
         assert_eq!(
             report.items[0].status,
-            PackageOperationStatus::SkippedUnsupported
+            PackageOperationStatus::DeferredUnattended
         );
         assert!(report.items[0].manual_instruction.is_some());
         assert!(
@@ -761,13 +811,33 @@ mod tests {
         assert_eq!(report.items.len(), 1);
         assert_eq!(
             report.items[0].status,
-            PackageOperationStatus::SkippedUnsupported
+            PackageOperationStatus::DeferredUnattended
         );
         assert!(report.items[0].cached_artifact.is_some());
         assert!(
             report.items[0]
                 .message
-                .contains("staged in the cache but not executed")
+                .contains("staged the artifact in the cache but did not run it")
+        );
+    }
+
+    #[test]
+    fn reports_planned_unattended_support_for_installer_artifacts() {
+        assert_eq!(
+            super::package_automation_support(PACKAGE_REAPER, Platform::Windows, Architecture::X64),
+            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::VendorInstaller)
+        );
+        assert_eq!(
+            super::package_automation_support(PACKAGE_OSARA, Platform::MacOs, Architecture::Arm64),
+            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::ArchiveExtraction)
+        );
+        assert_eq!(
+            super::package_automation_support(
+                PACKAGE_REAPACK,
+                Platform::Windows,
+                Architecture::X64
+            ),
+            PackageAutomationSupport::Direct
         );
     }
 
