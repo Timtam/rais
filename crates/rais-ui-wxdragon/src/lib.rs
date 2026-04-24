@@ -77,7 +77,10 @@ pub struct WizardText {
     pub target_portable_folder_message: String,
     pub target_portable_pending_details: String,
     pub target_custom_portable_label: String,
+    pub target_custom_portable_app_path_label: String,
     pub target_custom_portable_path_label: String,
+    pub target_custom_portable_version_label: String,
+    pub target_custom_portable_architecture_label: String,
     pub target_custom_portable_writable_label: String,
     pub target_custom_portable_note: String,
     pub packages_heading: String,
@@ -442,8 +445,17 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
             .text("wizard-target-portable-pending-details")
             .value,
         target_custom_portable_label: localizer.text("wizard-target-custom-portable-label").value,
+        target_custom_portable_app_path_label: localizer
+            .text("wizard-target-custom-portable-app-path-label")
+            .value,
         target_custom_portable_path_label: localizer
             .text("wizard-target-custom-portable-path-label")
+            .value,
+        target_custom_portable_version_label: localizer
+            .text("wizard-target-custom-portable-version-label")
+            .value,
+        target_custom_portable_architecture_label: localizer
+            .text("wizard-target-custom-portable-architecture-label")
             .value,
         target_custom_portable_writable_label: localizer
             .text("wizard-target-custom-portable-writable-label")
@@ -622,6 +634,7 @@ fn target_rows(
                 .as_ref()
                 .map(ToString::to_string)
                 .unwrap_or_else(|| localizer.text("detect-version-unknown").value);
+            let architecture = architecture_text(localizer, installation.architecture);
             TargetRow {
                 label: localizer
                     .format(
@@ -637,6 +650,9 @@ fn target_rows(
                     .format(
                         "wizard-target-details",
                         &[
+                            ("app_path", &installation.app_path.display().to_string()),
+                            ("version", version.as_str()),
+                            ("architecture", architecture.as_str()),
                             ("path", &installation.resource_path.display().to_string()),
                             (
                                 "writable",
@@ -1047,6 +1063,19 @@ pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: 
         model.text.common_no.clone()
     };
     let app_path = portable_reaper_app_path(model.platform, &path);
+    let version_text = unknown_version_text(model);
+    let architecture_text = if app_path.is_some() {
+        match model.architecture {
+            Architecture::X86 => "x86".to_string(),
+            Architecture::X64 => "x64".to_string(),
+            Architecture::Arm64 => "arm64".to_string(),
+            Architecture::Arm64Ec => "arm64ec".to_string(),
+            Architecture::Universal => "universal".to_string(),
+            Architecture::Unknown => unknown_architecture_text(model),
+        }
+    } else {
+        unknown_architecture_text(model)
+    };
     TargetRow {
         label: format!(
             "{}: {}",
@@ -1054,9 +1083,18 @@ pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: 
             path.display()
         ),
         details: format!(
-            "{}: {}\n{}: {}\n{}",
+            "{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}",
+            model.text.target_custom_portable_app_path_label,
+            app_path
+                .as_ref()
+                .unwrap_or(&default_portable_reaper_app_path(model.platform, &path))
+                .display(),
             model.text.target_custom_portable_path_label,
             path.display(),
+            model.text.target_custom_portable_version_label,
+            version_text,
+            model.text.target_custom_portable_architecture_label,
+            architecture_text,
             model.text.target_custom_portable_writable_label,
             writable_text,
             model.text.target_custom_portable_note
@@ -1559,6 +1597,29 @@ fn version_text(localizer: &Localizer, version: Option<&rais_core::version::Vers
         .unwrap_or_else(|| localizer.text("detect-version-unknown").value)
 }
 
+fn architecture_text(localizer: &Localizer, architecture: Option<Architecture>) -> String {
+    match architecture.unwrap_or(Architecture::Unknown) {
+        Architecture::X86 => "x86".to_string(),
+        Architecture::X64 => "x64".to_string(),
+        Architecture::Arm64 => "arm64".to_string(),
+        Architecture::Arm64Ec => "arm64ec".to_string(),
+        Architecture::Universal => "universal".to_string(),
+        Architecture::Unknown => localizer.text("detect-architecture-unknown").value,
+    }
+}
+
+fn unknown_version_text(model: &WizardModel) -> String {
+    localizer_from_options(&model.bootstrap_options)
+        .map(|localizer| localizer.text("detect-version-unknown").value)
+        .unwrap_or_else(|_| "Version unknown".to_string())
+}
+
+fn unknown_architecture_text(model: &WizardModel) -> String {
+    localizer_from_options(&model.bootstrap_options)
+        .map(|localizer| localizer.text("detect-architecture-unknown").value)
+        .unwrap_or_else(|_| "Architecture unknown".to_string())
+}
+
 fn action_label(localizer: &Localizer, action: PlanActionKind) -> String {
     let key = match action {
         PlanActionKind::Install => "action-install",
@@ -1731,6 +1792,13 @@ mod tests {
         assert_eq!(model.target_rows.len(), 1);
         assert!(model.target_rows[0].selected);
         assert!(model.target_rows[0].portable);
+        assert!(
+            model.target_rows[0]
+                .details
+                .contains("REAPER application path")
+        );
+        assert!(model.target_rows[0].details.contains("REAPER version"));
+        assert!(model.target_rows[0].details.contains("Architecture"));
         assert!(model.target_rows[0].details.contains("Writable"));
         assert_eq!(model.package_rows.len(), 2);
         assert_eq!(model.package_rows[0].display_name, "OSARA");
@@ -1885,6 +1953,9 @@ mod tests {
             dir.path().join("PortableREAPER").join("reaper.exe")
         );
         assert!(row.label.contains("Portable REAPER folder"));
+        assert!(row.details.contains("REAPER application path"));
+        assert!(row.details.contains("REAPER version: Version unknown"));
+        assert!(row.details.contains("Architecture: Architecture unknown"));
         assert!(row.details.contains("Portable resource path"));
     }
 

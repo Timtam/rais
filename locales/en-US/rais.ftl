@@ -17,6 +17,7 @@ package-reapack = ReaPack
 detect-installed = Installed
 detect-not-installed = Not installed
 detect-version-unknown = Version unknown
+detect-architecture-unknown = Architecture unknown
 detect-source-receipt = RAIS receipt
 detect-source-files = UserPlugins file presence
 detect-source-reapack-registry = ReaPack registry
@@ -50,15 +51,24 @@ wizard-target-portable-folder-label = Portable folder
 wizard-target-portable-folder-message = Choose a portable REAPER folder, or an empty folder for a new portable setup.
 wizard-target-portable-pending-details = Choose the portable target option, then choose a portable REAPER folder or an empty folder for a new portable setup.
 wizard-target-custom-portable-label = Portable REAPER folder
+wizard-target-custom-portable-app-path-label = REAPER application path
 wizard-target-custom-portable-path-label = Portable resource path
+wizard-target-custom-portable-version-label = REAPER version
+wizard-target-custom-portable-architecture-label = Architecture
 wizard-target-custom-portable-writable-label = Writable
 wizard-target-custom-portable-note = RAIS will create the REAPER resource layout here if it is missing.
 
 # $kind is the detected installation kind, $version is the REAPER version or an unknown-version label, and $path is the resource path.
 wizard-target-row = { $kind } REAPER { $version } at { $path }
 
-# $path is the REAPER resource path, $writable is yes/no, and $confidence is the detection confidence.
-wizard-target-details = Resource path: { $path }
+# $app_path is the REAPER application path, $path is the REAPER resource path,
+# $version is the REAPER version or an unknown-version label, $architecture is the
+# REAPER architecture or an unknown-architecture label, $writable is yes/no, and
+# $confidence is the detection confidence.
+wizard-target-details = REAPER application path: { $app_path }
+    REAPER version: { $version }
+    Architecture: { $architecture }
+    Resource path: { $path }
     Writable: { $writable }
     Detection confidence: { $confidence }
 
