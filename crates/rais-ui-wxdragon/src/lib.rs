@@ -10,7 +10,7 @@ use rais_core::detection::{
 use rais_core::latest::fetch_latest_versions;
 use rais_core::localization::{DEFAULT_LOCALE, Localizer};
 use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
-use rais_core::operation::PackageOperationStatus;
+use rais_core::operation::{PackageOperationStatus, preview_manual_instruction};
 use rais_core::package::{
     BackupPolicy, PACKAGE_OSARA, PackageSpec, builtin_package_specs, package_specs_by_id,
 };
@@ -973,6 +973,12 @@ pub fn build_review_preview_for_package_rows(
                 "{}: {}",
                 package.display_name, package.handling_summary
             ));
+            lines.extend(preview_manual_instruction_lines(
+                model,
+                target,
+                package,
+                osara_keymap_choice,
+            ));
         }
     }
 
@@ -1071,6 +1077,37 @@ fn review_admin_lines(
     } else {
         lines
     }
+}
+
+pub fn preview_manual_instruction_lines(
+    model: &WizardModel,
+    target: &TargetRow,
+    package: &PackageRow,
+    osara_keymap_choice: OsaraKeymapChoice,
+) -> Vec<String> {
+    let Ok(kind) = expected_artifact_kind(&package.package_id, model.platform, model.architecture)
+    else {
+        return Vec::new();
+    };
+    let instruction = preview_manual_instruction(
+        &package.package_id,
+        kind,
+        &target.path,
+        Some(&target.planned_app_path),
+        matches!(osara_keymap_choice, OsaraKeymapChoice::ReplaceCurrent),
+    );
+    let mut lines = instruction
+        .steps
+        .into_iter()
+        .map(|step| format!("  {step}"))
+        .collect::<Vec<_>>();
+    lines.extend(
+        instruction
+            .notes
+            .into_iter()
+            .map(|note| format!("  Note: {note}")),
+    );
+    lines
 }
 
 pub fn wizard_package_plan_for_target(
@@ -2418,6 +2455,14 @@ mod tests {
             line.contains("REAPER")
                 && line.contains("RAIS will download this package and report the manual steps")
         }));
+        assert!(preview.lines.iter().any(|line| {
+            line.contains("RAIS will download the upstream installer during the run.")
+        }));
+        assert!(
+            preview.lines.iter().any(|line| {
+                line.contains("Portable install") && line.contains("PortableREAPER")
+            })
+        );
     }
 
     #[test]

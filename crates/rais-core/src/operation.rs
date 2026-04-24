@@ -343,16 +343,51 @@ fn manual_instruction_for_artifact(
     let artifact_location = cached_artifact
         .map(|cached| cached.path.display().to_string())
         .unwrap_or_else(|| artifact.url.clone());
-    let mut steps = vec![artifact_access_step(artifact.kind, &artifact_location)];
+    build_manual_instruction(
+        &artifact.package_id,
+        artifact.kind,
+        artifact_access_step(artifact.kind, &artifact_location),
+        resource_path,
+        target_app_path,
+        replace_osara_keymap,
+    )
+}
+
+pub fn preview_manual_instruction(
+    package_id: &str,
+    kind: ArtifactKind,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+    replace_osara_keymap: bool,
+) -> ManualInstallInstruction {
+    build_manual_instruction(
+        package_id,
+        kind,
+        preview_artifact_access_step(kind),
+        resource_path,
+        target_app_path,
+        replace_osara_keymap,
+    )
+}
+
+fn build_manual_instruction(
+    package_id: &str,
+    kind: ArtifactKind,
+    artifact_access: String,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+    replace_osara_keymap: bool,
+) -> ManualInstallInstruction {
+    let mut steps = vec![artifact_access];
     let mut notes = vec![
         "RAIS has not yet implemented a package-specific automated installer for this artifact kind.".to_string(),
         "Close REAPER before running the installer or copying extension files.".to_string(),
     ];
 
-    match artifact.package_id.as_str() {
+    match package_id {
         crate::package::PACKAGE_OSARA => {
             steps.extend(osara_manual_steps(
-                artifact,
+                kind,
                 resource_path,
                 replace_osara_keymap,
             ));
@@ -375,7 +410,7 @@ fn manual_instruction_for_artifact(
             }
         }
         crate::package::PACKAGE_SWS => {
-            steps.extend(sws_manual_steps(artifact, resource_path));
+            steps.extend(sws_manual_steps(kind, resource_path));
             notes.push(
                 format!(
                     "The SWS installer should target the REAPER installation that uses this resource folder: {}.",
@@ -384,11 +419,7 @@ fn manual_instruction_for_artifact(
             );
         }
         crate::package::PACKAGE_REAPER => {
-            steps.extend(reaper_manual_steps(
-                artifact,
-                resource_path,
-                target_app_path,
-            ));
+            steps.extend(reaper_manual_steps(kind, resource_path, target_app_path));
             notes.push(
                 "REAPER application installers are not executed by this RAIS engine slice yet."
                     .to_string(),
@@ -422,7 +453,7 @@ fn manual_instruction_for_artifact(
     ManualInstallInstruction {
         title: format!(
             "Manual install required for {}",
-            package_title_name(&artifact.package_id)
+            package_title_name(package_id)
         ),
         steps,
         notes,
@@ -438,12 +469,27 @@ fn artifact_access_step(kind: ArtifactKind, artifact_location: &str) -> String {
     }
 }
 
+fn preview_artifact_access_step(kind: ArtifactKind) -> String {
+    match kind {
+        ArtifactKind::Installer => {
+            "RAIS will download the upstream installer during the run.".to_string()
+        }
+        ArtifactKind::Archive => {
+            "RAIS will download the upstream archive during the run.".to_string()
+        }
+        ArtifactKind::DiskImage => "RAIS will download the disk image during the run.".to_string(),
+        ArtifactKind::ExtensionBinary => {
+            "RAIS will use the extension file resolved for this target during the run.".to_string()
+        }
+    }
+}
+
 fn osara_manual_steps(
-    artifact: &ArtifactDescriptor,
+    kind: ArtifactKind,
     resource_path: &Path,
     replace_osara_keymap: bool,
 ) -> Vec<String> {
-    let mut steps = match artifact.kind {
+    let mut steps = match kind {
         ArtifactKind::Installer => vec![format!(
             "When the OSARA installer asks for the REAPER target, choose this resource or portable folder: {}",
             resource_path.display()
@@ -475,8 +521,8 @@ fn osara_manual_steps(
     steps
 }
 
-fn sws_manual_steps(artifact: &ArtifactDescriptor, resource_path: &Path) -> Vec<String> {
-    match artifact.kind {
+fn sws_manual_steps(kind: ArtifactKind, resource_path: &Path) -> Vec<String> {
+    match kind {
         ArtifactKind::Installer => vec![format!(
             "When the SWS installer asks which REAPER installation to update, choose the one that uses this resource folder: {}",
             resource_path.display()
@@ -496,13 +542,13 @@ fn sws_manual_steps(artifact: &ArtifactDescriptor, resource_path: &Path) -> Vec<
 }
 
 fn reaper_manual_steps(
-    artifact: &ArtifactDescriptor,
+    kind: ArtifactKind,
     resource_path: &Path,
     target_app_path: Option<&Path>,
 ) -> Vec<String> {
     let install_destination = target_app_path.map(reaper_install_destination);
     if target_likely_portable(resource_path, target_app_path) {
-        return match artifact.kind {
+        return match kind {
             ArtifactKind::Installer => vec![
                 format!(
                     "In the REAPER installer, choose Portable install and use this folder: {}",
@@ -532,7 +578,7 @@ fn reaper_manual_steps(
         };
     }
 
-    match artifact.kind {
+    match kind {
         ArtifactKind::Installer => {
             let destination = install_destination.unwrap_or_else(|| resource_path.to_path_buf());
             vec![
@@ -932,6 +978,27 @@ mod tests {
                 .steps
                 .iter()
                 .any(|step| step.contains(&dir.path().display().to_string()))
+        );
+    }
+
+    #[test]
+    fn preview_manual_instruction_uses_preview_download_step() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("reaper.exe"), b"stub").unwrap();
+        let instruction = super::preview_manual_instruction(
+            PACKAGE_REAPER,
+            ArtifactKind::Installer,
+            dir.path(),
+            Some(&dir.path().join("reaper.exe")),
+            false,
+        );
+
+        assert!(instruction.steps[0].contains("download the upstream installer"));
+        assert!(
+            instruction
+                .steps
+                .iter()
+                .any(|step| step.contains("Portable install"))
         );
     }
 

@@ -12,9 +12,9 @@ use rais_ui_wxdragon::{
     OsaraKeymapChoice, TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel,
     WizardOutcomeReport, build_review_preview_for_package_rows, custom_portable_target_row,
     execute_wizard_install, install_request_from_target_and_rows, load_wizard_model,
-    osara_keymap_note, osara_selected_for_rows, save_wizard_outcome_report,
-    wizard_outcome_report_from_error, wizard_outcome_report_from_success,
-    wizard_package_plan_for_target,
+    osara_keymap_note, osara_selected_for_rows, preview_manual_instruction_lines,
+    save_wizard_outcome_report, wizard_outcome_report_from_error,
+    wizard_outcome_report_from_success, wizard_package_plan_for_target,
 };
 use wxdragon::prelude::*;
 use wxdragon::widgets::SimpleBook;
@@ -1059,6 +1059,14 @@ fn progress_details_for_start(
                 "{}: {}",
                 package.display_name, package.handling_summary
             ));
+            if let Some(target) = target {
+                lines.extend(preview_manual_instruction_lines(
+                    model,
+                    target,
+                    package,
+                    osara_keymap_choice,
+                ));
+            }
         }
     }
 
