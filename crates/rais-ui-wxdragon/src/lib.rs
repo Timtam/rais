@@ -1012,32 +1012,22 @@ pub fn build_review_preview_for_package_rows(
 }
 
 pub fn package_requires_manual_attention(
-    model: &WizardModel,
+    _model: &WizardModel,
     package: &PackageRow,
-    osara_keymap_choice: OsaraKeymapChoice,
+    _osara_keymap_choice: OsaraKeymapChoice,
 ) -> bool {
     matches!(
         package.action,
         PlanActionKind::Install | PlanActionKind::Update
-    ) && (package.manual_attention_expected
-        || (package.package_id == PACKAGE_OSARA
-            && matches!(model.platform, Platform::Windows)
-            && matches!(osara_keymap_choice, OsaraKeymapChoice::ReplaceCurrent)))
+    ) && package.manual_attention_expected
 }
 
 pub fn manual_attention_handling_summary(
-    model: &WizardModel,
+    _model: &WizardModel,
     package: &PackageRow,
-    osara_keymap_choice: OsaraKeymapChoice,
+    _osara_keymap_choice: OsaraKeymapChoice,
 ) -> String {
-    if package.package_id == PACKAGE_OSARA
-        && matches!(model.platform, Platform::Windows)
-        && matches!(osara_keymap_choice, OsaraKeymapChoice::ReplaceCurrent)
-    {
-        model.text.package_handling_planned.clone()
-    } else {
-        package.handling_summary.clone()
-    }
+    package.handling_summary.clone()
 }
 
 fn review_resource_lines(model: &WizardModel, report: &ResourceInitReport) -> Vec<String> {
@@ -1673,6 +1663,45 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
         }
     }
 
+    let item_backup_paths = report
+        .package_operation
+        .items
+        .iter()
+        .flat_map(|item| item.backup_paths.iter())
+        .collect::<Vec<_>>();
+    let item_backup_manifest_paths = report
+        .package_operation
+        .items
+        .iter()
+        .filter_map(|item| item.backup_manifest_path.as_ref())
+        .collect::<Vec<_>>();
+    if report.package_operation.install_report.is_none()
+        && (!item_backup_paths.is_empty() || !item_backup_manifest_paths.is_empty())
+    {
+        detail_lines.push(format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-backup-files-created",
+            &[("count", item_backup_paths.len().to_string())],
+            format!("Backup files created: {}", item_backup_paths.len()),
+        ));
+    }
+    for path in item_backup_paths {
+        detail_lines.push(format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-backup-file",
+            &[("path", path.display().to_string())],
+            format!("Backup file: {}", path.display()),
+        ));
+    }
+    for path in item_backup_manifest_paths {
+        detail_lines.push(format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-backup-manifest",
+            &[("path", path.display().to_string())],
+            format!("Backup manifest: {}", path.display()),
+        ));
+    }
+
     for item in &report.package_operation.items {
         let package_name = package_display_name(model, &item.package_id);
         detail_lines.push(format_localized_message(
@@ -1939,6 +1968,14 @@ fn predicted_backup_paths_for_package_rows(
         }
 
         backup_paths.extend(existing_package_backup_sources(&target.path, spec));
+        if package.package_id == PACKAGE_OSARA
+            && matches!(osara_keymap_choice, OsaraKeymapChoice::ReplaceCurrent)
+        {
+            let keymap_path = target.path.join("reaper-kb.ini");
+            if keymap_path.is_file() {
+                backup_paths.push(keymap_path);
+            }
+        }
     }
 
     if !backup_paths.is_empty() {
@@ -2668,20 +2705,27 @@ mod tests {
             },
         );
         let target = custom_portable_target_row(&model, dir.path().join("PortableREAPER"), true);
-        let plan = super::wizard_package_plan_for_target(&model, Some(&target)).unwrap();
-        let selected = plan
-            .package_rows
-            .iter()
-            .enumerate()
-            .filter_map(|(index, row)| (row.package_id == PACKAGE_OSARA).then_some(index))
-            .collect::<Vec<_>>();
+        let package_rows = vec![super::PackageRow {
+            package_id: PACKAGE_OSARA.to_string(),
+            display_name: "OSARA".to_string(),
+            selected: true,
+            summary: "OSARA: Install".to_string(),
+            details: "OSARA details".to_string(),
+            installed_version: "Version unknown".to_string(),
+            available_version: "2026.1".to_string(),
+            action: PlanActionKind::Install,
+            action_label: "Install".to_string(),
+            reason: "Missing".to_string(),
+            handling_summary: model.text.package_handling_planned.clone(),
+            manual_attention_expected: true,
+        }];
 
         let preview = super::build_review_preview_for_package_rows(
             &model,
             Some(&target),
-            &selected,
-            &plan.package_rows,
-            &plan.notes,
+            &[0],
+            &package_rows,
+            &[],
             OsaraKeymapChoice::ReplaceCurrent,
         );
 
@@ -2692,20 +2736,11 @@ mod tests {
                 .iter()
                 .any(|line| line == "Manual attention expected")
         );
-        assert!(preview.lines.iter().any(|line| {
-            line.contains("OSARA")
-                && line.contains(
-                    "RAIS is designed to run this package's installer or setup routine itself",
-                )
-        }));
-        assert!(preview.lines.iter().any(|line| {
-            line.contains("RAIS will download the upstream installer during the run.")
-        }));
         assert!(
             preview
                 .lines
                 .iter()
-                .any(|line| line.contains("target, choose this resource or portable folder"))
+                .any(|line| line.contains("OSARA") && line.contains("still reports the steps"))
         );
     }
 
@@ -2803,6 +2838,12 @@ mod tests {
         assert!(preview.lines.iter().any(|line| {
             line.contains("Replace the current key map") && line.contains("reaper-kb.ini")
         }));
+        assert!(
+            !preview
+                .lines
+                .iter()
+                .any(|line| line == "Manual attention expected")
+        );
     }
 
     #[test]
@@ -2865,6 +2906,55 @@ mod tests {
                 .lines
                 .iter()
                 .any(|line| line.contains("install-state.json"))
+        );
+    }
+
+    #[test]
+    fn review_preview_lists_expected_backup_for_osara_keymap_replacement() {
+        let dir = tempdir().unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+        let plugins = resource_path.join("UserPlugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(plugins.join("reaper_osara64.dll"), b"old").unwrap();
+        std::fs::write(resource_path.join("reaper-kb.ini"), b"current keymap").unwrap();
+
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let target = custom_portable_target_row(&model, resource_path, true);
+        let plan = super::wizard_package_plan_for_target(&model, Some(&target)).unwrap();
+        let selected = plan
+            .package_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| (row.package_id == PACKAGE_OSARA).then_some(index))
+            .collect::<Vec<_>>();
+
+        let preview = super::build_review_preview_for_package_rows(
+            &model,
+            Some(&target),
+            &selected,
+            &plan.package_rows,
+            &plan.notes,
+            OsaraKeymapChoice::ReplaceCurrent,
+        );
+
+        assert!(preview.lines.iter().any(|line| line == "Backups expected"));
+        assert!(
+            preview
+                .lines
+                .iter()
+                .any(|line| line.contains("reaper-kb.ini"))
         );
     }
 
@@ -3037,6 +3127,8 @@ mod tests {
                     },
                     cached_artifact: None,
                     install_action: None,
+                    backup_paths: Vec::new(),
+                    backup_manifest_path: None,
                     planned_execution: Some(PlannedExecutionPlan {
                         kind: PlannedExecutionKind::LaunchInstallerExecutable,
                         artifact_location: "https://example.test/osara.exe".to_string(),
@@ -3152,6 +3244,8 @@ mod tests {
                     },
                     cached_artifact: None,
                     install_action: None,
+                    backup_paths: Vec::new(),
+                    backup_manifest_path: None,
                     planned_execution: None,
                     manual_instruction: None,
                     message: "Single extension binary handled by RAIS installer.".to_string(),

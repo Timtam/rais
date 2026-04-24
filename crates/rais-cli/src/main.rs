@@ -1000,6 +1000,12 @@ fn print_package_operation_report(report: &PackageOperationReport) {
         println!("  Version: {}", item.artifact.version);
         println!("  URL: {}", item.artifact.url);
         println!("  Message: {}", item.message);
+        for path in &item.backup_paths {
+            println!("  Backup file: {}", path.display());
+        }
+        if let Some(path) = &item.backup_manifest_path {
+            println!("  Backup manifest: {}", path.display());
+        }
         if let Some(plan) = &item.planned_execution {
             println!("  Planned execution: {:?}", plan.kind);
             println!("    Artifact: {}", plan.artifact_location);

@@ -81,7 +81,7 @@ the Done page. Current engine support automatically copies direct extension
 binaries such as ReaPack. It also now includes unattended upstream-installer
 paths for:
 - REAPER on Windows
-- OSARA on Windows when preserving the current key map
+- OSARA on Windows, including optional key map replacement with backup
 - SWS on Windows
 
 Other upstream installers and archives are still downloaded or reported for
