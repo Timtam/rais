@@ -140,7 +140,9 @@ pub fn execute_resolved_package_operation_with_detections(
                     skipped_item(
                         planned.artifact.clone(),
                         planned.plan_action,
+                        resource_path,
                         cached,
+                        options.target_app_path.as_deref(),
                         options.replace_osara_keymap,
                     )
                 })
@@ -154,7 +156,9 @@ pub fn execute_resolved_package_operation_with_detections(
                     skipped_item(
                         planned.artifact,
                         planned.plan_action,
+                        resource_path,
                         None,
+                        options.target_app_path.as_deref(),
                         options.replace_osara_keymap,
                     )
                 })
@@ -292,12 +296,16 @@ fn manual_review_item(
 fn skipped_item(
     artifact: ArtifactDescriptor,
     plan_action: PlanActionKind,
+    resource_path: &Path,
     cached_artifact: Option<CachedArtifact>,
+    target_app_path: Option<&Path>,
     replace_osara_keymap: bool,
 ) -> PackageOperationItem {
     let manual_instruction = Some(manual_instruction_for_artifact(
         &artifact,
         cached_artifact.as_ref(),
+        resource_path,
+        target_app_path,
         replace_osara_keymap,
     ));
     PackageOperationItem {
@@ -325,11 +333,14 @@ fn skipped_item(
 fn manual_instruction_for_artifact(
     artifact: &ArtifactDescriptor,
     cached_artifact: Option<&CachedArtifact>,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
     replace_osara_keymap: bool,
 ) -> ManualInstallInstruction {
     let artifact_location = cached_artifact
         .map(|cached| cached.path.display().to_string())
         .unwrap_or_else(|| artifact.url.clone());
+    let mut steps = vec![artifact_access_step(artifact.kind, &artifact_location)];
     let mut notes = vec![
         "RAIS has not yet implemented a package-specific automated installer for this artifact kind.".to_string(),
         "Close REAPER before running the installer or copying extension files.".to_string(),
@@ -337,46 +348,256 @@ fn manual_instruction_for_artifact(
 
     match artifact.package_id.as_str() {
         crate::package::PACKAGE_OSARA => {
+            steps.extend(osara_manual_steps(
+                artifact,
+                resource_path,
+                replace_osara_keymap,
+            ));
             notes.push(
                 "OSARA's Windows installer supports standard and portable REAPER targets; preserve an existing key map unless the user explicitly chooses replacement."
                     .to_string(),
             );
             if replace_osara_keymap {
                 notes.push(
-                    "The selected workflow replaces the current key map. Back up reaper-kb.ini before replacing it with the OSARA key map."
-                        .to_string(),
+                    format!(
+                        "The selected workflow replaces the current key map. Back up {} before replacing it with the OSARA key map.",
+                        resource_path.join("reaper-kb.ini").display()
+                    )
                 );
             } else {
-                notes.push(
-                    "The selected workflow preserves the current key map. Leave reaper-kb.ini unchanged."
-                        .to_string(),
-                );
+                notes.push(format!(
+                    "The selected workflow preserves the current key map. Leave {} unchanged.",
+                    resource_path.join("reaper-kb.ini").display()
+                ));
             }
         }
         crate::package::PACKAGE_SWS => {
+            steps.extend(sws_manual_steps(artifact, resource_path));
             notes.push(
-                "SWS installers target the REAPER resource path that contains reaper.ini."
-                    .to_string(),
+                format!(
+                    "The SWS installer should target the REAPER installation that uses this resource folder: {}.",
+                    resource_path.display()
+                )
             );
         }
         crate::package::PACKAGE_REAPER => {
+            steps.extend(reaper_manual_steps(
+                artifact,
+                resource_path,
+                target_app_path,
+            ));
             notes.push(
                 "REAPER application installers are not executed by this RAIS engine slice yet."
                     .to_string(),
             );
+            if target_likely_portable(resource_path, target_app_path) {
+                notes.push(
+                    format!(
+                        "This looks like a portable target. REAPER application files and reaper.ini should end up under {}.",
+                        resource_path.display()
+                    )
+                );
+            } else if let Some(target_app_path) = target_app_path {
+                notes.push(format!(
+                    "This target may require administrator approval if REAPER is installed to {}.",
+                    reaper_install_destination(target_app_path).display()
+                ));
+            }
         }
-        _ => {}
+        _ => {
+            steps.push(format!(
+                "Install or extract the package for this REAPER target: {}",
+                resource_path.display()
+            ));
+        }
     }
 
+    steps.push(
+        "Return to RAIS and run detection again to verify the installed version.".to_string(),
+    );
+
     ManualInstallInstruction {
-        title: format!("Manual install required for {}", artifact.package_id),
-        steps: vec![
-            format!("Use this artifact: {artifact_location}"),
-            "Run the upstream installer or open the archive using the package's documented workflow.".to_string(),
-            "Return to RAIS and run detection again to verify the installed version.".to_string(),
-        ],
+        title: format!(
+            "Manual install required for {}",
+            package_title_name(&artifact.package_id)
+        ),
+        steps,
         notes,
     }
+}
+
+fn artifact_access_step(kind: ArtifactKind, artifact_location: &str) -> String {
+    match kind {
+        ArtifactKind::Installer => format!("Run this installer: {artifact_location}"),
+        ArtifactKind::Archive => format!("Extract this archive: {artifact_location}"),
+        ArtifactKind::DiskImage => format!("Open this disk image: {artifact_location}"),
+        ArtifactKind::ExtensionBinary => format!("Use this extension file: {artifact_location}"),
+    }
+}
+
+fn osara_manual_steps(
+    artifact: &ArtifactDescriptor,
+    resource_path: &Path,
+    replace_osara_keymap: bool,
+) -> Vec<String> {
+    let mut steps = match artifact.kind {
+        ArtifactKind::Installer => vec![format!(
+            "When the OSARA installer asks for the REAPER target, choose this resource or portable folder: {}",
+            resource_path.display()
+        )],
+        ArtifactKind::Archive => vec![format!(
+            "Run the OSARA installer from the extracted archive and target this REAPER resource or portable folder: {}",
+            resource_path.display()
+        )],
+        ArtifactKind::DiskImage => vec![format!(
+            "Run the OSARA installer from the opened disk image and target this REAPER resource or portable folder: {}",
+            resource_path.display()
+        )],
+        ArtifactKind::ExtensionBinary => vec![format!(
+            "Copy the OSARA extension into this REAPER UserPlugins folder: {}",
+            resource_path.join("UserPlugins").display()
+        )],
+    };
+    if replace_osara_keymap {
+        steps.push(format!(
+            "After backing up {}, replace the current key map with the OSARA key map if the installer offers that option.",
+            resource_path.join("reaper-kb.ini").display()
+        ));
+    } else {
+        steps.push(
+            "Preserve the current key map if the OSARA installer offers a replacement option."
+                .to_string(),
+        );
+    }
+    steps
+}
+
+fn sws_manual_steps(artifact: &ArtifactDescriptor, resource_path: &Path) -> Vec<String> {
+    match artifact.kind {
+        ArtifactKind::Installer => vec![format!(
+            "When the SWS installer asks which REAPER installation to update, choose the one that uses this resource folder: {}",
+            resource_path.display()
+        )],
+        ArtifactKind::DiskImage | ArtifactKind::Archive => vec![
+            "Run the SWS installer from the opened package.".to_string(),
+            format!(
+                "Choose the REAPER target that uses this resource folder: {}",
+                resource_path.display()
+            ),
+        ],
+        ArtifactKind::ExtensionBinary => vec![format!(
+            "Copy the SWS extension into this REAPER UserPlugins folder: {}",
+            resource_path.join("UserPlugins").display()
+        )],
+    }
+}
+
+fn reaper_manual_steps(
+    artifact: &ArtifactDescriptor,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+) -> Vec<String> {
+    let install_destination = target_app_path.map(reaper_install_destination);
+    if target_likely_portable(resource_path, target_app_path) {
+        return match artifact.kind {
+            ArtifactKind::Installer => vec![
+                format!(
+                    "In the REAPER installer, choose Portable install and use this folder: {}",
+                    resource_path.display()
+                ),
+                format!(
+                    "After installation, confirm that {} exists.",
+                    resource_path.join("reaper.ini").display()
+                ),
+            ],
+            ArtifactKind::DiskImage | ArtifactKind::Archive => vec![
+                format!(
+                    "Copy REAPER into this portable folder: {}",
+                    install_destination
+                        .unwrap_or_else(|| resource_path.to_path_buf())
+                        .display()
+                ),
+                format!(
+                    "Create or keep {} for the portable resource layout.",
+                    resource_path.join("reaper.ini").display()
+                ),
+            ],
+            ArtifactKind::ExtensionBinary => vec![format!(
+                "Place the REAPER application files under this target: {}",
+                resource_path.display()
+            )],
+        };
+    }
+
+    match artifact.kind {
+        ArtifactKind::Installer => {
+            let destination = install_destination.unwrap_or_else(|| resource_path.to_path_buf());
+            vec![
+                format!(
+                    "Install REAPER to this destination: {}",
+                    destination.display()
+                ),
+                format!(
+                    "After installation, start REAPER once if needed so this resource path exists: {}",
+                    resource_path.display()
+                ),
+            ]
+        }
+        ArtifactKind::DiskImage | ArtifactKind::Archive => {
+            let destination = install_destination.unwrap_or_else(|| resource_path.to_path_buf());
+            vec![
+                format!("Copy REAPER to this destination: {}", destination.display()),
+                format!(
+                    "After installation, start REAPER once if needed so this resource path exists: {}",
+                    resource_path.display()
+                ),
+            ]
+        }
+        ArtifactKind::ExtensionBinary => vec![format!(
+            "Install REAPER for the target that uses this resource path: {}",
+            resource_path.display()
+        )],
+    }
+}
+
+fn target_likely_portable(resource_path: &Path, target_app_path: Option<&Path>) -> bool {
+    target_app_path
+        .is_some_and(|target_app_path| path_is_same_or_nested(target_app_path, resource_path))
+}
+
+fn reaper_install_destination(target_app_path: &Path) -> PathBuf {
+    if target_app_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    {
+        target_app_path
+            .parent()
+            .unwrap_or(target_app_path)
+            .to_path_buf()
+    } else {
+        target_app_path.to_path_buf()
+    }
+}
+
+fn package_title_name(package_id: &str) -> &'static str {
+    match package_id {
+        crate::package::PACKAGE_REAPER => "REAPER",
+        crate::package::PACKAGE_OSARA => "OSARA",
+        crate::package::PACKAGE_SWS => "SWS",
+        crate::package::PACKAGE_REAPACK => "ReaPack",
+        _ => "package",
+    }
+}
+
+fn path_is_same_or_nested(path: &Path, root: &Path) -> bool {
+    let path = normalize_path_for_match(path);
+    let root = normalize_path_for_match(root);
+    path == root || path.starts_with(&root)
+}
+
+fn normalize_path_for_match(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(test)]
@@ -391,7 +612,7 @@ mod tests {
     };
     use crate::artifact::{ArtifactDescriptor, ArtifactKind};
     use crate::model::{Architecture, ComponentDetection, Confidence, Platform};
-    use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK};
+    use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER};
     use crate::plan::PlanActionKind;
     use crate::version::Version;
 
@@ -594,7 +815,119 @@ mod tests {
                 .unwrap()
                 .notes
                 .iter()
-                .any(|note| note.contains("Back up reaper-kb.ini"))
+                .any(|note| note.contains("Back up") && note.contains("reaper-kb.ini"))
+        );
+    }
+
+    #[test]
+    fn staged_unsupported_instruction_points_to_cached_artifact() {
+        let resource_dir = tempdir().unwrap();
+        let cache_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let source_path = source_dir.path().join("osara.exe");
+        fs::write(&source_path, b"installer").unwrap();
+
+        let report = execute_resolved_package_operation(
+            resource_dir.path(),
+            vec![artifact_with_url(
+                PACKAGE_OSARA,
+                ArtifactKind::Installer,
+                "osara.exe",
+                &source_path.display().to_string(),
+            )],
+            cache_dir.path(),
+            &PackageOperationOptions {
+                dry_run: true,
+                allow_reaper_running: false,
+                stage_unsupported: true,
+                replace_osara_keymap: false,
+                target_app_path: None,
+            },
+        )
+        .unwrap();
+
+        let cached_path = report.items[0]
+            .cached_artifact
+            .as_ref()
+            .unwrap()
+            .path
+            .display()
+            .to_string();
+        assert!(
+            report.items[0]
+                .manual_instruction
+                .as_ref()
+                .unwrap()
+                .steps
+                .iter()
+                .any(|step| step.contains(&cached_path))
+        );
+    }
+
+    #[test]
+    fn reaper_manual_instruction_mentions_portable_install_folder() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact(
+                PACKAGE_REAPER,
+                ArtifactKind::Installer,
+                "reaper-install.exe",
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: true,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: Some(resource_path.join("reaper.exe")),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            report.items[0]
+                .manual_instruction
+                .as_ref()
+                .unwrap()
+                .steps
+                .iter()
+                .any(|step| step.contains("Portable install") && step.contains("PortableREAPER"))
+        );
+    }
+
+    #[test]
+    fn osara_manual_instruction_mentions_selected_resource_path() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let report = execute_resolved_package_operation(
+            dir.path(),
+            vec![artifact(
+                PACKAGE_OSARA,
+                ArtifactKind::Installer,
+                "osara.exe",
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: true,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: None,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            report.items[0]
+                .manual_instruction
+                .as_ref()
+                .unwrap()
+                .steps
+                .iter()
+                .any(|step| step.contains(&dir.path().display().to_string()))
         );
     }
 
