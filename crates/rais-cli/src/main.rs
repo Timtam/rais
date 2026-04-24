@@ -25,6 +25,9 @@ use rais_core::rollback::{
     BackupSet, RestoreBackupActionKind, RestoreBackupOptions, RestoreBackupReport,
     list_backup_sets, restore_backup_set,
 };
+use rais_core::self_update::{
+    DEFAULT_SELF_UPDATE_MANIFEST_URL, SelfUpdateCheckReport, check_self_update,
+};
 use rais_core::setup::{SetupOptions, SetupReport, execute_setup_operation};
 use serde::Serialize;
 
@@ -234,6 +237,10 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    SelfUpdate {
+        #[command(subcommand)]
+        command: SelfUpdateCommand,
+    },
     Plan {
         #[arg(long)]
         resource_path: Option<PathBuf>,
@@ -254,6 +261,16 @@ enum Command {
 enum OutputFormat {
     Text,
     Json,
+}
+
+#[derive(Debug, Subcommand)]
+enum SelfUpdateCommand {
+    Check {
+        #[arg(long, default_value = DEFAULT_SELF_UPDATE_MANIFEST_URL)]
+        manifest_url: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -675,6 +692,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 print_portability_report(&report);
             }
         }
+        Command::SelfUpdate { command } => match command {
+            SelfUpdateCommand::Check { manifest_url, json } => {
+                let platform =
+                    Platform::current().ok_or(rais_core::RaisError::UnsupportedPlatform)?;
+                let report = check_self_update(platform, &manifest_url)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print_self_update_report(&report);
+                }
+            }
+        },
         Command::Plan {
             resource_path,
             portable,
@@ -1234,6 +1263,28 @@ fn print_portability_report(report: &PortabilityReport) {
     }
 }
 
+fn print_self_update_report(report: &SelfUpdateCheckReport) {
+    println!("Manifest URL: {}", report.manifest_url);
+    println!("Channel: {}", report.channel);
+    println!("Current version: {}", report.current_version);
+    println!("Latest version: {}", report.latest_version);
+    println!("Published at: {}", report.published_at);
+    println!("Update available: {}", yes_no(report.update_available));
+    println!(
+        "Requires manual transition: {}",
+        yes_no(report.requires_manual_transition)
+    );
+    if let Some(minimum) = report.minimum_supported_previous_version.as_ref() {
+        println!("Minimum supported previous version: {minimum}");
+    }
+    if let Some(url) = report.release_notes_url.as_ref() {
+        println!("Release notes: {url}");
+    }
+    println!("Asset platform: {:?}", report.asset.platform);
+    println!("Asset URL: {}", report.asset.url);
+    println!("Asset SHA-256: {}", report.asset.sha256);
+}
+
 fn portability_status_label(status: PortabilityCheckStatus) -> &'static str {
     match status {
         PortabilityCheckStatus::Passed => "passed",
@@ -1252,7 +1303,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, Command};
+    use super::{Cli, Command, SelfUpdateCommand};
 
     #[test]
     fn setup_command_parses_target_app_path() {
@@ -1329,6 +1380,28 @@ mod tests {
                     Some(PathBuf::from("C:\\Program Files\\REAPER\\reaper.exe"))
                 );
             }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn self_update_check_command_parses_manifest_url() {
+        let cli = Cli::try_parse_from([
+            "rais",
+            "self-update",
+            "check",
+            "--manifest-url",
+            "https://example.test/rais-update-stable.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::SelfUpdate { command } => match command {
+                SelfUpdateCommand::Check { manifest_url, json } => {
+                    assert_eq!(manifest_url, "https://example.test/rais-update-stable.json");
+                    assert!(!json);
+                }
+            },
             other => panic!("unexpected command: {other:?}"),
         }
     }
