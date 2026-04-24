@@ -694,8 +694,6 @@ fn receipt_paths_for_artifact(
                 if ini_path.exists() {
                     paths.push(ini_path);
                 }
-            } else if resource_path.exists() {
-                paths.push(resource_path.to_path_buf());
             }
         }
     }
@@ -1234,8 +1232,6 @@ fn planned_verification_paths(
                 paths.push(target_app_path.to_path_buf());
                 if target_likely_portable(resource_path, Some(target_app_path)) {
                     paths.push(resource_path.join("reaper.ini"));
-                } else {
-                    paths.push(resource_path.to_path_buf());
                 }
             } else {
                 paths.push(resource_path.to_path_buf());
@@ -1730,6 +1726,48 @@ mod tests {
     }
 
     #[test]
+    fn dry_run_reaper_windows_standard_verifies_app_without_resource_directory() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let resource_path = dir.path().join("Roaming").join("REAPER");
+        let target_app_path = dir
+            .path()
+            .join("Program Files")
+            .join("REAPER")
+            .join("reaper.exe");
+
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact(
+                PACKAGE_REAPER,
+                ArtifactKind::Installer,
+                "reaper-install.exe",
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: true,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: Some(target_app_path.clone()),
+            },
+        )
+        .unwrap();
+
+        let plan = report.items[0].planned_execution.as_ref().unwrap();
+
+        assert_eq!(plan.kind, PlannedExecutionKind::LaunchInstallerExecutable);
+        assert_eq!(
+            plan.arguments,
+            vec![
+                "/S".to_string(),
+                format!("/D={}", target_app_path.parent().unwrap().display())
+            ]
+        );
+        assert_eq!(plan.verification_paths, vec![target_app_path]);
+    }
+
+    #[test]
     fn dry_run_osara_windows_preserve_uses_unattended_plan() {
         let dir = tempdir().unwrap();
         let cache = tempdir().unwrap();
@@ -1915,6 +1953,53 @@ mod tests {
         assert!(reaper.installed);
         assert_eq!(reaper.detector, "rais-receipt");
         assert_eq!(reaper.version.as_ref().unwrap().raw(), "1.2.3");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn executes_reaper_windows_standard_installer_and_receipt_tracks_app_only() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let source_path = dir.path().join("reaper-installer.cmd");
+        std::fs::write(&source_path, reaper_mock_installer_script()).unwrap();
+        let resource_path = dir.path().join("AppData").join("Roaming").join("REAPER");
+        std::fs::create_dir_all(&resource_path).unwrap();
+        let target_app_path = dir
+            .path()
+            .join("Program Files")
+            .join("REAPER")
+            .join("reaper.exe");
+
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact_with_url(
+                PACKAGE_REAPER,
+                ArtifactKind::Installer,
+                "reaper-installer.cmd",
+                &source_path.display().to_string(),
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: false,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: Some(target_app_path.clone()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.items[0].status,
+            PackageOperationStatus::InstalledOrChecked
+        );
+        assert!(target_app_path.is_file());
+        assert!(!resource_path.join("reaper.ini").exists());
+
+        let state = load_install_state(&resource_path).unwrap().unwrap();
+        let receipt = state.packages.get(PACKAGE_REAPER).unwrap();
+        assert_eq!(receipt.installed_files.len(), 1);
+        assert_eq!(receipt.installed_files[0].path, target_app_path);
     }
 
     #[test]
