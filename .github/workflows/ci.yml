@@ -1,0 +1,135 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Test rais-core
+        run: cargo test -p rais-core
+
+      - name: Test rais-ui-wxdragon
+        run: cargo test -p rais-ui-wxdragon
+
+      - name: Test rais-cli
+        run: cargo test -p rais-cli
+
+      - name: Check rais-cli
+        run: cargo check -p rais-cli
+
+      - name: Build release CLI
+        run: cargo build --release -p rais-cli
+
+      - name: Build release non-GUI UI shell
+        run: cargo build --release -p rais-ui-wxdragon
+
+  artifacts:
+    name: Artifact (${{ matrix.platform_id }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform_id: windows
+            archive_name: RAIS-windows.zip
+          - os: macos-latest
+            platform_id: macos
+            archive_name: RAIS-macos.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Windows GUI build prerequisites
+        if: matrix.platform_id == 'windows'
+        shell: pwsh
+        run: |
+          choco install llvm ninja --yes --no-progress
+          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install macOS GUI build prerequisites
+        if: matrix.platform_id == 'macos'
+        shell: bash
+        run: |
+          brew install llvm ninja
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+
+      - name: Build release GUI artifact and CLI
+        run: |
+          cargo build --release -p rais-ui-wxdragon --features gui
+          cargo build --release -p rais-cli
+
+      - name: Package Windows release bundle
+        if: matrix.platform_id == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\windows | Out-Null
+          Copy-Item target\release\rais-ui-wxdragon.exe dist\windows\RAIS.exe -Force
+          Copy-Item target\release\rais-cli.exe dist\windows\rais-cli.exe -Force
+          if (Test-Path target\release\rais-ui-wxdragon.pdb) {
+            Copy-Item target\release\rais-ui-wxdragon.pdb dist\windows\RAIS.pdb -Force
+          }
+          if (Test-Path target\release\rais-cli.pdb) {
+            Copy-Item target\release\rais-cli.pdb dist\windows\rais-cli.pdb -Force
+          }
+          Compress-Archive -Path dist\windows\* -DestinationPath dist\${{ matrix.archive_name }} -Force
+          $Hash = (Get-FileHash dist\${{ matrix.archive_name }} -Algorithm SHA256).Hash.ToLowerInvariant()
+          "{0}  {1}" -f $Hash, "${{ matrix.archive_name }}" | Set-Content dist\${{ matrix.archive_name }}.sha256
+
+      - name: Package macOS release bundle
+        if: matrix.platform_id == 'macos'
+        shell: bash
+        run: |
+          mkdir -p dist/macos
+          cp target/release/rais-ui-wxdragon dist/macos/RAIS
+          cp target/release/rais-cli dist/macos/rais-cli
+          ditto -c -k --sequesterRsrc --keepParent dist/macos "dist/${{ matrix.archive_name }}"
+          shasum -a 256 "dist/${{ matrix.archive_name }}" | awk '{print tolower($1) "  ${{ matrix.archive_name }}"}' > "dist/${{ matrix.archive_name }}.sha256"
+
+      - name: Upload release-style artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle-${{ matrix.platform_id }}
+          path: |
+            dist/${{ matrix.archive_name }}
+            dist/${{ matrix.archive_name }}.sha256
+          if-no-files-found: error

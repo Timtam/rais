@@ -138,3 +138,13 @@ cargo run -p rais-ui-wxdragon --features gui
 cargo fmt
 cargo test
 ```
+
+## CI/CD
+
+GitHub Actions workflow files live under `.github/workflows/`:
+
+- `ci.yml`: runs formatting/tests on Windows and macOS and uploads release-style
+  build artifacts for every push and pull request
+- `release.yml`: builds tagged `v*` releases, publishes GitHub Release assets,
+  emits checksums, and generates `rais-update-stable.json` for future RAIS
+  self-update support
