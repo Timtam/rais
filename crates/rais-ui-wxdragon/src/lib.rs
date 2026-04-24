@@ -9,7 +9,9 @@ use rais_core::latest::fetch_latest_versions;
 use rais_core::localization::{DEFAULT_LOCALE, Localizer};
 use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
 use rais_core::operation::PackageOperationStatus;
-use rais_core::package::{PACKAGE_OSARA, PackageSpec, builtin_package_specs};
+use rais_core::package::{
+    BackupPolicy, PACKAGE_OSARA, PackageSpec, builtin_package_specs, package_specs_by_id,
+};
 use rais_core::plan::{
     AvailablePackage, InstallPlan, PlanAction, PlanActionKind, build_install_plan,
 };
@@ -95,6 +97,9 @@ pub struct WizardText {
     pub review_resource_create_directory_prefix: String,
     pub review_resource_create_file_prefix: String,
     pub review_resource_no_changes: String,
+    pub review_backup_heading: String,
+    pub review_backup_file_prefix: String,
+    pub review_backup_no_changes: String,
     pub review_package_heading: String,
     pub review_osara_keymap_heading: String,
     pub review_osara_keymap_preserve: String,
@@ -459,6 +464,9 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
             .text("wizard-review-resource-create-file-prefix")
             .value,
         review_resource_no_changes: localizer.text("wizard-review-resource-no-changes").value,
+        review_backup_heading: localizer.text("wizard-review-backup-heading").value,
+        review_backup_file_prefix: localizer.text("wizard-review-backup-file-prefix").value,
+        review_backup_no_changes: localizer.text("wizard-review-backup-no-changes").value,
         review_package_heading: localizer.text("wizard-review-package-heading").value,
         review_osara_keymap_heading: localizer.text("wizard-review-osara-keymap-heading").value,
         review_osara_keymap_preserve: localizer.text("wizard-review-osara-keymap-preserve").value,
@@ -866,6 +874,15 @@ pub fn build_review_preview_for_package_rows(
     }
 
     lines.push(String::new());
+    lines.push(model.text.review_backup_heading.clone());
+    lines.extend(review_backup_lines(
+        model,
+        target,
+        selected_package_indices,
+        package_rows,
+    ));
+
+    lines.push(String::new());
     lines.push(model.text.review_package_heading.clone());
     if selected_package_indices.is_empty() {
         lines.push(model.text.review_no_package.clone());
@@ -931,6 +948,34 @@ fn review_resource_lines(model: &WizardModel, report: &ResourceInitReport) -> Ve
         lines.push(format!("{prefix}: {}", action.path.display()));
     }
     lines
+}
+
+fn review_backup_lines(
+    model: &WizardModel,
+    target: &TargetRow,
+    selected_package_indices: &[usize],
+    package_rows: &[PackageRow],
+) -> Vec<String> {
+    let backup_paths = predicted_backup_paths_for_package_rows(
+        model,
+        target,
+        selected_package_indices,
+        package_rows,
+    );
+    if backup_paths.is_empty() {
+        vec![model.text.review_backup_no_changes.clone()]
+    } else {
+        backup_paths
+            .into_iter()
+            .map(|path| {
+                format!(
+                    "{}: {}",
+                    model.text.review_backup_file_prefix,
+                    path.display()
+                )
+            })
+            .collect()
+    }
 }
 
 pub fn wizard_package_plan_for_target(
@@ -1243,6 +1288,29 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
         format!("Packages requiring manual attention: {manual_items}"),
     ];
 
+    if let Some(install_report) = &report.package_operation.install_report {
+        let backup_paths = install_report
+            .actions
+            .iter()
+            .filter_map(|action| action.backup_path.as_ref())
+            .collect::<Vec<_>>();
+        if !backup_paths.is_empty()
+            || install_report.receipt_backup_path.is_some()
+            || install_report.backup_manifest_path.is_some()
+        {
+            detail_lines.push(format!("Backup files created: {}", backup_paths.len()));
+            for path in backup_paths {
+                detail_lines.push(format!("Backup file: {}", path.display()));
+            }
+            if let Some(path) = &install_report.receipt_backup_path {
+                detail_lines.push(format!("Receipt backup: {}", path.display()));
+            }
+            if let Some(path) = &install_report.backup_manifest_path {
+                detail_lines.push(format!("Backup manifest: {}", path.display()));
+            }
+        }
+    }
+
     for item in &report.package_operation.items {
         detail_lines.push(format!(
             "{}: {}",
@@ -1353,6 +1421,82 @@ fn package_display_name(model: &WizardModel, package_id: &str) -> String {
         .unwrap_or_else(|| package_id.to_string())
 }
 
+fn predicted_backup_paths_for_package_rows(
+    model: &WizardModel,
+    target: &TargetRow,
+    selected_package_indices: &[usize],
+    package_rows: &[PackageRow],
+) -> Vec<PathBuf> {
+    let package_specs = package_specs_by_id(model.platform);
+    let mut backup_paths = Vec::new();
+
+    for index in selected_package_indices {
+        let Some(package) = package_rows.get(*index) else {
+            continue;
+        };
+        if package.manual_attention_expected
+            || !matches!(
+                package.action,
+                PlanActionKind::Install | PlanActionKind::Update
+            )
+        {
+            continue;
+        }
+
+        let Some(spec) = package_specs.get(&package.package_id) else {
+            continue;
+        };
+        if spec.backup_policy != BackupPolicy::BackupOverwrittenFiles {
+            continue;
+        }
+
+        backup_paths.extend(existing_package_backup_sources(&target.path, spec));
+    }
+
+    if !backup_paths.is_empty() {
+        let receipt_path = target.path.join("RAIS").join("install-state.json");
+        if receipt_path.is_file() {
+            backup_paths.push(receipt_path);
+        }
+    }
+
+    backup_paths.sort();
+    backup_paths.dedup();
+    backup_paths
+}
+
+fn existing_package_backup_sources(resource_path: &Path, spec: &PackageSpec) -> Vec<PathBuf> {
+    let user_plugins = resource_path.join("UserPlugins");
+    if !user_plugins.is_dir() {
+        return Vec::new();
+    }
+
+    fs::read_dir(&user_plugins)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(std::result::Result::ok))
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                return false;
+            };
+            let file_name = file_name.to_ascii_lowercase();
+            let prefix_matches = spec.user_plugin_prefixes.is_empty()
+                || spec
+                    .user_plugin_prefixes
+                    .iter()
+                    .any(|prefix| file_name.starts_with(&prefix.to_ascii_lowercase()));
+            let suffix_matches = spec.user_plugin_suffixes.is_empty()
+                || spec
+                    .user_plugin_suffixes
+                    .iter()
+                    .any(|suffix| file_name.ends_with(&suffix.to_ascii_lowercase()));
+            prefix_matches && suffix_matches
+        })
+        .collect()
+}
+
 fn review_lines(
     localizer: &Localizer,
     target_rows: &[TargetRow],
@@ -1432,6 +1576,7 @@ mod tests {
     use std::path::PathBuf;
 
     use rais_core::artifact::{ArtifactDescriptor, ArtifactKind};
+    use rais_core::install::{InstallFileAction, InstallFileReport, InstallReport};
     use rais_core::localization::{DEFAULT_LOCALE, Localizer};
     use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
     use rais_core::operation::{
@@ -1902,6 +2047,69 @@ mod tests {
     }
 
     #[test]
+    fn review_preview_lists_expected_backup_files_for_direct_updates() {
+        let dir = tempdir().unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+        let plugins = resource_path.join("UserPlugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::create_dir_all(resource_path.join("RAIS")).unwrap();
+        std::fs::write(plugins.join("reaper_reapack-x64.dll"), b"old").unwrap();
+        std::fs::write(resource_path.join("RAIS/install-state.json"), b"{}").unwrap();
+
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let target = custom_portable_target_row(&model, resource_path, true);
+        let package_rows = vec![super::PackageRow {
+            package_id: PACKAGE_REAPACK.to_string(),
+            display_name: "ReaPack".to_string(),
+            selected: true,
+            summary: "ReaPack: Update".to_string(),
+            details: "ReaPack details".to_string(),
+            installed_version: "1.2.5".to_string(),
+            available_version: "1.2.6".to_string(),
+            action: PlanActionKind::Update,
+            action_label: "Update".to_string(),
+            reason: "Outdated".to_string(),
+            handling_summary: model.text.package_handling_automatic.clone(),
+            manual_attention_expected: false,
+        }];
+
+        let preview = super::build_review_preview_for_package_rows(
+            &model,
+            Some(&target),
+            &[0],
+            &package_rows,
+            &[],
+            OsaraKeymapChoice::PreserveCurrent,
+        );
+
+        assert!(preview.lines.iter().any(|line| line == "Backups expected"));
+        assert!(
+            preview
+                .lines
+                .iter()
+                .any(|line| line.contains("reaper_reapack-x64.dll"))
+        );
+        assert!(
+            preview
+                .lines
+                .iter()
+                .any(|line| line.contains("install-state.json"))
+        );
+    }
+
+    #[test]
     fn osara_keymap_note_defaults_to_unavailable_when_osara_is_not_selected() {
         let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
         let model = model_from_plan(
@@ -1986,6 +2194,108 @@ mod tests {
         assert!(summary.detail_lines.iter().any(|line| {
             line.contains("Note:") && line.contains("Leave reaper-kb.ini unchanged")
         }));
+    }
+
+    #[test]
+    fn setup_summary_includes_backup_paths_when_present() {
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+        let report = SetupReport {
+            resource_path: PathBuf::from("C:/PortableREAPER"),
+            dry_run: false,
+            resource_init: ResourceInitReport {
+                resource_path: PathBuf::from("C:/PortableREAPER"),
+                dry_run: false,
+                portable: true,
+                preflight: PreflightReport {
+                    passed: true,
+                    checks: Vec::new(),
+                },
+                actions: Vec::new(),
+            },
+            package_operation: PackageOperationReport {
+                resource_path: PathBuf::from("C:/PortableREAPER"),
+                dry_run: false,
+                install_report: Some(InstallReport {
+                    resource_path: PathBuf::from("C:/PortableREAPER"),
+                    dry_run: false,
+                    preflight: PreflightReport {
+                        passed: true,
+                        checks: Vec::new(),
+                    },
+                    receipt_written: true,
+                    receipt_backup_path: Some(PathBuf::from(
+                        "C:/PortableREAPER/RAIS/backups/unix-1/RAIS/install-state.json",
+                    )),
+                    backup_manifest_path: Some(PathBuf::from(
+                        "C:/PortableREAPER/RAIS/backups/unix-1/backup-manifest.json",
+                    )),
+                    actions: vec![InstallFileReport {
+                        package_id: PACKAGE_REAPACK.to_string(),
+                        source_path: PathBuf::from("C:/cache/reaper_reapack-x64.dll"),
+                        target_path: PathBuf::from(
+                            "C:/PortableREAPER/UserPlugins/reaper_reapack-x64.dll",
+                        ),
+                        backup_path: Some(PathBuf::from(
+                            "C:/PortableREAPER/RAIS/backups/unix-1/UserPlugins/reaper_reapack-x64.dll",
+                        )),
+                        action: InstallFileAction::Replaced,
+                        size: 7,
+                        sha256: "hash".to_string(),
+                    }],
+                }),
+                items: vec![PackageOperationItem {
+                    package_id: PACKAGE_REAPACK.to_string(),
+                    plan_action: PlanActionKind::Update,
+                    status: PackageOperationStatus::InstalledOrChecked,
+                    artifact: ArtifactDescriptor {
+                        package_id: PACKAGE_REAPACK.to_string(),
+                        version: Version::parse("1.2.6").unwrap(),
+                        platform: Platform::Windows,
+                        architecture: Architecture::X64,
+                        kind: ArtifactKind::ExtensionBinary,
+                        url: "https://example.test/reaper_reapack-x64.dll".to_string(),
+                        file_name: "reaper_reapack-x64.dll".to_string(),
+                    },
+                    cached_artifact: None,
+                    install_action: None,
+                    manual_instruction: None,
+                    message: "Single extension binary handled by RAIS installer.".to_string(),
+                }],
+            },
+        };
+
+        let summary = super::summarize_setup_report(&model, &report);
+
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line.contains("Backup file:"))
+        );
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line.contains("Receipt backup:"))
+        );
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line.contains("Backup manifest:"))
+        );
     }
 
     #[test]
