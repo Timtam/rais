@@ -38,6 +38,7 @@ pub struct PackageOperationItem {
     pub artifact: ArtifactDescriptor,
     pub cached_artifact: Option<CachedArtifact>,
     pub install_action: Option<InstallFileReport>,
+    pub planned_execution: Option<PlannedExecutionPlan>,
     pub manual_instruction: Option<ManualInstallInstruction>,
     pub message: String,
 }
@@ -55,6 +56,24 @@ pub enum PlannedAutomationKind {
     VendorInstaller,
     ArchiveExtraction,
     DiskImageInstall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlannedExecutionKind {
+    LaunchInstallerExecutable,
+    ExtractArchiveAndRunInstaller,
+    MountDiskImageAndRunInstaller,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlannedExecutionPlan {
+    pub kind: PlannedExecutionKind,
+    pub artifact_location: String,
+    pub program: Option<String>,
+    pub arguments: Vec<String>,
+    pub working_directory: Option<PathBuf>,
+    pub verification_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,6 +262,7 @@ pub fn execute_resolved_package_operation_with_detections(
                 artifact: cached.descriptor.clone(),
                 cached_artifact: Some(cached.clone()),
                 install_action: Some(action.clone()),
+                planned_execution: None,
                 manual_instruction: None,
                 message: "Single extension binary handled by RAIS installer.".to_string(),
             });
@@ -313,6 +333,7 @@ fn skipped_current_item(
         artifact,
         cached_artifact: None,
         install_action: None,
+        planned_execution: None,
         manual_instruction: None,
     }
 }
@@ -329,6 +350,7 @@ fn manual_review_item(
         artifact,
         cached_artifact: None,
         install_action: None,
+        planned_execution: None,
         manual_instruction: None,
     }
 }
@@ -341,6 +363,13 @@ fn skipped_item(
     target_app_path: Option<&Path>,
     replace_osara_keymap: bool,
 ) -> PackageOperationItem {
+    let planned_execution = Some(planned_execution_for_artifact(
+        &artifact,
+        cached_artifact.as_ref(),
+        resource_path,
+        target_app_path,
+        replace_osara_keymap,
+    ));
     let manual_instruction = Some(manual_instruction_for_artifact(
         &artifact,
         cached_artifact.as_ref(),
@@ -366,7 +395,64 @@ fn skipped_item(
         artifact,
         cached_artifact,
         install_action: None,
+        planned_execution,
         manual_instruction,
+    }
+}
+
+fn planned_execution_for_artifact(
+    artifact: &ArtifactDescriptor,
+    cached_artifact: Option<&CachedArtifact>,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+    replace_osara_keymap: bool,
+) -> PlannedExecutionPlan {
+    let artifact_location = cached_artifact
+        .map(|cached| cached.path.display().to_string())
+        .unwrap_or_else(|| artifact.url.clone());
+    let verification_paths = planned_verification_paths(
+        &artifact.package_id,
+        resource_path,
+        target_app_path,
+        replace_osara_keymap,
+    );
+
+    match artifact.kind {
+        ArtifactKind::Installer => PlannedExecutionPlan {
+            kind: PlannedExecutionKind::LaunchInstallerExecutable,
+            program: Some(artifact_location.clone()),
+            arguments: Vec::new(),
+            working_directory: cached_artifact
+                .and_then(|cached| cached.path.parent().map(Path::to_path_buf)),
+            artifact_location,
+            verification_paths,
+        },
+        ArtifactKind::Archive => PlannedExecutionPlan {
+            kind: PlannedExecutionKind::ExtractArchiveAndRunInstaller,
+            program: None,
+            arguments: Vec::new(),
+            working_directory: cached_artifact
+                .and_then(|cached| cached.path.parent().map(Path::to_path_buf)),
+            artifact_location,
+            verification_paths,
+        },
+        ArtifactKind::DiskImage => PlannedExecutionPlan {
+            kind: PlannedExecutionKind::MountDiskImageAndRunInstaller,
+            program: None,
+            arguments: Vec::new(),
+            working_directory: None,
+            artifact_location,
+            verification_paths,
+        },
+        ArtifactKind::ExtensionBinary => PlannedExecutionPlan {
+            kind: PlannedExecutionKind::LaunchInstallerExecutable,
+            program: Some(artifact_location.clone()),
+            arguments: Vec::new(),
+            working_directory: cached_artifact
+                .and_then(|cached| cached.path.parent().map(Path::to_path_buf)),
+            artifact_location,
+            verification_paths,
+        },
     }
 }
 
@@ -516,6 +602,48 @@ fn planned_automation_description(kind: ArtifactKind) -> &'static str {
         ArtifactKind::DiskImage => "disk image install",
         ArtifactKind::ExtensionBinary => "direct file install",
     }
+}
+
+fn planned_verification_paths(
+    package_id: &str,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+    replace_osara_keymap: bool,
+) -> Vec<PathBuf> {
+    let mut paths = match package_id {
+        crate::package::PACKAGE_REAPER => {
+            let mut paths = Vec::new();
+            if let Some(target_app_path) = target_app_path {
+                paths.push(target_app_path.to_path_buf());
+                if target_likely_portable(resource_path, Some(target_app_path)) {
+                    paths.push(resource_path.join("reaper.ini"));
+                } else {
+                    paths.push(resource_path.to_path_buf());
+                }
+            } else {
+                paths.push(resource_path.to_path_buf());
+            }
+            paths
+        }
+        crate::package::PACKAGE_OSARA => {
+            let mut paths = vec![
+                resource_path.join("UserPlugins"),
+                resource_path.join("osara"),
+            ];
+            if replace_osara_keymap {
+                paths.push(resource_path.join("reaper-kb.ini"));
+            }
+            paths
+        }
+        crate::package::PACKAGE_SWS | crate::package::PACKAGE_REAPACK => {
+            vec![resource_path.join("UserPlugins")]
+        }
+        _ => vec![resource_path.to_path_buf()],
+    };
+
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 fn preview_artifact_access_step(kind: ArtifactKind) -> String {
@@ -706,7 +834,7 @@ mod tests {
 
     use super::{
         PackageAutomationSupport, PackageOperationOptions, PackageOperationStatus,
-        PlannedAutomationKind, execute_resolved_package_operation,
+        PlannedAutomationKind, PlannedExecutionKind, execute_resolved_package_operation,
         execute_resolved_package_operation_with_detections,
     };
     use crate::artifact::{ArtifactDescriptor, ArtifactKind};
@@ -818,6 +946,60 @@ mod tests {
             report.items[0]
                 .message
                 .contains("staged the artifact in the cache but did not run it")
+        );
+    }
+
+    #[test]
+    fn staged_installer_exposes_launch_plan_with_cached_path() {
+        let resource_dir = tempdir().unwrap();
+        let cache_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let source_path = source_dir.path().join("osara.exe");
+        fs::write(&source_path, b"installer").unwrap();
+
+        let report = execute_resolved_package_operation(
+            resource_dir.path(),
+            vec![artifact_with_url(
+                PACKAGE_OSARA,
+                ArtifactKind::Installer,
+                "osara.exe",
+                &source_path.display().to_string(),
+            )],
+            cache_dir.path(),
+            &PackageOperationOptions {
+                dry_run: true,
+                allow_reaper_running: false,
+                stage_unsupported: true,
+                replace_osara_keymap: true,
+                target_app_path: None,
+            },
+        )
+        .unwrap();
+
+        let plan = report.items[0].planned_execution.as_ref().unwrap();
+        let cached_path = report.items[0]
+            .cached_artifact
+            .as_ref()
+            .unwrap()
+            .path
+            .display()
+            .to_string();
+
+        assert_eq!(plan.kind, PlannedExecutionKind::LaunchInstallerExecutable);
+        assert_eq!(plan.artifact_location, cached_path);
+        assert_eq!(plan.program.as_deref(), Some(cached_path.as_str()));
+        assert_eq!(
+            plan.working_directory.as_deref(),
+            report.items[0]
+                .cached_artifact
+                .as_ref()
+                .unwrap()
+                .path
+                .parent()
+        );
+        assert!(
+            plan.verification_paths
+                .contains(&resource_dir.path().join("reaper-kb.ini"))
         );
     }
 
@@ -1015,6 +1197,46 @@ mod tests {
                 .steps
                 .iter()
                 .any(|step| step.contains("Portable install") && step.contains("PortableREAPER"))
+        );
+    }
+
+    #[test]
+    fn reaper_portable_plan_verifies_app_and_reaper_ini() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+        let target_app_path = resource_path.join("reaper.exe");
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact(
+                PACKAGE_REAPER,
+                ArtifactKind::Installer,
+                "reaper-install.exe",
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: true,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: Some(target_app_path.clone()),
+            },
+        )
+        .unwrap();
+
+        let plan = report.items[0].planned_execution.as_ref().unwrap();
+
+        assert_eq!(plan.kind, PlannedExecutionKind::LaunchInstallerExecutable);
+        assert!(
+            plan.verification_paths.contains(&target_app_path),
+            "missing target app path in verification set: {:?}",
+            plan.verification_paths
+        );
+        assert!(
+            plan.verification_paths
+                .contains(&resource_path.join("reaper.ini")),
+            "missing reaper.ini in verification set: {:?}",
+            plan.verification_paths
         );
     }
 

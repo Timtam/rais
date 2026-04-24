@@ -12,8 +12,8 @@ use rais_core::localization::{DEFAULT_LOCALE, Localizer};
 use rais_core::metadata::file_version;
 use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
 use rais_core::operation::{
-    PackageAutomationSupport, PackageOperationStatus, package_automation_support,
-    preview_manual_instruction,
+    PackageAutomationSupport, PackageOperationStatus, PlannedExecutionKind,
+    package_automation_support, preview_manual_instruction,
 };
 use rais_core::package::{
     BackupPolicy, PACKAGE_OSARA, PackageSpec, builtin_package_specs, package_specs_by_id,
@@ -1655,6 +1655,60 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
             ],
             format!("{package_name}: {}", item.message),
         ));
+        if let Some(plan) = &item.planned_execution {
+            detail_lines.push(format_localized_message(
+                localizer.as_ref(),
+                "wizard-summary-planned-execution-title",
+                &[],
+                "Planned unattended execution:".to_string(),
+            ));
+            let runner = planned_execution_runner_label(localizer.as_ref(), plan.kind);
+            detail_lines.push(format_localized_message(
+                localizer.as_ref(),
+                "wizard-summary-planned-execution-runner",
+                &[("runner", runner.clone())],
+                format!("  Runner: {runner}"),
+            ));
+            detail_lines.push(format_localized_message(
+                localizer.as_ref(),
+                "wizard-summary-planned-execution-artifact",
+                &[("artifact", plan.artifact_location.clone())],
+                format!("  Artifact: {}", plan.artifact_location),
+            ));
+            if let Some(program) = &plan.program {
+                detail_lines.push(format_localized_message(
+                    localizer.as_ref(),
+                    "wizard-summary-planned-execution-program",
+                    &[("program", program.clone())],
+                    format!("  Program: {program}"),
+                ));
+            }
+            if !plan.arguments.is_empty() {
+                let arguments = plan.arguments.join(" ");
+                detail_lines.push(format_localized_message(
+                    localizer.as_ref(),
+                    "wizard-summary-planned-execution-arguments",
+                    &[("arguments", arguments.clone())],
+                    format!("  Arguments: {arguments}"),
+                ));
+            }
+            if let Some(path) = &plan.working_directory {
+                detail_lines.push(format_localized_message(
+                    localizer.as_ref(),
+                    "wizard-summary-planned-execution-working-directory",
+                    &[("path", path.display().to_string())],
+                    format!("  Working directory: {}", path.display()),
+                ));
+            }
+            detail_lines.extend(plan.verification_paths.iter().map(|path| {
+                format_localized_message(
+                    localizer.as_ref(),
+                    "wizard-summary-planned-execution-verify",
+                    &[("path", path.display().to_string())],
+                    format!("  Verify: {}", path.display()),
+                )
+            }));
+        }
         if let Some(manual) = &item.manual_instruction {
             detail_lines.push(format_localized_message(
                 localizer.as_ref(),
@@ -1711,6 +1765,29 @@ fn format_localized_message(
         .map(|(name, value)| (*name, value.as_str()))
         .collect::<Vec<_>>();
     localizer.format(id, &borrowed_args).value
+}
+
+fn planned_execution_runner_label(
+    localizer: Option<&Localizer>,
+    kind: PlannedExecutionKind,
+) -> String {
+    let (id, fallback) = match kind {
+        PlannedExecutionKind::LaunchInstallerExecutable => (
+            "wizard-planned-runner-launch-installer",
+            "Launch installer executable",
+        ),
+        PlannedExecutionKind::ExtractArchiveAndRunInstaller => (
+            "wizard-planned-runner-extract-archive",
+            "Extract archive and run contained installer",
+        ),
+        PlannedExecutionKind::MountDiskImageAndRunInstaller => (
+            "wizard-planned-runner-mount-disk-image",
+            "Mount disk image and run contained installer",
+        ),
+    };
+    localizer
+        .map(|localizer| localizer.text(id).value)
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn package_rows(
@@ -2051,7 +2128,7 @@ mod tests {
     use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
     use rais_core::operation::{
         ManualInstallInstruction, PackageOperationItem, PackageOperationReport,
-        PackageOperationStatus,
+        PackageOperationStatus, PlannedExecutionKind, PlannedExecutionPlan,
     };
     use rais_core::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER};
     use rais_core::plan::{InstallPlan, PlanAction, PlanActionKind};
@@ -2864,6 +2941,17 @@ mod tests {
                     },
                     cached_artifact: None,
                     install_action: None,
+                    planned_execution: Some(PlannedExecutionPlan {
+                        kind: PlannedExecutionKind::LaunchInstallerExecutable,
+                        artifact_location: "https://example.test/osara.exe".to_string(),
+                        program: Some("https://example.test/osara.exe".to_string()),
+                        arguments: Vec::new(),
+                        working_directory: None,
+                        verification_paths: vec![
+                            PathBuf::from("C:/PortableREAPER/UserPlugins"),
+                            PathBuf::from("C:/PortableREAPER/osara"),
+                        ],
+                    }),
                     manual_instruction: Some(ManualInstallInstruction {
                         title: "Manual install required for osara".to_string(),
                         steps: vec!["Use this artifact: https://example.test/osara.exe".to_string()],
@@ -2878,6 +2966,17 @@ mod tests {
 
         let summary = super::summarize_setup_report(&model, &report);
 
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line.contains("Planned unattended execution"))
+        );
+        assert!(
+            summary.detail_lines.iter().any(
+                |line| line.contains("Runner:") && line.contains("Launch installer executable")
+            )
+        );
         assert!(summary.detail_lines.iter().any(|line| {
             line.contains("Note:") && line.contains("Leave reaper-kb.ini unchanged")
         }));
@@ -2957,6 +3056,7 @@ mod tests {
                     },
                     cached_artifact: None,
                     install_action: None,
+                    planned_execution: None,
                     manual_instruction: None,
                     message: "Single extension binary handled by RAIS installer.".to_string(),
                 }],
