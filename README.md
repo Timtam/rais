@@ -82,6 +82,7 @@ binaries such as ReaPack. It also now includes unattended upstream-installer
 paths for:
 - REAPER on Windows
 - OSARA on Windows when preserving the current key map
+- SWS on Windows
 
 Other upstream installers and archives are still downloaded or reported for
 manual attention until their package-specific execution steps are added.

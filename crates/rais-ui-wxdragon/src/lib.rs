@@ -2158,7 +2158,7 @@ mod tests {
         ManualInstallInstruction, PackageOperationItem, PackageOperationReport,
         PackageOperationStatus, PlannedExecutionKind, PlannedExecutionPlan,
     };
-    use rais_core::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER};
+    use rais_core::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS};
     use rais_core::plan::{InstallPlan, PlanAction, PlanActionKind};
     use rais_core::preflight::PreflightReport;
     use rais_core::resource::{
@@ -2738,6 +2738,33 @@ mod tests {
             reaper_row.handling_summary,
             model.text.package_handling_unattended
         );
+    }
+
+    #[test]
+    fn sws_windows_uses_unattended_handling_summary() {
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            Vec::new(),
+            None,
+            InstallPlan {
+                target: None,
+                actions: Vec::new(),
+                notes: Vec::new(),
+            },
+        );
+
+        let (handling_summary, manual_attention_expected) = super::package_handling_summary(
+            &model.text,
+            PACKAGE_SWS,
+            Platform::Windows,
+            Architecture::X64,
+        );
+
+        assert_eq!(handling_summary, model.text.package_handling_unattended);
+        assert!(!manual_attention_expected);
     }
 
     #[test]

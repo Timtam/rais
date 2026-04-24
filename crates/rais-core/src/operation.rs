@@ -117,6 +117,11 @@ pub fn package_automation_support(
         {
             PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
         }
+        (crate::package::PACKAGE_SWS, Ok(ArtifactKind::Installer))
+            if matches!(platform, Platform::Windows) =>
+        {
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
+        }
         (_, Ok(ArtifactKind::Installer)) => {
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::VendorInstaller)
         }
@@ -354,6 +359,12 @@ fn automation_support_for_artifact(
         {
             PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
         }
+        ArtifactKind::Installer
+            if artifact.package_id == crate::package::PACKAGE_SWS
+                && matches!(artifact.platform, Platform::Windows) =>
+        {
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
+        }
         ArtifactKind::Installer => {
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::VendorInstaller)
         }
@@ -587,7 +598,7 @@ fn planned_execution_for_artifact(
     let effective_target_app_path =
         effective_target_app_path(artifact, resource_path, target_app_path);
     let verification_paths = planned_verification_paths(
-        &artifact.package_id,
+        artifact,
         resource_path,
         effective_target_app_path.as_deref(),
         replace_osara_keymap,
@@ -653,6 +664,12 @@ fn installer_arguments_for_artifact(
     {
         return osara_windows_installer_arguments(resource_path);
     }
+    if artifact.package_id == crate::package::PACKAGE_SWS
+        && artifact.kind == ArtifactKind::Installer
+        && matches!(artifact.platform, Platform::Windows)
+    {
+        return sws_windows_installer_arguments(resource_path);
+    }
 
     Vec::new()
 }
@@ -674,6 +691,10 @@ fn reaper_windows_installer_arguments(
 }
 
 fn osara_windows_installer_arguments(resource_path: &Path) -> Vec<String> {
+    vec!["/S".to_string(), format!("/D={}", resource_path.display())]
+}
+
+fn sws_windows_installer_arguments(resource_path: &Path) -> Vec<String> {
     vec!["/S".to_string(), format!("/D={}", resource_path.display())]
 }
 
@@ -853,12 +874,12 @@ fn planned_automation_description(kind: ArtifactKind) -> &'static str {
 }
 
 fn planned_verification_paths(
-    package_id: &str,
+    artifact: &ArtifactDescriptor,
     resource_path: &Path,
     target_app_path: Option<&Path>,
     replace_osara_keymap: bool,
 ) -> Vec<PathBuf> {
-    let mut paths = match package_id {
+    let mut paths = match artifact.package_id.as_str() {
         crate::package::PACKAGE_REAPER => {
             let mut paths = Vec::new();
             if let Some(target_app_path) = target_app_path {
@@ -884,7 +905,14 @@ fn planned_verification_paths(
             }
             paths
         }
-        crate::package::PACKAGE_SWS | crate::package::PACKAGE_REAPACK => {
+        crate::package::PACKAGE_SWS => {
+            let mut paths = vec![resource_path.join("UserPlugins")];
+            if let Some(plugin_path) = sws_primary_plugin_path(resource_path, artifact) {
+                paths.push(plugin_path);
+            }
+            paths
+        }
+        crate::package::PACKAGE_REAPACK => {
             vec![resource_path.join("UserPlugins")]
         }
         _ => vec![resource_path.to_path_buf()],
@@ -893,6 +921,19 @@ fn planned_verification_paths(
     paths.sort();
     paths.dedup();
     paths
+}
+
+fn sws_primary_plugin_path(resource_path: &Path, artifact: &ArtifactDescriptor) -> Option<PathBuf> {
+    let file_name = match (artifact.platform, artifact.architecture) {
+        (Platform::Windows, Architecture::X86) => "reaper_sws-x86.dll",
+        (Platform::Windows, Architecture::X64 | Architecture::Unknown) => "reaper_sws-x64.dll",
+        (Platform::MacOs, Architecture::X86) => "reaper_sws-i386.dylib",
+        (Platform::MacOs, Architecture::X64 | Architecture::Unknown) => "reaper_sws-x86_64.dylib",
+        (Platform::MacOs, Architecture::Arm64) => "reaper_sws-arm64.dylib",
+        _ => return None,
+    };
+
+    Some(resource_path.join("UserPlugins").join(file_name))
 }
 
 fn preview_artifact_access_step(kind: ArtifactKind) -> String {
@@ -1100,7 +1141,7 @@ mod tests {
     use crate::artifact::{ArtifactDescriptor, ArtifactKind};
     use crate::error::RaisError;
     use crate::model::{Architecture, ComponentDetection, Confidence, Platform};
-    use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER};
+    use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS};
     use crate::plan::PlanActionKind;
     use crate::version::Version;
 
@@ -1274,6 +1315,10 @@ mod tests {
             PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
         );
         assert_eq!(
+            super::package_automation_support(PACKAGE_SWS, Platform::Windows, Architecture::X64),
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
+        );
+        assert_eq!(
             super::package_automation_support(PACKAGE_OSARA, Platform::MacOs, Architecture::Arm64),
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::ArchiveExtraction)
         );
@@ -1374,6 +1419,54 @@ mod tests {
     }
 
     #[test]
+    fn dry_run_sws_windows_uses_unattended_plan() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact(
+                PACKAGE_SWS,
+                ArtifactKind::Installer,
+                "sws-installer.exe",
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: true,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: Some(resource_path.join("reaper.exe")),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(
+            report.items[0].status,
+            PackageOperationStatus::PlannedUnattended
+        );
+        assert!(report.items[0].manual_instruction.is_none());
+        assert_eq!(
+            report.items[0]
+                .planned_execution
+                .as_ref()
+                .unwrap()
+                .arguments,
+            vec!["/S".to_string(), format!("/D={}", resource_path.display()),]
+        );
+        assert!(
+            report.items[0]
+                .planned_execution
+                .as_ref()
+                .unwrap()
+                .verification_paths
+                .contains(&resource_path.join("UserPlugins").join("reaper_sws-x64.dll"))
+        );
+    }
+
+    #[test]
     fn osara_replace_keymap_stays_deferred() {
         let dir = tempdir().unwrap();
         let cache = tempdir().unwrap();
@@ -1445,6 +1538,53 @@ mod tests {
         );
         assert!(resource_path.join("osara").join("locale").is_dir());
         assert!(!resource_path.join("osara").join("uninstall.exe").exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn executes_sws_windows_installer_unattended() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let source_path = dir.path().join("sws-installer.cmd");
+        std::fs::write(&source_path, sws_mock_installer_script()).unwrap();
+        let resource_path = dir.path().join("PortableREAPER");
+
+        let report = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact_with_url(
+                PACKAGE_SWS,
+                ArtifactKind::Installer,
+                "sws-installer.cmd",
+                &source_path.display().to_string(),
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: false,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: Some(resource_path.join("reaper.exe")),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.items[0].status,
+            PackageOperationStatus::InstalledOrChecked
+        );
+        assert!(
+            resource_path
+                .join("UserPlugins")
+                .join("reaper_sws-x64.dll")
+                .is_file()
+        );
+        assert!(
+            resource_path
+                .join("Scripts")
+                .join("sws_python.py")
+                .is_file()
+        );
+        assert!(resource_path.join("Data").join("Grooves").is_dir());
     }
 
     #[test]
@@ -1789,6 +1929,29 @@ type nul > "%DEST%\UserPlugins\reaper_osara64.dll"
 type nul > "%DEST%\KeyMaps\OSARA.ReaperKeyMap"
 type nul > "%DEST%\osara\locale\en.po"
 type nul > "%DEST%\osara\uninstall.exe"
+exit /b 0
+"#
+    }
+
+    #[cfg(target_os = "windows")]
+    fn sws_mock_installer_script() -> &'static str {
+        r#"@echo off
+setlocal EnableExtensions EnableDelayedExpansion
+set "DEST="
+:next
+if "%~1"=="" goto args_done
+set "ARG=%~1"
+if /I "!ARG:~0,3!"=="/D=" set "DEST=!ARG:~3!"
+shift
+goto next
+:args_done
+if "%DEST%"=="" exit /b 4
+mkdir "%DEST%\UserPlugins" 2>nul
+mkdir "%DEST%\Scripts" 2>nul
+mkdir "%DEST%\Data\Grooves" 2>nul
+type nul > "%DEST%\UserPlugins\reaper_sws-x64.dll"
+type nul > "%DEST%\Scripts\sws_python.py"
+type nul > "%DEST%\Data\Grooves\default.rgt"
 exit /b 0
 "#
     }
