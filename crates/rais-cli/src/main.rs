@@ -82,6 +82,8 @@ enum Command {
         #[arg(long)]
         resource_path: PathBuf,
         #[arg(long)]
+        target_app_path: Option<PathBuf>,
+        #[arg(long)]
         dry_run: bool,
         #[arg(long)]
         allow_reaper_running: bool,
@@ -95,6 +97,8 @@ enum Command {
     InitResource {
         #[arg(long)]
         resource_path: PathBuf,
+        #[arg(long)]
+        target_app_path: Option<PathBuf>,
         #[arg(long)]
         portable: bool,
         #[arg(long)]
@@ -133,6 +137,8 @@ enum Command {
     InstallExtension {
         #[arg(long)]
         resource_path: PathBuf,
+        #[arg(long)]
+        target_app_path: Option<PathBuf>,
         #[arg(long, required = true)]
         package: Vec<String>,
         #[arg(long, value_enum)]
@@ -153,6 +159,8 @@ enum Command {
     ApplyPackages {
         #[arg(long)]
         resource_path: PathBuf,
+        #[arg(long)]
+        target_app_path: Option<PathBuf>,
         #[arg(long)]
         package: Vec<String>,
         #[arg(long, value_enum)]
@@ -177,6 +185,8 @@ enum Command {
     Setup {
         #[arg(long)]
         resource_path: PathBuf,
+        #[arg(long)]
+        target_app_path: Option<PathBuf>,
         #[arg(long)]
         portable: bool,
         #[arg(long)]
@@ -401,6 +411,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Preflight {
             resource_path,
+            target_app_path,
             dry_run,
             allow_reaper_running,
             report_path,
@@ -412,7 +423,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &PreflightOptions {
                     dry_run,
                     allow_reaper_running,
-                    target_app_path: None,
+                    target_app_path,
                 },
             );
             let report_path =
@@ -429,6 +440,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::InitResource {
             resource_path,
+            target_app_path,
             portable,
             apply,
             allow_reaper_running,
@@ -442,7 +454,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     dry_run: !apply,
                     portable,
                     allow_reaper_running,
-                    target_app_path: None,
+                    target_app_path,
                 },
             )?;
             let report_path = selected_report_path(
@@ -501,6 +513,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::InstallExtension {
             resource_path,
+            target_app_path,
             package,
             architecture,
             cache_dir,
@@ -521,7 +534,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &InstallOptions {
                     dry_run: !apply,
                     allow_reaper_running,
-                    target_app_path: None,
+                    target_app_path,
                 },
             )?;
             let report_path = selected_report_path(
@@ -539,6 +552,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::ApplyPackages {
             resource_path,
+            target_app_path,
             package,
             architecture,
             cache_dir,
@@ -565,7 +579,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     allow_reaper_running,
                     stage_unsupported,
                     replace_osara_keymap,
-                    target_app_path: None,
+                    target_app_path,
                 },
             )?;
             let report_path = selected_report_path(
@@ -583,6 +597,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Setup {
             resource_path,
+            target_app_path,
             portable,
             package,
             architecture,
@@ -611,7 +626,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     allow_reaper_running,
                     stage_unsupported,
                     replace_osara_keymap,
-                    target_app_path: None,
+                    target_app_path,
                 },
             )?;
             let report_path =
@@ -1200,4 +1215,69 @@ fn portability_status_label(status: PortabilityCheckStatus) -> &'static str {
 
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use clap::Parser;
+
+    use super::{Cli, Command};
+
+    #[test]
+    fn setup_command_parses_target_app_path() {
+        let cli = Cli::try_parse_from([
+            "rais",
+            "setup",
+            "--resource-path",
+            "C:\\PortableREAPER",
+            "--target-app-path",
+            "C:\\PortableREAPER\\reaper.exe",
+            "--portable",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Setup {
+                resource_path,
+                target_app_path,
+                portable,
+                ..
+            } => {
+                assert_eq!(resource_path, PathBuf::from("C:\\PortableREAPER"));
+                assert_eq!(
+                    target_app_path,
+                    Some(PathBuf::from("C:\\PortableREAPER\\reaper.exe"))
+                );
+                assert!(portable);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_command_parses_target_app_path() {
+        let cli = Cli::try_parse_from([
+            "rais",
+            "preflight",
+            "--resource-path",
+            "C:\\Users\\Test\\AppData\\Roaming\\REAPER",
+            "--target-app-path",
+            "C:\\Program Files\\REAPER\\reaper.exe",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Preflight {
+                target_app_path, ..
+            } => {
+                assert_eq!(
+                    target_app_path,
+                    Some(PathBuf::from("C:\\Program Files\\REAPER\\reaper.exe"))
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
 }

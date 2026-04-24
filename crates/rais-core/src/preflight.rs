@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sysinfo::{ProcessesToUpdate, System};
 
 use crate::detection::{DiscoveryOptions, discover_installations};
+use crate::error::{RaisError, Result};
 use crate::model::Platform;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +81,16 @@ pub fn run_install_preflight_with_processes(
         .iter()
         .all(|check| check.status != PreflightStatus::Fail);
     PreflightReport { passed, checks }
+}
+
+pub fn ensure_resource_path_ready(resource_path: &Path, dry_run: bool) -> Result<()> {
+    let check = resource_path_check(resource_path, dry_run);
+    if check.status == PreflightStatus::Fail {
+        return Err(RaisError::PreflightFailed {
+            message: format!("{}: {}", check.name, check.message),
+        });
+    }
+    Ok(())
 }
 
 pub fn running_reaper_processes(platform: Option<Platform>) -> Vec<RunningProcess> {

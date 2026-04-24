@@ -10,6 +10,7 @@ use crate::detection::detect_components;
 use crate::install::{InstallFileReport, InstallOptions, InstallReport, install_cached_artifacts};
 use crate::model::{Architecture, ComponentDetection, Platform};
 use crate::plan::PlanActionKind;
+use crate::preflight::ensure_resource_path_ready;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageOperationOptions {
@@ -97,6 +98,8 @@ pub fn execute_resolved_package_operation_with_detections(
     cache_dir: &Path,
     options: &PackageOperationOptions,
 ) -> Result<PackageOperationReport> {
+    ensure_resource_path_ready(resource_path, options.dry_run)?;
+
     let mut items = Vec::new();
     let mut planned_artifacts = Vec::new();
 
@@ -611,6 +614,7 @@ mod tests {
         execute_resolved_package_operation_with_detections,
     };
     use crate::artifact::{ArtifactDescriptor, ArtifactKind};
+    use crate::error::RaisError;
     use crate::model::{Architecture, ComponentDetection, Confidence, Platform};
     use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER};
     use crate::plan::PlanActionKind;
@@ -929,6 +933,46 @@ mod tests {
                 .iter()
                 .any(|step| step.contains(&dir.path().display().to_string()))
         );
+    }
+
+    #[test]
+    fn fails_target_preflight_before_attempting_download() {
+        let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
+        let resource_path = dir.path().join("ProtectedREAPER");
+        let mut permissions = fs::metadata(dir.path()).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(dir.path(), permissions).unwrap();
+
+        let result = execute_resolved_package_operation(
+            &resource_path,
+            vec![artifact_with_url(
+                PACKAGE_REAPACK,
+                ArtifactKind::ExtensionBinary,
+                "reaper_reapack-x64.dll",
+                "http://example.test/reaper_reapack-x64.dll",
+            )],
+            cache.path(),
+            &PackageOperationOptions {
+                dry_run: false,
+                allow_reaper_running: false,
+                stage_unsupported: false,
+                replace_osara_keymap: false,
+                target_app_path: None,
+            },
+        );
+
+        let mut restored = fs::metadata(dir.path()).unwrap().permissions();
+        restored.set_readonly(false);
+        fs::set_permissions(dir.path(), restored).unwrap();
+
+        match result.unwrap_err() {
+            RaisError::PreflightFailed { message } => {
+                assert!(message.contains("resource-path"));
+                assert!(message.contains("read-only"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     fn artifact(package_id: &str, kind: ArtifactKind, file_name: &str) -> ArtifactDescriptor {

@@ -65,6 +65,12 @@ prints the embedded package manifest, including package kind, supported
 platforms and architectures, providers, detector hints, install steps, and
 backup policy.
 
+For `preflight`, `init-resource`, `install-extension`, `apply-packages`, and
+`setup`, pass `--target-app-path` when the selected REAPER application path is
+known and differs from what RAIS can infer from the resource path alone. This
+improves running-process checks and package-specific manual instructions for
+standard installs and custom targets.
+
 `rais-ui-wxdragon` is the native UI crate. Its default build exercises the Rust
 wizard model without requiring wxWidgets native libraries. Build it with
 `--features gui` to run the wxDragon window. The UI defaults to embedded
