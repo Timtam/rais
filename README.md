@@ -101,6 +101,14 @@ update, the `Apply RAIS update` button on the Done page becomes enabled; on
 click it runs the full apply pipeline and auto-relaunches RAIS with the new
 binary.
 
+While a package install is running, RAIS holds an OS-level lock file
+(`%LOCALAPPDATA%\RAIS\locks\package-install.lock` on Windows,
+`~/Library/Caches/RAIS/locks/package-install.lock` on macOS) stamped with the
+PID. `self-update apply` consults that lock and refuses with a clear error if
+another RAIS process is in the middle of a non-dry-run install. Stale locks
+left behind by a crashed process are recognised and cleaned up automatically
+on the next install.
+
 `rais-ui-wxdragon` is the native UI crate. Its default build exercises the Rust
 wizard model without requiring wxWidgets native libraries. Build it with
 `--features gui` to run the wxDragon window. The UI defaults to embedded

@@ -10,6 +10,7 @@ use crate::Result;
 use crate::archive::extract_all_files_flat;
 use crate::error::{IoPathContext, RaisError};
 use crate::hash::sha256_file;
+use crate::lock::{default_package_install_lock_path, package_install_lock_active_at};
 use crate::model::Platform;
 use crate::version::Version;
 
@@ -82,6 +83,7 @@ pub struct SelfUpdateStageReport {
 #[derive(Debug, Clone, Default)]
 pub struct ApplySelfUpdateOptions {
     pub install_root: Option<PathBuf>,
+    pub package_install_lock_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,6 +279,18 @@ pub fn apply_self_update(
             ),
         });
     }
+
+    let lock_path = options
+        .package_install_lock_path
+        .clone()
+        .unwrap_or_else(default_package_install_lock_path);
+    if let Some(holder) = package_install_lock_active_at(&lock_path)? {
+        return Err(RaisError::PackageInstallInProgress {
+            lock_path,
+            pid: holder.pid,
+        });
+    }
+
     let staged_asset =
         stage
             .staged_asset_path
@@ -1023,6 +1037,7 @@ mod tests {
             &stage,
             &ApplySelfUpdateOptions {
                 install_root: Some(install_root.path().to_path_buf()),
+                package_install_lock_path: None,
             },
         )
         .unwrap();
@@ -1074,6 +1089,7 @@ mod tests {
             &stage,
             &ApplySelfUpdateOptions {
                 install_root: Some(install_root.path().to_path_buf()),
+                package_install_lock_path: None,
             },
         )
         .unwrap();
@@ -1113,6 +1129,7 @@ mod tests {
             &stage,
             &ApplySelfUpdateOptions {
                 install_root: Some(install_root.path().to_path_buf()),
+                package_install_lock_path: None,
             },
         )
         .unwrap_err();
@@ -1150,10 +1167,53 @@ mod tests {
             &stage_report,
             &ApplySelfUpdateOptions {
                 install_root: Some(install_root.path().to_path_buf()),
+                package_install_lock_path: None,
             },
         )
         .unwrap_err();
 
         assert!(matches!(error, RaisError::InvalidPlannedExecution { .. }));
+    }
+
+    #[test]
+    fn apply_self_update_refuses_when_package_install_lock_is_held() {
+        use std::io::Write as _;
+        use zip::write::SimpleFileOptions;
+
+        let staging_root = tempdir().unwrap();
+        let install_root = tempdir().unwrap();
+        let lock_dir = tempdir().unwrap();
+        let lock_path = lock_dir.path().join("install.lock");
+
+        let archive_path = staging_root.path().join("0.2.0").join("RAIS-windows.zip");
+        fs::create_dir_all(archive_path.parent().unwrap()).unwrap();
+        let file = fs::File::create(&archive_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        writer.start_file("RAIS.exe", options).unwrap();
+        writer.write_all(b"new").unwrap();
+        writer.finish().unwrap();
+
+        fs::write(install_root.path().join("RAIS.exe"), b"old").unwrap();
+        let stage = staged_report_for_zip(&archive_path, staging_root.path());
+
+        let _install_lock = crate::lock::acquire_package_install_lock_at(&lock_path).unwrap();
+
+        let error = apply_self_update(
+            &stage,
+            &ApplySelfUpdateOptions {
+                install_root: Some(install_root.path().to_path_buf()),
+                package_install_lock_path: Some(lock_path.clone()),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, RaisError::PackageInstallInProgress { .. }));
+        assert_eq!(
+            fs::read(install_root.path().join("RAIS.exe")).unwrap(),
+            b"old"
+        );
+        assert!(!install_root.path().join("RAIS.exe.rais-old").exists());
     }
 }

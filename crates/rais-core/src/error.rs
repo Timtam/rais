@@ -87,6 +87,9 @@ pub enum RaisError {
     #[error("disk image {image} could not be mounted: {message}")]
     DiskImageMount { image: PathBuf, message: String },
 
+    #[error("a package installation is already in progress (lock {lock_path}, PID {pid})")]
+    PackageInstallInProgress { lock_path: PathBuf, pid: u32 },
+
     #[error("preflight failed: {message}")]
     PreflightFailed { message: String },
 

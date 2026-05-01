@@ -32,6 +32,8 @@ pub struct PackageOperationOptions {
     pub stage_unsupported: bool,
     pub replace_osara_keymap: bool,
     pub target_app_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,6 +219,16 @@ pub fn execute_resolved_package_operation_with_detections(
     options: &PackageOperationOptions,
 ) -> Result<PackageOperationReport> {
     ensure_resource_path_ready(resource_path, options.dry_run)?;
+
+    let _install_lock = if options.dry_run {
+        None
+    } else {
+        let lock_path = options
+            .lock_path
+            .clone()
+            .unwrap_or_else(crate::lock::default_package_install_lock_path);
+        Some(crate::lock::acquire_package_install_lock_at(&lock_path)?)
+    };
 
     let mut items = Vec::new();
     let mut direct_installable = Vec::new();
@@ -1604,6 +1616,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: None,
+                lock_path: None,
             },
         )
         .unwrap();
@@ -1643,6 +1656,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: None,
+                lock_path: None,
             },
         )
         .unwrap();
@@ -1673,6 +1687,7 @@ mod tests {
                 stage_unsupported: true,
                 replace_osara_keymap: false,
                 target_app_path: None,
+                lock_path: None,
             },
         )
         .unwrap();
@@ -1714,6 +1729,7 @@ mod tests {
                 stage_unsupported: true,
                 replace_osara_keymap: false,
                 target_app_path: None,
+                lock_path: None,
             },
         )
         .unwrap();
@@ -1920,6 +1936,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
+                lock_path: None,
             },
         )
         .unwrap();
@@ -1969,6 +1986,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: Some(target_app_path.clone()),
+                lock_path: None,
             },
         )
         .unwrap();
@@ -2006,6 +2024,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
+                lock_path: None,
             },
         )
         .unwrap();
@@ -2046,6 +2065,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: true,
                 target_app_path: Some(resource_path.join("reaper.exe")),
+                lock_path: None,
             },
         )
         .unwrap();
@@ -2086,6 +2106,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
+                lock_path: None,
             },
         )
         .unwrap();
@@ -2138,6 +2159,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
+                lock_path: Some(dir.path().join("install.lock")),
             },
         )
         .unwrap();
@@ -2204,6 +2226,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: Some(target_app_path.clone()),
+                lock_path: Some(dir.path().join("install.lock")),
             },
         )
         .unwrap();
@@ -2244,6 +2267,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
+                lock_path: None,
             },
         )
         .unwrap();
@@ -2289,6 +2313,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: true,
                 target_app_path: Some(resource_path.join("reaper.exe")),
+                lock_path: Some(dir.path().join("install.lock")),
             },
         )
         .unwrap();
@@ -2339,6 +2364,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: true,
                 target_app_path: Some(resource_path.join("reaper.exe")),
+                lock_path: Some(dir.path().join("install.lock")),
             },
         )
         .unwrap();
@@ -2385,6 +2411,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
+                lock_path: Some(dir.path().join("install.lock")),
             },
         )
         .unwrap();
@@ -2444,6 +2471,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
+                lock_path: Some(dir.path().join("install.lock")),
             },
         )
         .unwrap();
@@ -2491,6 +2519,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: None,
+                lock_path: None,
             },
         )
         .unwrap();
@@ -2524,6 +2553,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: None,
+                lock_path: None,
             },
         )
         .unwrap();
@@ -2579,6 +2609,7 @@ mod tests {
                 stage_unsupported: true,
                 replace_osara_keymap: false,
                 target_app_path: None,
+                lock_path: None,
             },
         )
         .unwrap();
@@ -2641,6 +2672,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: Some(target_app_path.clone()),
+                lock_path: None,
             },
         )
         .unwrap();
@@ -2725,6 +2757,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: None,
+                lock_path: None,
             },
         );
 

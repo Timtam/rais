@@ -20,6 +20,8 @@ pub struct SetupOptions {
     pub stage_unsupported: bool,
     pub replace_osara_keymap: bool,
     pub target_app_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +69,7 @@ pub fn execute_setup_operation(
             stage_unsupported: options.stage_unsupported,
             replace_osara_keymap: options.replace_osara_keymap,
             target_app_path: options.target_app_path.clone(),
+            lock_path: options.lock_path.clone(),
         },
     )?;
 
@@ -105,6 +108,7 @@ pub fn execute_resolved_setup_operation(
             stage_unsupported: options.stage_unsupported,
             replace_osara_keymap: options.replace_osara_keymap,
             target_app_path: options.target_app_path.clone(),
+            lock_path: options.lock_path.clone(),
         },
     )?;
 
@@ -154,6 +158,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: None,
+                lock_path: None,
             },
         )
         .unwrap();
@@ -186,6 +191,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: None,
+                lock_path: None,
             },
         )
         .unwrap();
@@ -234,6 +240,7 @@ mod tests {
                 stage_unsupported: false,
                 replace_osara_keymap: false,
                 target_app_path: Some(app_path.clone()),
+                lock_path: None,
             },
         )
         .unwrap();

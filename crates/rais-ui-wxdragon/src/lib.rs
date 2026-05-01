@@ -1388,6 +1388,7 @@ pub fn execute_wizard_install(request: WizardInstallRequest) -> Result<SetupRepo
                 OsaraKeymapChoice::ReplaceCurrent
             ),
             target_app_path: request.target_app_path.clone(),
+            lock_path: None,
         },
     )
 }
@@ -1401,7 +1402,13 @@ pub fn run_wizard_self_update_apply() -> Result<SelfUpdateApplyReport> {
     let platform = Platform::current().ok_or(RaisError::UnsupportedPlatform)?;
     let staging_dir = default_self_update_staging_dir();
     let stage = stage_self_update(platform, DEFAULT_SELF_UPDATE_MANIFEST_URL, &staging_dir)?;
-    apply_self_update(&stage, &ApplySelfUpdateOptions { install_root: None })
+    apply_self_update(
+        &stage,
+        &ApplySelfUpdateOptions {
+            install_root: None,
+            package_install_lock_path: None,
+        },
+    )
 }
 
 pub fn relaunch_rais_after_apply() -> Result<u32> {

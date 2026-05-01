@@ -620,6 +620,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     stage_unsupported,
                     replace_osara_keymap: !preserve_osara_keymap,
                     target_app_path,
+                    lock_path: None,
                 },
             )?;
             let report_path = selected_report_path(
@@ -667,6 +668,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     stage_unsupported,
                     replace_osara_keymap: !preserve_osara_keymap,
                     target_app_path,
+                    lock_path: None,
                 },
             )?;
             let report_path =
@@ -751,7 +753,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Platform::current().ok_or(rais_core::RaisError::UnsupportedPlatform)?;
                 let staging_dir = staging_dir.unwrap_or_else(default_self_update_staging_dir);
                 let stage = stage_self_update(platform, &manifest_url, &staging_dir)?;
-                let report = apply_self_update(&stage, &ApplySelfUpdateOptions { install_root })?;
+                let report = apply_self_update(
+                    &stage,
+                    &ApplySelfUpdateOptions {
+                        install_root,
+                        package_install_lock_path: None,
+                    },
+                )?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {

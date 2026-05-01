@@ -7,6 +7,7 @@ pub mod hash;
 pub mod install;
 pub mod latest;
 pub mod localization;
+pub mod lock;
 pub mod metadata;
 pub mod model;
 pub mod operation;
