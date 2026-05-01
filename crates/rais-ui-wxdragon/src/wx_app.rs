@@ -9,7 +9,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use rais_core::localization::Localizer;
+use rais_core::localization::{Localizer, resolve_runtime_locale};
 use rais_core::lock::PackageInstallLockMetadata;
 use rais_core::self_update::SelfUpdateCheckReport;
 
@@ -134,7 +134,10 @@ struct WizardWidgets {
 
 pub fn run() {
     let _ = wxdragon::main(|_| {
-        let bootstrap = UiBootstrapOptions::default();
+        let bootstrap = UiBootstrapOptions {
+            locale: resolve_runtime_locale(),
+            ..UiBootstrapOptions::default()
+        };
         match localizer_from_options(&bootstrap) {
             Ok(localizer) => install_ui_localizer(localizer),
             Err(error) => {
@@ -222,6 +225,9 @@ pub fn run() {
         buttons.add(&close, 0, SizerFlag::All, 6);
 
         root.add_sizer(&buttons, 0, SizerFlag::All | SizerFlag::Expand, 6);
+
+        build_language_footer(&root_panel, &root, &model);
+
         root_panel.set_sizer(root, true);
 
         let frame_sizer = BoxSizer::builder(Orientation::Vertical).build();
@@ -919,6 +925,7 @@ fn build_target_page(page: &Panel, model: &WizardModel) -> (Choice, DirPickerCtr
         &model.text.target_heading,
         "rais-target-heading",
     );
+
     add_label(
         page,
         &sizer,
@@ -1008,7 +1015,110 @@ fn build_target_page(page: &Panel, model: &WizardModel) -> (Choice, DirPickerCtr
     }
 
     page.set_sizer(sizer, true);
+    choice.set_focus();
     (choice, portable_folder, details)
+}
+
+/// Base id for the language popup menu's radio items. Item id at index `i`
+/// in `WizardModel::language_options` is `LANGUAGE_MENU_ID_BASE + i`.
+const LANGUAGE_MENU_ID_BASE: i32 = 13700;
+
+/// Build the language-picker footer inside the root panel, below the wizard
+/// buttons. Adding it as a sibling of the button row means tab order naturally
+/// reaches it after the last button (rather than partway through the page),
+/// then wraps back to the page's first focusable widget.
+fn build_language_footer(root_panel: &Panel, root: &BoxSizer, model: &WizardModel) {
+    add_label(
+        root_panel,
+        root,
+        &model.text.target_language_label,
+        "rais-target-language-label",
+    );
+
+    let current_display_name = model
+        .language_options
+        .iter()
+        .find(|option| option.locale == model.current_language)
+        .map(|option| option.display_name.clone())
+        .unwrap_or_else(|| model.current_language.clone());
+
+    let language_button = Button::builder(root_panel)
+        .with_label(&current_display_name)
+        .build();
+    language_button.set_name("rais-target-language");
+    language_button.add_style(WindowStyle::TabStop);
+    language_button.set_can_focus(true);
+    root.add(&language_button, 0, SizerFlag::All | SizerFlag::Expand, 6);
+
+    add_label(
+        root_panel,
+        root,
+        &model.text.target_language_restart_note,
+        "rais-target-language-restart-note",
+    );
+
+    let language_options = model.language_options.clone();
+    let current_locale = model.current_language.clone();
+
+    // The popup menu dispatches its EVT_MENU to the popup's owner window
+    // (root_panel here), not to the button — only Panel/ScrolledWindow
+    // implement MenuEvents in wxdragon today.
+    {
+        let language_options = language_options.clone();
+        let current_locale = current_locale.clone();
+        root_panel.on_menu_selected(move |event| {
+            let id = event.get_id();
+            let raw_index = id - LANGUAGE_MENU_ID_BASE;
+            if raw_index < 0 || (raw_index as usize) >= language_options.len() {
+                return;
+            }
+            let Some(option) = language_options.get(raw_index as usize) else {
+                return;
+            };
+            if option.locale == current_locale {
+                return;
+            }
+            relaunch_with_locale(&option.locale);
+        });
+    }
+
+    let menu_owner = root_panel.clone();
+    language_button.on_click(move |_| {
+        let mut builder = Menu::builder();
+        for (index, option) in language_options.iter().enumerate() {
+            let id = LANGUAGE_MENU_ID_BASE + index as i32;
+            builder = builder.append_radio_item(id, &option.display_name, "");
+        }
+        let menu = builder.build();
+        for (index, option) in language_options.iter().enumerate() {
+            if option.locale == current_locale {
+                let id = LANGUAGE_MENU_ID_BASE + index as i32;
+                menu.check_item(id, true);
+            }
+        }
+        let mut menu = menu;
+        menu_owner.popup_menu(&mut menu, None);
+    });
+}
+
+/// Relaunch the running RAIS executable with `RAIS_LOCALE=<locale>` set so the
+/// new locale takes effect immediately, then exit. Errors during relaunch are
+/// printed to stderr and the current process keeps running so the user is not
+/// left without a UI.
+fn relaunch_with_locale(locale: &str) {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            eprintln!("could not resolve current executable for relaunch: {error}");
+            return;
+        }
+    };
+    match Command::new(&exe).env("RAIS_LOCALE", locale).spawn() {
+        Ok(_) => std::process::exit(0),
+        Err(error) => {
+            eprintln!("could not relaunch RAIS with locale {locale}: {error}");
+        }
+    }
 }
 
 fn build_packages_page(

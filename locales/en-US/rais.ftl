@@ -44,6 +44,10 @@ wizard-button-close = Close
 wizard-button-close-mnemonic = C
 
 wizard-target-heading = Choose REAPER installation
+wizard-target-language-label = Language
+wizard-target-language-restart-note = Changing the language restarts RAIS so the new language can take effect.
+wizard-locale-name-en-US = English (United States)
+wizard-locale-name-de-DE = German (Germany)
 wizard-target-choice-label = Installation target
 wizard-target-details-label = Target details
 wizard-target-empty = No REAPER installation target is selected.

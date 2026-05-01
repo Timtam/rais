@@ -11,7 +11,8 @@ pub const DEFAULT_LOCALE: &str = "en-US";
 pub const LOCALE_FILE_NAME: &str = "rais.ftl";
 
 const DEFAULT_LOCALE_SOURCE: &str = include_str!("../../../locales/en-US/rais.ftl");
-const EMBEDDED_LOCALES: &[&str] = &[DEFAULT_LOCALE];
+const DE_DE_LOCALE_SOURCE: &str = include_str!("../../../locales/de-DE/rais.ftl");
+const EMBEDDED_LOCALES: &[&str] = &[DEFAULT_LOCALE, "de-DE"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalizedText {
@@ -34,7 +35,15 @@ pub struct Localizer {
 impl Localizer {
     pub fn embedded(requested_locale: &str) -> Result<Self> {
         let requested_locale = parse_locale(requested_locale, None)?.to_string();
-        let fallback_used = requested_locale != DEFAULT_LOCALE;
+        if let Some(source) = embedded_locale_source(&requested_locale) {
+            return build_bundle(
+                requested_locale.clone(),
+                requested_locale,
+                false,
+                None,
+                source,
+            );
+        }
         let source =
             embedded_locale_source(DEFAULT_LOCALE).ok_or_else(|| RaisError::Localization {
                 path: None,
@@ -43,7 +52,7 @@ impl Localizer {
         build_bundle(
             requested_locale,
             DEFAULT_LOCALE.to_string(),
-            fallback_used,
+            true,
             None,
             source,
         )
@@ -147,9 +156,77 @@ pub fn embedded_locales() -> &'static [&'static str] {
     EMBEDDED_LOCALES
 }
 
+/// Resolve the locale RAIS should run in, honoring (in order):
+///   1. `RAIS_LOCALE` (explicit override; accepted even without an embedded
+///      translation so users can point at a sideloaded `locales/` dir)
+///   2. `LC_ALL` / `LANG` (POSIX) — accepted only if RAIS has an embedded
+///      translation for it, since otherwise the OS-language signal is just
+///      noise and users should see English instead of a half-translated UI
+///   3. The OS default locale (Win32 `GetUserDefaultLocaleName`) — same gate
+///      as POSIX
+///   4. Embedded default
+///
+/// Strips POSIX charset/modifier suffixes (e.g. `de_DE.UTF-8@euro` → `de-DE`)
+/// and normalizes the underscore separator to a hyphen.
+pub fn resolve_runtime_locale() -> String {
+    if let Ok(raw) = std::env::var("RAIS_LOCALE") {
+        let normalized = normalize_posix_locale(&raw);
+        if !normalized.is_empty() && parse_locale(&normalized, None).is_ok() {
+            return normalized;
+        }
+    }
+
+    for var in ["LC_ALL", "LANG"] {
+        if let Ok(raw) = std::env::var(var) {
+            let normalized = normalize_posix_locale(&raw);
+            if let Some(matched) = match_embedded_locale(&normalized) {
+                return matched;
+            }
+        }
+    }
+
+    if let Some(os_locale) = rais_platform::os_default_locale() {
+        let normalized = normalize_posix_locale(&os_locale);
+        if let Some(matched) = match_embedded_locale(&normalized) {
+            return matched;
+        }
+    }
+
+    DEFAULT_LOCALE.to_string()
+}
+
+/// Match an arbitrary locale tag against `EMBEDDED_LOCALES`. Returns the
+/// embedded locale when an exact match exists, or when the language subtag
+/// matches (e.g., OS reports `de-AT` and only `de-DE` is embedded → returns
+/// `de-DE`).
+fn match_embedded_locale(candidate: &str) -> Option<String> {
+    if candidate.is_empty() {
+        return None;
+    }
+    if EMBEDDED_LOCALES.iter().any(|locale| *locale == candidate) {
+        return Some(candidate.to_string());
+    }
+    let language = candidate.split('-').next().unwrap_or(candidate);
+    EMBEDDED_LOCALES
+        .iter()
+        .find(|locale| {
+            locale
+                .split('-')
+                .next()
+                .is_some_and(|embedded_lang| embedded_lang.eq_ignore_ascii_case(language))
+        })
+        .map(|locale| (*locale).to_string())
+}
+
+fn normalize_posix_locale(raw: &str) -> String {
+    let head = raw.split(['.', '@']).next().unwrap_or(raw).trim();
+    head.replace('_', "-")
+}
+
 pub fn embedded_locale_source(locale: &str) -> Option<&'static str> {
     match locale {
         DEFAULT_LOCALE => Some(DEFAULT_LOCALE_SOURCE),
+        "de-DE" => Some(DE_DE_LOCALE_SOURCE),
         _ => None,
     }
 }
@@ -173,8 +250,10 @@ pub fn available_locales(locales_dir: &Path) -> Result<Vec<String>> {
         }
     }
 
-    if !locales.iter().any(|locale| locale == DEFAULT_LOCALE) {
-        locales.push(DEFAULT_LOCALE.to_string());
+    for embedded in EMBEDDED_LOCALES {
+        if !locales.iter().any(|locale| locale == embedded) {
+            locales.push((*embedded).to_string());
+        }
     }
 
     locales.sort();
@@ -251,11 +330,41 @@ mod tests {
 
     #[test]
     fn exposes_embedded_default_locale_source() {
-        assert_eq!(embedded_locales(), &[DEFAULT_LOCALE]);
+        assert_eq!(embedded_locales(), &[DEFAULT_LOCALE, "de-DE"]);
         assert!(
             embedded_locale_source(DEFAULT_LOCALE)
                 .unwrap()
                 .contains("app-title")
+        );
+        assert!(
+            embedded_locale_source("de-DE")
+                .unwrap()
+                .contains("app-title")
+        );
+    }
+
+    #[test]
+    fn loads_embedded_german_messages() {
+        let localizer = Localizer::embedded("de-DE").unwrap();
+
+        let message = localizer.text("wizard-button-back");
+
+        assert_eq!(message.value, "Zurück");
+        assert_eq!(message.locale, "de-DE");
+        assert!(!message.fallback_used);
+        assert!(!message.missing);
+    }
+
+    #[test]
+    fn embedded_falls_back_to_default_when_locale_is_unknown() {
+        let localizer = Localizer::embedded("fr-FR").unwrap();
+
+        assert_eq!(localizer.requested_locale(), "fr-FR");
+        assert_eq!(localizer.active_locale(), DEFAULT_LOCALE);
+        assert!(localizer.fallback_used());
+        assert_eq!(
+            localizer.text("app-title").value,
+            "REAPER Accessibility Installation Software"
         );
     }
 
@@ -331,6 +440,29 @@ mod tests {
         assert_eq!(localizer.active_locale(), DEFAULT_LOCALE);
         assert!(localizer.fallback_used());
         assert_eq!(localizer.text("app-title").value, "Default RAIS");
+    }
+
+    #[test]
+    fn normalizes_posix_locale_strings() {
+        use super::normalize_posix_locale;
+        assert_eq!(normalize_posix_locale("de_DE.UTF-8"), "de-DE");
+        assert_eq!(normalize_posix_locale("de_DE@euro"), "de-DE");
+        assert_eq!(normalize_posix_locale("en_US"), "en-US");
+        assert_eq!(normalize_posix_locale("de-DE"), "de-DE");
+        assert_eq!(normalize_posix_locale(""), "");
+    }
+
+    #[test]
+    fn matches_embedded_locale_by_exact_tag_or_language_subtag() {
+        use super::match_embedded_locale;
+        assert_eq!(match_embedded_locale("en-US"), Some("en-US".to_string()));
+        assert_eq!(match_embedded_locale("de-DE"), Some("de-DE".to_string()));
+        // Austrian German maps to de-DE (the embedded German variant).
+        assert_eq!(match_embedded_locale("de-AT"), Some("de-DE".to_string()));
+        // British English maps to en-US (the embedded English variant).
+        assert_eq!(match_embedded_locale("en-GB"), Some("en-US".to_string()));
+        assert_eq!(match_embedded_locale("fr-FR"), None);
+        assert_eq!(match_embedded_locale(""), None);
     }
 
     #[test]

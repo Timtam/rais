@@ -8,7 +8,7 @@ use rais_core::detection::{
     DiscoveryOptions, default_standard_installation, detect_components, discover_installations,
 };
 use rais_core::latest::fetch_latest_versions;
-use rais_core::localization::{DEFAULT_LOCALE, Localizer};
+use rais_core::localization::{DEFAULT_LOCALE, Localizer, embedded_locales};
 use rais_core::lock::{PackageInstallLockMetadata, package_install_lock_active};
 use rais_core::metadata::file_version;
 use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
@@ -74,6 +74,14 @@ pub struct WizardModel {
     pub review_lines: Vec<String>,
     pub notes: Vec<String>,
     pub controls: WizardControls,
+    pub language_options: Vec<LanguageOption>,
+    pub current_language: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanguageOption {
+    pub locale: String,
+    pub display_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +89,8 @@ pub struct WizardText {
     pub common_yes: String,
     pub common_no: String,
     pub target_heading: String,
+    pub target_language_label: String,
+    pub target_language_restart_note: String,
     pub target_choice_label: String,
     pub target_details_label: String,
     pub target_empty: String,
@@ -450,7 +460,30 @@ fn model_from_plan_with_options(
             can_go_next: selected_target_index.is_some(),
             can_install,
         },
+        language_options: language_options(localizer),
+        current_language: localizer.active_locale().to_string(),
     }
+}
+
+fn language_options(localizer: &Localizer) -> Vec<LanguageOption> {
+    let mut options: Vec<LanguageOption> = embedded_locales()
+        .iter()
+        .map(|locale| {
+            let key = format!("wizard-locale-name-{locale}");
+            let text = localizer.text(&key);
+            let display_name = if text.missing {
+                (*locale).to_string()
+            } else {
+                text.value
+            };
+            LanguageOption {
+                locale: (*locale).to_string(),
+                display_name,
+            }
+        })
+        .collect();
+    options.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    options
 }
 
 fn wizard_text(localizer: &Localizer) -> WizardText {
@@ -458,6 +491,8 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         common_yes: localizer.text("common-yes").value,
         common_no: localizer.text("common-no").value,
         target_heading: localizer.text("wizard-target-heading").value,
+        target_language_label: localizer.text("wizard-target-language-label").value,
+        target_language_restart_note: localizer.text("wizard-target-language-restart-note").value,
         target_choice_label: localizer.text("wizard-target-choice-label").value,
         target_details_label: localizer.text("wizard-target-details-label").value,
         target_empty: localizer.text("wizard-target-empty").value,
