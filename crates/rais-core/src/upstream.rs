@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::Result;
+use crate::archive::extract_osara_macos_assets;
 use crate::disk_image::install_app_bundle_from_disk_image;
 use crate::error::RaisError;
 use crate::operation::{PlannedExecutionKind, PlannedExecutionPlan};
@@ -16,6 +17,9 @@ pub fn execute_planned_execution(plan: &PlannedExecutionPlan, dry_run: bool) -> 
         PlannedExecutionKind::MountDiskImageAndCopyAppBundle => {
             execute_disk_image_app_bundle_plan(plan)?;
         }
+        PlannedExecutionKind::ExtractArchiveAndCopyOsaraAssets => {
+            execute_osara_archive_plan(plan)?;
+        }
         PlannedExecutionKind::ExtractArchiveAndRunInstaller
         | PlannedExecutionKind::MountDiskImageAndRunInstaller => {
             return Err(RaisError::InvalidPlannedExecution {
@@ -24,6 +28,17 @@ pub fn execute_planned_execution(plan: &PlannedExecutionPlan, dry_run: bool) -> 
         }
     }
 
+    Ok(())
+}
+
+fn execute_osara_archive_plan(plan: &PlannedExecutionPlan) -> Result<()> {
+    let resource_path =
+        plan.arguments
+            .first()
+            .ok_or_else(|| RaisError::InvalidPlannedExecution {
+                message: "OSARA archive plan did not provide a resource path".to_string(),
+            })?;
+    extract_osara_macos_assets(Path::new(&plan.artifact_location), Path::new(resource_path))?;
     Ok(())
 }
 

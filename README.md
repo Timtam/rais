@@ -95,7 +95,10 @@ binaries such as ReaPack, extracts ReaKontrol's snapshot ZIP and copies the
 contained `reaper_kontrol.dll`/`.dylib` into UserPlugins on both Windows and
 macOS, mounts SWS's macOS disk image and copies the contained
 `reaper_sws-*.dylib` into UserPlugins, mounts REAPER's macOS disk image and
-copies `REAPER.app` into the chosen install destination, and includes
+copies `REAPER.app` into the chosen install destination, extracts OSARA's macOS
+ZIP and copies `reaper_osara.dylib`, `OSARA.ReaperKeyMap`, and the bundled
+locale files into the resource path (with the same default key-map replacement
+and preserve-current opt-out as the Windows OSARA flow), and includes
 unattended upstream-installer paths for:
 - REAPER on Windows
 - OSARA on Windows, including default key map replacement with backup and a
@@ -105,12 +108,6 @@ unattended upstream-installer paths for:
 Those unattended Windows installer paths now also update RAIS install receipts,
 so later detection can verify the installed state through `RAIS/install-state.json`
 instead of relying only on best-effort file presence or metadata fallbacks.
-
-Other upstream installers and archives are still downloaded or reported for
-manual attention until their package-specific execution steps are added. In
-particular, OSARA's macOS archive ships the vendor's installer rather than a
-single binary, so it remains a manual-attention path until the corresponding
-installer-execution flow lands.
 The target design in [DESIGN.md](./DESIGN.md) is full unattended installation
 and update of REAPER, OSARA, SWS, and ReaPack, including RAIS launching
 executable installers itself during the install run where needed, so those

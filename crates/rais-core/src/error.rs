@@ -75,6 +75,9 @@ pub enum RaisError {
     #[error("archive {archive} could not be read: {message}")]
     ArchiveRead { archive: PathBuf, message: String },
 
+    #[error("archive {archive} did not contain the expected OSARA installer assets")]
+    OsaraArchiveMissingAssets { archive: PathBuf },
+
     #[error("disk image {image} for {package_id} did not contain a {package_id} extension binary")]
     DiskImageMissingExtensionBinary { image: PathBuf, package_id: String },
 

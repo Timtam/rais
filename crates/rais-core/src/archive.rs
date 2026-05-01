@@ -93,6 +93,89 @@ fn matches_user_plugin_file(file_name: &str, spec: &PackageSpec) -> bool {
     prefix_match && suffix_match
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractedOsaraAssets {
+    pub source_archive: PathBuf,
+    pub installed_files: Vec<PathBuf>,
+}
+
+const OSARA_INSTALLER_RESOURCES_PREFIX: &str = "OSARAInstaller.app/Contents/Resources/";
+const OSARA_DYLIB_BASENAME: &str = "reaper_osara.dylib";
+const OSARA_KEYMAP_BASENAME: &str = "OSARA.ReaperKeyMap";
+const OSARA_LOCALE_PREFIX: &str = "locale/";
+const OSARA_LOCALE_EXTENSION: &str = ".po";
+
+pub fn extract_osara_macos_assets(
+    archive_path: &Path,
+    resource_path: &Path,
+) -> Result<ExtractedOsaraAssets> {
+    let file = fs::File::open(archive_path).with_path(archive_path)?;
+    let mut archive =
+        zip::ZipArchive::new(BufReader::new(file)).map_err(|source| RaisError::ArchiveRead {
+            archive: archive_path.to_path_buf(),
+            message: source.to_string(),
+        })?;
+
+    let user_plugins = resource_path.join("UserPlugins");
+    let key_maps = resource_path.join("KeyMaps");
+    let osara_locale = resource_path.join("osara").join("locale");
+
+    let mut installed_files = Vec::new();
+    let mut found_dylib = false;
+    let mut found_keymap = false;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|source| RaisError::ArchiveRead {
+                archive: archive_path.to_path_buf(),
+                message: source.to_string(),
+            })?;
+        if !entry.is_file() {
+            continue;
+        }
+        let entry_name = entry.name().to_string();
+        let Some(suffix) = entry_name.strip_prefix(OSARA_INSTALLER_RESOURCES_PREFIX) else {
+            continue;
+        };
+
+        let target = if suffix == OSARA_DYLIB_BASENAME {
+            found_dylib = true;
+            user_plugins.join(OSARA_DYLIB_BASENAME)
+        } else if suffix == OSARA_KEYMAP_BASENAME {
+            found_keymap = true;
+            key_maps.join(OSARA_KEYMAP_BASENAME)
+        } else if let Some(locale_suffix) = suffix.strip_prefix(OSARA_LOCALE_PREFIX) {
+            if !locale_suffix.ends_with(OSARA_LOCALE_EXTENSION) || locale_suffix.contains('/') {
+                continue;
+            }
+            osara_locale.join(locale_suffix)
+        } else {
+            continue;
+        };
+
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).with_path(parent)?;
+        }
+        let mut output = fs::File::create(&target).with_path(&target)?;
+        std::io::copy(&mut entry, &mut output).with_path(&target)?;
+        output.flush().with_path(&target)?;
+        installed_files.push(target);
+    }
+
+    if !found_dylib || !found_keymap {
+        return Err(RaisError::OsaraArchiveMissingAssets {
+            archive: archive_path.to_path_buf(),
+        });
+    }
+
+    installed_files.sort();
+    Ok(ExtractedOsaraAssets {
+        source_archive: archive_path.to_path_buf(),
+        installed_files,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -100,7 +183,7 @@ mod tests {
     use tempfile::tempdir;
     use zip::write::SimpleFileOptions;
 
-    use super::extract_user_plugin_from_archive;
+    use super::{extract_osara_macos_assets, extract_user_plugin_from_archive};
     use crate::error::RaisError;
     use crate::model::Platform;
     use crate::package::{PACKAGE_REAKONTROL, package_specs_by_id};
@@ -167,6 +250,73 @@ mod tests {
             std::fs::read(&extracted.extracted_path).unwrap(),
             b"mac-plugin"
         );
+    }
+
+    #[test]
+    fn extracts_osara_macos_assets_into_resource_path() {
+        let dir = tempdir().unwrap();
+        let archive_path = dir.path().join("osara_test.zip");
+        write_test_archive(
+            &archive_path,
+            &[
+                ("OSARAInstaller.app/Contents/MacOS/applet", b"applet-binary"),
+                (
+                    "OSARAInstaller.app/Contents/Resources/reaper_osara.dylib",
+                    b"osara-plugin",
+                ),
+                (
+                    "OSARAInstaller.app/Contents/Resources/OSARA.ReaperKeyMap",
+                    b"keymap-content",
+                ),
+                (
+                    "OSARAInstaller.app/Contents/Resources/locale/de_DE.po",
+                    b"de-locale",
+                ),
+                (
+                    "OSARAInstaller.app/Contents/Resources/locale/fr_FR.po",
+                    b"fr-locale",
+                ),
+                (
+                    "OSARAInstaller.app/Contents/Resources/copying.txt",
+                    b"license-text",
+                ),
+            ],
+        );
+        let resource_path = dir.path().join("REAPER");
+
+        let report = extract_osara_macos_assets(&archive_path, &resource_path).unwrap();
+
+        let dylib = resource_path.join("UserPlugins").join("reaper_osara.dylib");
+        let keymap = resource_path.join("KeyMaps").join("OSARA.ReaperKeyMap");
+        let de_locale = resource_path.join("osara").join("locale").join("de_DE.po");
+        let fr_locale = resource_path.join("osara").join("locale").join("fr_FR.po");
+        assert_eq!(std::fs::read(&dylib).unwrap(), b"osara-plugin");
+        assert_eq!(std::fs::read(&keymap).unwrap(), b"keymap-content");
+        assert_eq!(std::fs::read(&de_locale).unwrap(), b"de-locale");
+        assert_eq!(std::fs::read(&fr_locale).unwrap(), b"fr-locale");
+        assert!(report.installed_files.contains(&dylib));
+        assert!(report.installed_files.contains(&keymap));
+        assert!(report.installed_files.contains(&de_locale));
+        assert!(report.installed_files.contains(&fr_locale));
+        assert!(!resource_path.join("copying.txt").exists());
+        assert!(!resource_path.join("Contents").exists());
+    }
+
+    #[test]
+    fn errors_when_osara_archive_is_missing_dylib_or_keymap() {
+        let dir = tempdir().unwrap();
+        let archive_path = dir.path().join("partial.zip");
+        write_test_archive(
+            &archive_path,
+            &[(
+                "OSARAInstaller.app/Contents/Resources/locale/en_US.po",
+                b"en-locale",
+            )],
+        );
+        let resource_path = dir.path().join("REAPER");
+
+        let error = extract_osara_macos_assets(&archive_path, &resource_path).unwrap_err();
+        assert!(matches!(error, RaisError::OsaraArchiveMissingAssets { .. }));
     }
 
     fn write_test_archive(path: &std::path::Path, entries: &[(&str, &[u8])]) {

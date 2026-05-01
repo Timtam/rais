@@ -1879,6 +1879,10 @@ fn planned_execution_runner_label(
             "wizard-planned-runner-extract-archive",
             "Extract archive and run contained installer",
         ),
+        PlannedExecutionKind::ExtractArchiveAndCopyOsaraAssets => (
+            "wizard-planned-runner-extract-archive-copy-osara",
+            "Extract archive and copy OSARA installer assets",
+        ),
         PlannedExecutionKind::MountDiskImageAndRunInstaller => (
             "wizard-planned-runner-mount-disk-image",
             "Mount disk image and run contained installer",

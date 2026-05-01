@@ -79,6 +79,7 @@ pub enum PlannedAutomationKind {
 pub enum PlannedExecutionKind {
     LaunchInstallerExecutable,
     ExtractArchiveAndRunInstaller,
+    ExtractArchiveAndCopyOsaraAssets,
     MountDiskImageAndRunInstaller,
     MountDiskImageAndCopyAppBundle,
 }
@@ -140,6 +141,11 @@ pub fn package_automation_support(
             if matches!(platform, Platform::MacOs) =>
         {
             PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::DiskImageInstall)
+        }
+        (crate::package::PACKAGE_OSARA, Ok(ArtifactKind::Archive))
+            if matches!(platform, Platform::MacOs) =>
+        {
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::ArchiveExtraction)
         }
         (crate::package::PACKAGE_REAPER, Ok(ArtifactKind::Installer))
             if matches!(platform, Platform::Windows) =>
@@ -433,6 +439,12 @@ fn automation_support_for_artifact(
                 && matches!(artifact.platform, Platform::MacOs) =>
         {
             PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::DiskImageInstall)
+        }
+        ArtifactKind::Archive
+            if artifact.package_id == crate::package::PACKAGE_OSARA
+                && matches!(artifact.platform, Platform::MacOs) =>
+        {
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::ArchiveExtraction)
         }
         ArtifactKind::Installer
             if artifact.package_id == crate::package::PACKAGE_REAPER
@@ -792,10 +804,10 @@ fn post_execute_unattended_artifact(
 ) -> Result<UnattendedPostInstallReport> {
     let mut report = UnattendedPostInstallReport::default();
 
-    if artifact.package_id == crate::package::PACKAGE_OSARA
-        && matches!(artifact.platform, Platform::Windows)
-    {
-        if target_likely_portable(resource_path, target_app_path) {
+    if artifact.package_id == crate::package::PACKAGE_OSARA {
+        if matches!(artifact.platform, Platform::Windows)
+            && target_likely_portable(resource_path, target_app_path)
+        {
             let uninstall_path = resource_path.join("osara").join("uninstall.exe");
             if uninstall_path.is_file() {
                 std::fs::remove_file(&uninstall_path).with_path(&uninstall_path)?;
@@ -994,6 +1006,20 @@ fn planned_execution_for_artifact(
             artifact_location,
             verification_paths,
         },
+        ArtifactKind::Archive
+            if artifact.package_id == crate::package::PACKAGE_OSARA
+                && matches!(artifact.platform, Platform::MacOs) =>
+        {
+            PlannedExecutionPlan {
+                kind: PlannedExecutionKind::ExtractArchiveAndCopyOsaraAssets,
+                program: None,
+                arguments: vec![resource_path.display().to_string()],
+                working_directory: cached_artifact
+                    .and_then(|cached| cached.path.parent().map(Path::to_path_buf)),
+                artifact_location,
+                verification_paths,
+            }
+        }
         ArtifactKind::Archive => PlannedExecutionPlan {
             kind: PlannedExecutionKind::ExtractArchiveAndRunInstaller,
             program: None,
@@ -1735,7 +1761,7 @@ mod tests {
         );
         assert_eq!(
             super::package_automation_support(PACKAGE_OSARA, Platform::MacOs, Architecture::Arm64),
-            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::ArchiveExtraction)
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::ArchiveExtraction)
         );
         assert_eq!(
             super::package_automation_support(
@@ -1777,6 +1803,38 @@ mod tests {
             ),
             PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::DiskImageInstall)
         );
+        assert_eq!(
+            super::package_automation_support(
+                PACKAGE_OSARA,
+                Platform::MacOs,
+                Architecture::Universal
+            ),
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::ArchiveExtraction)
+        );
+    }
+
+    #[test]
+    fn osara_macos_archive_planned_execution_carries_resource_path() {
+        let resource_path = std::path::Path::new("/Users/me/Library/Application Support/REAPER");
+        let descriptor = ArtifactDescriptor {
+            package_id: PACKAGE_OSARA.to_string(),
+            version: Version::parse("2026.4.27.2160").unwrap(),
+            platform: Platform::MacOs,
+            architecture: Architecture::Universal,
+            kind: ArtifactKind::Archive,
+            url: "https://github.com/jcsteh/osara/releases/download/snapshots/osara_2026.4.27.2160.89d559fc.zip".to_string(),
+            file_name: "osara_2026.4.27.2160.89d559fc.zip".to_string(),
+        };
+
+        let plan =
+            super::planned_execution_for_artifact(&descriptor, None, resource_path, None, true);
+
+        assert_eq!(
+            plan.kind,
+            PlannedExecutionKind::ExtractArchiveAndCopyOsaraAssets
+        );
+        assert_eq!(plan.arguments.len(), 1);
+        assert_eq!(plan.arguments[0], resource_path.display().to_string());
     }
 
     #[test]
