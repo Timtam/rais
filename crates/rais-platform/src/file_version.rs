@@ -1,10 +1,14 @@
-//! Windows VersionInfo probe.
+//! Per-binary version probe.
 //!
-//! Returns the 4-tuple `(major, minor, build, revision)` from a binary's
-//! `VS_FIXEDFILEINFO` resource on Windows; returns `None` on every other
-//! platform and on Windows when the binary lacks the resource. Conversion to
-//! a printable version string (and the REAPER-special-case formatting) lives
-//! in `rais-core::metadata` so this crate never imports `rais-core` types.
+//! Returns the 4-tuple `(major, minor, build, revision)` so callers in
+//! `rais-core::metadata` can format it however they like. Implementations:
+//!
+//! * Windows — reads `VS_FIXEDFILEINFO` off the binary.
+//! * macOS — when the path is a `.app` bundle directory, parses
+//!   `Contents/Info.plist` for `CFBundleShortVersionString`
+//!   (falling back to `CFBundleVersion`) and pads the dotted version into the
+//!   4-tuple shape the API expects.
+//! * Other platforms — `None`.
 
 use std::path::Path;
 
@@ -69,7 +73,64 @@ fn platform_read_file_version_parts(path: &Path) -> Option<[u32; 4]> {
     ])
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn platform_read_file_version_parts(path: &Path) -> Option<[u32; 4]> {
+    if !path.is_dir() {
+        return None;
+    }
+    let plist_path = path.join("Contents").join("Info.plist");
+    if !plist_path.is_file() {
+        return None;
+    }
+    let value = plist::Value::from_file(&plist_path).ok()?;
+    let dict = value.as_dictionary()?;
+    let raw = dict
+        .get("CFBundleShortVersionString")
+        .or_else(|| dict.get("CFBundleVersion"))?
+        .as_string()?;
+    parse_dotted_version_parts(raw)
+}
+
+#[cfg(target_os = "macos")]
+fn parse_dotted_version_parts(version: &str) -> Option<[u32; 4]> {
+    let mut parts = [0u32; 4];
+    let mut count = 0;
+    for component in version.split('.').map(str::trim) {
+        if count >= parts.len() {
+            break;
+        }
+        let parsed: u32 = component.parse().ok()?;
+        parts[count] = parsed;
+        count += 1;
+    }
+    if count == 0 { None } else { Some(parts) }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn platform_read_file_version_parts(_path: &Path) -> Option<[u32; 4]> {
     None
+}
+
+#[cfg(test)]
+#[cfg(target_os = "macos")]
+mod tests {
+    use super::parse_dotted_version_parts;
+
+    #[test]
+    fn parses_short_versions() {
+        assert_eq!(parse_dotted_version_parts("7.69"), Some([7, 69, 0, 0]));
+        assert_eq!(parse_dotted_version_parts("7.69.0.0"), Some([7, 69, 0, 0]));
+        assert_eq!(parse_dotted_version_parts("7"), Some([7, 0, 0, 0]));
+        assert_eq!(
+            parse_dotted_version_parts("7.69.1.2.3"),
+            Some([7, 69, 1, 2])
+        );
+    }
+
+    #[test]
+    fn rejects_non_numeric() {
+        assert_eq!(parse_dotted_version_parts(""), None);
+        assert_eq!(parse_dotted_version_parts("abc"), None);
+        assert_eq!(parse_dotted_version_parts("7.x"), None);
+    }
 }
