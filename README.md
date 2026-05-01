@@ -23,18 +23,22 @@ can run from any folder and delete when you're done.
 ## Download
 
 Get the latest release from the [GitHub Releases
-page](https://github.com/Timtam/rais/releases/latest):
+page](https://github.com/Timtam/rais/releases/latest). Each release publishes
+versioned, per-platform binaries plus their SHA-256 sums. Pick the file that
+matches your machine:
 
-- **Windows**: `RAIS.exe`
-- **macOS**: `RAIS` (or `RAIS.app` if listed)
+- **Windows (Intel/AMD 64-bit)**: `rais-<version>-windows-x86_64.exe`
+- **Windows (ARM 64-bit)**: `rais-<version>-windows-aarch64.exe`
+- **macOS (Apple Silicon)**: `rais-<version>-macos-aarch64`
+- **macOS (Intel 64-bit)**: `rais-<version>-macos-x86_64`
 
-Each release also publishes SHA-256 checksums for every file. Place the
-downloaded executable wherever you like (Desktop, Downloads, a USB stick) and
-double-click it.
+Place the downloaded executable wherever you like (Desktop, Downloads, a USB
+stick) and double-click it. You can rename it to `RAIS.exe` / `RAIS` if you
+prefer — RAIS still updates itself in place under whatever filename you chose.
 
 ## Use it
 
-Launch `RAIS.exe` (or `RAIS` on macOS). The wizard walks you through:
+Launch the downloaded executable. The wizard walks you through:
 
 1. **Pick a REAPER target** — RAIS detects existing standard installs
    automatically; pick "portable" if you want a self-contained REAPER folder.

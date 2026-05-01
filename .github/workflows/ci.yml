@@ -49,10 +49,10 @@ jobs:
         include:
           - os: windows-latest
             platform_id: windows
-            artifact_name: RAIS.exe
+            extension: ".exe"
           - os: macos-latest
             platform_id: macos
-            artifact_name: RAIS
+            extension: ""
 
     steps:
       - name: Checkout
@@ -84,29 +84,56 @@ jobs:
       - name: Build release rais binary with GUI feature
         run: cargo build --release -p rais --features gui
 
+      - name: Resolve artifact name
+        shell: bash
+        env:
+          PLATFORM_ID: ${{ matrix.platform_id }}
+          RUNNER_ARCH: ${{ runner.arch }}
+          EXTENSION: ${{ matrix.extension }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          # CI artifacts embed the workspace version + a short git sha so
+          # successive PR builds don't collide; release.yml uses the tag
+          # directly. Mirrors the release-time naming so users see the same
+          # filename pattern for snapshots and stable downloads.
+          BASE_VERSION="$(awk -F'\"' '/^version *= *\"/{print $2; exit}' Cargo.toml)"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          VERSION="${BASE_VERSION}-${SHORT_SHA}"
+          case "$RUNNER_ARCH" in
+            X64) ARCH="x86_64" ;;
+            ARM64) ARCH="aarch64" ;;
+            X86) ARCH="i686" ;;
+            ARM) ARCH="armv7" ;;
+            *) echo "unsupported runner arch: $RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          ARTIFACT_NAME="rais-${VERSION}-${PLATFORM_ID}-${ARCH}${EXTENSION}"
+          echo "RAIS_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "RAIS_ARCH=${ARCH}" >> "$GITHUB_ENV"
+          echo "RAIS_ARTIFACT_NAME=${ARTIFACT_NAME}" >> "$GITHUB_ENV"
+
       - name: Stage Windows artifact
         if: matrix.platform_id == 'windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target\release\rais.exe dist\${{ matrix.artifact_name }} -Force
-          $Hash = (Get-FileHash dist\${{ matrix.artifact_name }} -Algorithm SHA256).Hash.ToLowerInvariant()
-          "{0}  {1}" -f $Hash, "${{ matrix.artifact_name }}" | Set-Content dist\${{ matrix.artifact_name }}.sha256
+          Copy-Item target\release\rais.exe "dist\$env:RAIS_ARTIFACT_NAME" -Force
+          $Hash = (Get-FileHash "dist\$env:RAIS_ARTIFACT_NAME" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "{0}  {1}" -f $Hash, $env:RAIS_ARTIFACT_NAME | Set-Content "dist\$env:RAIS_ARTIFACT_NAME.sha256"
 
       - name: Stage macOS artifact
         if: matrix.platform_id == 'macos'
         shell: bash
         run: |
           mkdir -p dist
-          cp target/release/rais dist/${{ matrix.artifact_name }}
-          chmod +x dist/${{ matrix.artifact_name }}
-          shasum -a 256 dist/${{ matrix.artifact_name }} | awk '{print tolower($1) "  ${{ matrix.artifact_name }}"}' > dist/${{ matrix.artifact_name }}.sha256
+          cp target/release/rais "dist/${RAIS_ARTIFACT_NAME}"
+          chmod +x "dist/${RAIS_ARTIFACT_NAME}"
+          shasum -a 256 "dist/${RAIS_ARTIFACT_NAME}" | awk -v name="${RAIS_ARTIFACT_NAME}" '{print tolower($1) "  " name}' > "dist/${RAIS_ARTIFACT_NAME}.sha256"
 
       - name: Upload single-file artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rais-${{ matrix.platform_id }}
+          name: rais-${{ matrix.platform_id }}-${{ env.RAIS_ARCH }}
           path: |
-            dist/${{ matrix.artifact_name }}
-            dist/${{ matrix.artifact_name }}.sha256
+            dist/${{ env.RAIS_ARTIFACT_NAME }}
+            dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256
           if-no-files-found: error

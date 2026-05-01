@@ -1508,6 +1508,7 @@ pub fn run_wizard_self_update_apply() -> Result<SelfUpdateApplyReport> {
         &stage,
         &ApplySelfUpdateOptions {
             install_root: None,
+            install_target_basename: None,
             package_install_lock_path: None,
         },
     )
@@ -4012,7 +4013,6 @@ mod tests {
         SelfUpdateApplyReport {
             stage,
             install_root: PathBuf::from("/install"),
-            extraction_dir: PathBuf::from("/staging/0.2.0/extracted"),
             replaced_files,
             skipped_files: Vec::new(),
             signature_verdicts,

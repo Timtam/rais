@@ -237,17 +237,24 @@ operation data, not files required to start RAIS.
 
 Distribution goals:
 
-- Windows: a single signed executable named `RAIS.exe`. No MSI, no setup
-  program, no companion DLLs in the default launch path. The same executable
-  serves both UI and CLI users via argv dispatch.
-- macOS: a single signed and notarized executable named `RAIS`. Use an `.app`
-  bundle layout only if macOS GUI launch policy forces it for a given
+- Windows: a single signed executable. No MSI, no setup program, no companion
+  DLLs in the default launch path. The same executable serves both UI and CLI
+  users via argv dispatch.
+- macOS: a single signed and notarized executable. Use an `.app` bundle
+  layout only if macOS GUI launch policy forces it for a given
   wxWidgets/wxDragon shape; in that case the bundle stays self-contained with
   no separate RAIS installer, and the CLI command-line surface still works
   against the binary inside the bundle.
+- Release artifact names follow `rais-<version>-<os>-<arch>[.exe]`
+  (e.g. `rais-0.2.0-windows-x86_64.exe`, `rais-0.2.0-macos-aarch64`). This
+  makes successive downloads distinguishable on disk, calls out the build's
+  architecture explicitly, and works around the macOS-binary-without-extension
+  ambiguity. Users may rename the file after downloading; the self-update
+  apply step swaps in place under whatever filename the running binary has,
+  not under the downloaded file's name.
 - CI artifacts and GitHub release assets are the raw single-file binaries plus
   per-file SHA-256 sums. No `.zip` wrapper is required for single-file
-  artifacts; release notes link directly to the `RAIS.exe`/`RAIS` files.
+  artifacts; release notes link directly to the per-platform binaries.
 - Do not require separate locale files, XRC files, icons, package manifests,
   or certificates beside the executable for the default experience.
 - Store downloads in the normal RAIS cache directory and allow the cache to be

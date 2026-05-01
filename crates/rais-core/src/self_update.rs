@@ -7,7 +7,6 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
-use crate::archive::extract_all_files_flat;
 use crate::error::{IoPathContext, RaisError};
 use crate::hash::sha256_file;
 use crate::lock::{default_package_install_lock_path, package_install_lock_active_at};
@@ -83,7 +82,15 @@ pub struct SelfUpdateStageReport {
 
 #[derive(Debug, Clone, Default)]
 pub struct ApplySelfUpdateOptions {
+    /// Override the directory the swap operates in. Defaults to the parent
+    /// of `current_exe()` (`current_install_root`).
     pub install_root: Option<PathBuf>,
+    /// Override the install target's filename. Defaults to the basename of
+    /// `current_exe()`. The new artifact filename
+    /// (`rais-<version>-<os>-<arch>[.exe]`) does not have to match the
+    /// install target — RAIS swaps in place under the user's existing
+    /// filename regardless of what the download was called.
+    pub install_target_basename: Option<String>,
     pub package_install_lock_path: Option<PathBuf>,
 }
 
@@ -91,7 +98,6 @@ pub struct ApplySelfUpdateOptions {
 pub struct SelfUpdateApplyReport {
     pub stage: SelfUpdateStageReport,
     pub install_root: PathBuf,
-    pub extraction_dir: PathBuf,
     pub replaced_files: Vec<ReplacedFile>,
     pub skipped_files: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -315,36 +321,31 @@ pub fn apply_self_update(
         });
     }
 
-    let install_root = match options.install_root.clone() {
-        Some(root) => root,
-        None => current_install_root()?,
-    };
-    let extraction_dir = staged_asset
+    let install_target = resolve_install_target(options)?;
+    let install_root = install_target
         .parent()
-        .map(|parent| parent.join("extracted"))
-        .unwrap_or_else(|| stage.staging_dir.join("extracted"));
-    if extraction_dir.exists() {
-        fs::remove_dir_all(&extraction_dir).with_path(&extraction_dir)?;
-    }
-    fs::create_dir_all(&extraction_dir).with_path(&extraction_dir)?;
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| match options.install_root.clone() {
+            Some(root) => root,
+            None => PathBuf::new(),
+        });
 
-    let extracted_files = extract_all_files_flat(staged_asset, &extraction_dir)?;
-
-    let signature_verdicts = match verify_replacement_signatures(&extracted_files, &install_root) {
-        Ok(verdicts) => verdicts,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&extraction_dir);
-            return Err(error);
-        }
+    // The release pipeline publishes the bare RAIS executable as a
+    // single-file asset, so the staged file *is* the new binary — no zip
+    // flat-extract step. The download's filename may differ from the
+    // install target (e.g. `rais-0.2.0-windows-x86_64.exe` vs. `RAIS.exe`);
+    // the swap copies bytes regardless of either name.
+    let signature_verdicts = match verify_replacement_signature(staged_asset, &install_target)? {
+        Some(record) => vec![record],
+        None => Vec::new(),
     };
 
     let mut replaced = Vec::new();
     let mut skipped = Vec::new();
     if let Err(error) =
-        swap_install_files(&extracted_files, &install_root, &mut replaced, &mut skipped)
+        swap_install_file(staged_asset, &install_target, &mut replaced, &mut skipped)
     {
         rollback_replaced_files(&replaced);
-        let _ = fs::remove_dir_all(&extraction_dir);
         return Err(error);
     }
 
@@ -374,7 +375,6 @@ pub fn apply_self_update(
     Ok(SelfUpdateApplyReport {
         stage: stage.clone(),
         install_root,
-        extraction_dir,
         replaced_files: replaced,
         skipped_files: skipped,
         signature_verdicts,
@@ -382,67 +382,83 @@ pub fn apply_self_update(
     })
 }
 
-fn verify_replacement_signatures(
-    extracted_files: &[PathBuf],
-    install_root: &Path,
-) -> Result<Vec<SignatureVerdictRecord>> {
-    let mut verdicts = Vec::new();
-    for source in extracted_files {
-        let Some(basename) = source.file_name() else {
-            continue;
-        };
-        let install_path = install_root.join(basename);
-        if !install_path.is_file() {
-            continue;
-        }
-        let verdict = verify_executable_signature(source)?;
-        if let SignatureVerdict::Invalid { reason } = &verdict {
-            return Err(RaisError::SelfUpdateSignatureInvalid {
-                path: source.clone(),
-                reason: reason.clone(),
-            });
-        }
-        verdicts.push(SignatureVerdictRecord {
-            source_path: source.clone(),
-            verdict,
+fn resolve_install_target(options: &ApplySelfUpdateOptions) -> Result<PathBuf> {
+    if options.install_root.is_none() && options.install_target_basename.is_none() {
+        return env::current_exe().map_err(|source| RaisError::Io {
+            path: PathBuf::from("current_exe"),
+            source,
         });
     }
-    Ok(verdicts)
+    let root = match &options.install_root {
+        Some(root) => root.clone(),
+        None => current_install_root()?,
+    };
+    let basename = match options.install_target_basename.clone() {
+        Some(name) => name,
+        None => current_exe_basename()?,
+    };
+    Ok(root.join(basename))
 }
 
-fn swap_install_files(
-    extracted_files: &[PathBuf],
-    install_root: &Path,
+fn current_exe_basename() -> Result<String> {
+    let exe = env::current_exe().map_err(|source| RaisError::Io {
+        path: PathBuf::from("current_exe"),
+        source,
+    })?;
+    exe.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_string())
+        .ok_or_else(|| RaisError::InvalidPlannedExecution {
+            message: "current executable has no file name".to_string(),
+        })
+}
+
+fn verify_replacement_signature(
+    source: &Path,
+    install_target: &Path,
+) -> Result<Option<SignatureVerdictRecord>> {
+    if !install_target.is_file() {
+        return Ok(None);
+    }
+    let verdict = verify_executable_signature(source)?;
+    if let SignatureVerdict::Invalid { reason } = &verdict {
+        return Err(RaisError::SelfUpdateSignatureInvalid {
+            path: source.to_path_buf(),
+            reason: reason.clone(),
+        });
+    }
+    Ok(Some(SignatureVerdictRecord {
+        source_path: source.to_path_buf(),
+        verdict,
+    }))
+}
+
+fn swap_install_file(
+    source: &Path,
+    install_target: &Path,
     replaced: &mut Vec<ReplacedFile>,
     skipped: &mut Vec<PathBuf>,
 ) -> Result<()> {
-    for source in extracted_files {
-        let Some(basename) = source.file_name() else {
-            continue;
-        };
-        let install_path = install_root.join(basename);
-        if !install_path.is_file() {
-            skipped.push(install_path);
-            continue;
-        }
-
-        let backup_path = backup_path_for(&install_path);
-        if backup_path.exists() {
-            fs::remove_file(&backup_path).with_path(&backup_path)?;
-        }
-        fs::rename(&install_path, &backup_path).with_path(&install_path)?;
-        if let Err(error) = fs::copy(source, &install_path) {
-            let _ = fs::rename(&backup_path, &install_path);
-            return Err(RaisError::Io {
-                path: install_path,
-                source: error,
-            });
-        }
-        replaced.push(ReplacedFile {
-            install_path,
-            backup_path,
+    if !install_target.is_file() {
+        skipped.push(install_target.to_path_buf());
+        return Ok(());
+    }
+    let backup_path = backup_path_for(install_target);
+    if backup_path.exists() {
+        fs::remove_file(&backup_path).with_path(&backup_path)?;
+    }
+    fs::rename(install_target, &backup_path).with_path(install_target)?;
+    if let Err(error) = fs::copy(source, install_target) {
+        let _ = fs::rename(&backup_path, install_target);
+        return Err(RaisError::Io {
+            path: install_target.to_path_buf(),
+            source: error,
         });
     }
+    replaced.push(ReplacedFile {
+        install_path: install_target.to_path_buf(),
+        backup_path,
+    });
     Ok(())
 }
 
@@ -779,8 +795,6 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use std::io::Write;
-
     use super::{
         ApplySelfUpdateOptions, SelfUpdateAssetSelection, SelfUpdateCheckReport,
         SelfUpdateManifest, SelfUpdateStageReport, apply_self_update, current_rais_version,
@@ -790,7 +804,6 @@ mod tests {
     use crate::hash::sha256_file;
     use crate::model::Platform;
     use crate::version::Version;
-    use zip::write::SimpleFileOptions;
 
     const MANIFEST_URL: &str = "https://example.test/rais-update-stable.json";
 
@@ -1039,112 +1052,52 @@ mod tests {
         }
     }
 
-    fn write_test_release_zip(path: &std::path::Path, entries: &[(&str, &[u8])]) {
-        let file = fs::File::create(path).unwrap();
-        let mut writer = zip::ZipWriter::new(file);
-        let options =
-            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-        for (name, contents) in entries {
-            writer.start_file(*name, options).unwrap();
-            writer.write_all(contents).unwrap();
-        }
-        writer.finish().unwrap();
+    fn write_test_release_binary(path: &std::path::Path, contents: &[u8]) {
+        fs::write(path, contents).unwrap();
     }
 
-    fn staged_report_for_zip(
-        archive_path: &std::path::Path,
+    fn staged_report_for_binary(
+        binary_path: &std::path::Path,
         staging_dir: &std::path::Path,
     ) -> SelfUpdateStageReport {
-        let archive_sha = sha256_file(archive_path).unwrap();
-        let mut check = sample_check_report(archive_path.display().to_string(), &archive_sha);
-        check.asset.url = archive_path.display().to_string();
+        let binary_sha = sha256_file(binary_path).unwrap();
+        let mut check = sample_check_report(binary_path.display().to_string(), &binary_sha);
+        check.asset.url = binary_path.display().to_string();
         SelfUpdateStageReport {
             check,
             staging_dir: staging_dir.to_path_buf(),
-            staged_asset_path: Some(archive_path.to_path_buf()),
+            staged_asset_path: Some(binary_path.to_path_buf()),
             downloaded: true,
             reused_existing_file: false,
-            verified_sha256: Some(archive_sha),
+            verified_sha256: Some(binary_sha),
             ready_to_apply: true,
             status_message: "ready".to_string(),
         }
     }
 
     #[test]
-    fn apply_self_update_replaces_matching_install_files_and_keeps_rollback() {
+    fn apply_self_update_replaces_install_file_using_versioned_source_name() {
         let staging_root = tempdir().unwrap();
         let install_root = tempdir().unwrap();
-        let archive_path = staging_root.path().join("0.2.0").join("RAIS-windows.zip");
-        fs::create_dir_all(archive_path.parent().unwrap()).unwrap();
-        write_test_release_zip(
-            &archive_path,
-            &[
-                ("RAIS.exe", b"new-rais-binary"),
-                ("rais-cli.exe", b"new-cli-binary"),
-                ("README.txt", b"release notes"),
-            ],
-        );
+        // The staged source file follows the new versioned naming
+        // (`rais-<version>-<os>-<arch>.exe`); the install target is
+        // whatever the user named their binary on disk (`RAIS.exe`). The
+        // swap should not require the two names to match.
+        let staged_binary_path = staging_root
+            .path()
+            .join("0.2.0")
+            .join("rais-0.2.0-windows-x86_64.exe");
+        fs::create_dir_all(staged_binary_path.parent().unwrap()).unwrap();
+        write_test_release_binary(&staged_binary_path, b"new-rais-binary");
 
         fs::write(install_root.path().join("RAIS.exe"), b"old-rais-binary").unwrap();
-        fs::write(install_root.path().join("rais-cli.exe"), b"old-cli-binary").unwrap();
 
-        let stage = staged_report_for_zip(&archive_path, staging_root.path());
+        let stage = staged_report_for_binary(&staged_binary_path, staging_root.path());
         let report = apply_self_update(
             &stage,
             &ApplySelfUpdateOptions {
                 install_root: Some(install_root.path().to_path_buf()),
-                package_install_lock_path: None,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(report.replaced_files.len(), 2);
-        assert_eq!(
-            fs::read(install_root.path().join("RAIS.exe")).unwrap(),
-            b"new-rais-binary"
-        );
-        assert_eq!(
-            fs::read(install_root.path().join("rais-cli.exe")).unwrap(),
-            b"new-cli-binary"
-        );
-        assert_eq!(
-            fs::read(install_root.path().join("RAIS.exe.rais-old")).unwrap(),
-            b"old-rais-binary"
-        );
-        assert_eq!(
-            fs::read(install_root.path().join("rais-cli.exe.rais-old")).unwrap(),
-            b"old-cli-binary"
-        );
-        assert!(
-            report
-                .skipped_files
-                .iter()
-                .any(|path| path.ends_with("README.txt"))
-        );
-        assert!(report.extraction_dir.is_dir());
-    }
-
-    #[test]
-    fn apply_self_update_flattens_macos_zip_layout() {
-        let staging_root = tempdir().unwrap();
-        let install_root = tempdir().unwrap();
-        let archive_path = staging_root.path().join("0.2.0").join("RAIS-macos.zip");
-        fs::create_dir_all(archive_path.parent().unwrap()).unwrap();
-        write_test_release_zip(
-            &archive_path,
-            &[
-                ("macos/RAIS", b"new-mac-binary"),
-                ("macos/rais-cli", b"new-mac-cli"),
-            ],
-        );
-
-        fs::write(install_root.path().join("RAIS"), b"old-mac-binary").unwrap();
-
-        let stage = staged_report_for_zip(&archive_path, staging_root.path());
-        let report = apply_self_update(
-            &stage,
-            &ApplySelfUpdateOptions {
-                install_root: Some(install_root.path().to_path_buf()),
+                install_target_basename: Some("RAIS.exe".to_string()),
                 package_install_lock_path: None,
             },
         )
@@ -1152,32 +1105,64 @@ mod tests {
 
         assert_eq!(report.replaced_files.len(), 1);
         assert_eq!(
-            fs::read(install_root.path().join("RAIS")).unwrap(),
-            b"new-mac-binary"
+            fs::read(install_root.path().join("RAIS.exe")).unwrap(),
+            b"new-rais-binary"
         );
         assert_eq!(
-            fs::read(install_root.path().join("RAIS.rais-old")).unwrap(),
-            b"old-mac-binary"
+            fs::read(install_root.path().join("RAIS.exe.rais-old")).unwrap(),
+            b"old-rais-binary"
         );
+        assert!(report.skipped_files.is_empty());
+    }
+
+    #[test]
+    fn apply_self_update_skips_missing_install_target_without_writing() {
+        let staging_root = tempdir().unwrap();
+        let install_root = tempdir().unwrap();
+        let staged_binary_path = staging_root
+            .path()
+            .join("0.2.0")
+            .join("rais-0.2.0-macos-aarch64");
+        fs::create_dir_all(staged_binary_path.parent().unwrap()).unwrap();
+        write_test_release_binary(&staged_binary_path, b"new-mac-binary");
+
+        // Install root does not contain a `RAIS` file yet — the swap step
+        // should record it as skipped without creating one.
+        let stage = staged_report_for_binary(&staged_binary_path, staging_root.path());
+        let report = apply_self_update(
+            &stage,
+            &ApplySelfUpdateOptions {
+                install_root: Some(install_root.path().to_path_buf()),
+                install_target_basename: Some("RAIS".to_string()),
+                package_install_lock_path: None,
+            },
+        )
+        .unwrap();
+
+        assert!(report.replaced_files.is_empty());
         assert!(
             report
                 .skipped_files
                 .iter()
-                .any(|path| path.ends_with("rais-cli"))
+                .any(|path| path.ends_with("RAIS"))
         );
+        assert!(!install_root.path().join("RAIS").exists());
     }
 
     #[test]
     fn apply_self_update_rejects_hash_mismatch_without_touching_install() {
         let staging_root = tempdir().unwrap();
         let install_root = tempdir().unwrap();
-        let archive_path = staging_root.path().join("0.2.0").join("RAIS-windows.zip");
-        fs::create_dir_all(archive_path.parent().unwrap()).unwrap();
-        write_test_release_zip(&archive_path, &[("RAIS.exe", b"new-rais-binary")]);
+        let staged_binary_path = staging_root
+            .path()
+            .join("0.2.0")
+            .join("rais-0.2.0-windows-x86_64.exe");
+        fs::create_dir_all(staged_binary_path.parent().unwrap()).unwrap();
+        write_test_release_binary(&staged_binary_path, b"new-rais-binary");
 
         fs::write(install_root.path().join("RAIS.exe"), b"old-rais-binary").unwrap();
 
-        let mut stage = staged_report_for_zip(&archive_path, staging_root.path());
+        let mut stage = staged_report_for_binary(&staged_binary_path, staging_root.path());
         stage.check.asset.sha256 =
             "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
 
@@ -1185,6 +1170,7 @@ mod tests {
             &stage,
             &ApplySelfUpdateOptions {
                 install_root: Some(install_root.path().to_path_buf()),
+                install_target_basename: Some("RAIS.exe".to_string()),
                 package_install_lock_path: None,
             },
         )
@@ -1203,7 +1189,7 @@ mod tests {
         let staging_root = tempdir().unwrap();
         let install_root = tempdir().unwrap();
         let mut stage = sample_check_report(
-            "https://example.test/RAIS-windows.zip".to_string(),
+            "https://example.test/rais-0.2.0-windows-x86_64.exe".to_string(),
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         );
         stage.update_available = false;
@@ -1223,6 +1209,7 @@ mod tests {
             &stage_report,
             &ApplySelfUpdateOptions {
                 install_root: Some(install_root.path().to_path_buf()),
+                install_target_basename: Some("RAIS.exe".to_string()),
                 package_install_lock_path: None,
             },
         )
@@ -1233,26 +1220,20 @@ mod tests {
 
     #[test]
     fn apply_self_update_refuses_when_package_install_lock_is_held() {
-        use std::io::Write as _;
-        use zip::write::SimpleFileOptions;
-
         let staging_root = tempdir().unwrap();
         let install_root = tempdir().unwrap();
         let lock_dir = tempdir().unwrap();
         let lock_path = lock_dir.path().join("install.lock");
 
-        let archive_path = staging_root.path().join("0.2.0").join("RAIS-windows.zip");
-        fs::create_dir_all(archive_path.parent().unwrap()).unwrap();
-        let file = fs::File::create(&archive_path).unwrap();
-        let mut writer = zip::ZipWriter::new(file);
-        let options =
-            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-        writer.start_file("RAIS.exe", options).unwrap();
-        writer.write_all(b"new").unwrap();
-        writer.finish().unwrap();
+        let staged_binary_path = staging_root
+            .path()
+            .join("0.2.0")
+            .join("rais-0.2.0-windows-x86_64.exe");
+        fs::create_dir_all(staged_binary_path.parent().unwrap()).unwrap();
+        write_test_release_binary(&staged_binary_path, b"new");
 
         fs::write(install_root.path().join("RAIS.exe"), b"old").unwrap();
-        let stage = staged_report_for_zip(&archive_path, staging_root.path());
+        let stage = staged_report_for_binary(&staged_binary_path, staging_root.path());
 
         let _install_lock = crate::lock::acquire_package_install_lock_at(&lock_path).unwrap();
 
@@ -1260,6 +1241,7 @@ mod tests {
             &stage,
             &ApplySelfUpdateOptions {
                 install_root: Some(install_root.path().to_path_buf()),
+                install_target_basename: Some("RAIS.exe".to_string()),
                 package_install_lock_path: Some(lock_path.clone()),
             },
         )

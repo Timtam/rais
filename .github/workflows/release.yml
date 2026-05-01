@@ -21,10 +21,10 @@ jobs:
         include:
           - os: windows-latest
             platform_id: windows
-            archive_name: RAIS-windows.zip
+            extension: ".exe"
           - os: macos-latest
             platform_id: macos
-            archive_name: RAIS-macos.zip
+            extension: ""
 
     steps:
       - name: Checkout
@@ -61,15 +61,33 @@ jobs:
       - name: Build release rais binary with GUI feature
         run: cargo build --release -p rais --features gui
 
-      - name: Stage Windows release files
+      - name: Resolve artifact name
+        shell: bash
+        env:
+          PLATFORM_ID: ${{ matrix.platform_id }}
+          RUNNER_ARCH: ${{ runner.arch }}
+          EXTENSION: ${{ matrix.extension }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG_NAME#v}"
+          case "$RUNNER_ARCH" in
+            X64) ARCH="x86_64" ;;
+            ARM64) ARCH="aarch64" ;;
+            X86) ARCH="i686" ;;
+            ARM) ARCH="armv7" ;;
+            *) echo "unsupported runner arch: $RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          ARTIFACT_NAME="rais-${VERSION}-${PLATFORM_ID}-${ARCH}${EXTENSION}"
+          echo "RAIS_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "RAIS_ARCH=${ARCH}" >> "$GITHUB_ENV"
+          echo "RAIS_ARTIFACT_NAME=${ARTIFACT_NAME}" >> "$GITHUB_ENV"
+
+      - name: Stage Windows release file
         if: matrix.platform_id == 'windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist\windows | Out-Null
-          Copy-Item target\release\rais.exe dist\windows\RAIS.exe -Force
-          if (Test-Path target\release\rais.pdb) {
-            Copy-Item target\release\rais.pdb dist\windows\RAIS.pdb -Force
-          }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\release\rais.exe "dist\$env:RAIS_ARTIFACT_NAME" -Force
 
       - name: Sign Windows binaries (if certificate is configured)
         if: matrix.platform_id == 'windows'
@@ -103,30 +121,29 @@ jobs:
               /tr "http://timestamp.digicert.com" `
               /td SHA256 `
               /fd SHA256 `
-              dist\windows\RAIS.exe
+              dist\${{ env.RAIS_ARTIFACT_NAME }}
             if ($LASTEXITCODE -ne 0) { throw "signtool sign failed with exit $LASTEXITCODE" }
-            & $signtool.FullName verify /pa /q dist\windows\RAIS.exe
+            & $signtool.FullName verify /pa /q dist\${{ env.RAIS_ARTIFACT_NAME }}
             if ($LASTEXITCODE -ne 0) { throw "signtool verify failed with exit $LASTEXITCODE" }
           }
           finally {
             Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
           }
 
-      - name: Pack Windows release bundle
+      - name: Hash Windows release file
         if: matrix.platform_id == 'windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path dist\windows\* -DestinationPath dist\${{ matrix.archive_name }} -Force
-          $Hash = (Get-FileHash dist\${{ matrix.archive_name }} -Algorithm SHA256).Hash.ToLowerInvariant()
-          "{0}  {1}" -f $Hash, "${{ matrix.archive_name }}" | Set-Content dist\${{ matrix.archive_name }}.sha256
+          $Hash = (Get-FileHash dist\${{ env.RAIS_ARTIFACT_NAME }} -Algorithm SHA256).Hash.ToLowerInvariant()
+          "{0}  {1}" -f $Hash, "${{ env.RAIS_ARTIFACT_NAME }}" | Set-Content dist\${{ env.RAIS_ARTIFACT_NAME }}.sha256
 
-      - name: Stage macOS release files
+      - name: Stage macOS release file
         if: matrix.platform_id == 'macos'
         shell: bash
         run: |
-          mkdir -p dist/macos
-          cp target/release/rais dist/macos/RAIS
-          chmod +x dist/macos/RAIS
+          mkdir -p dist
+          cp target/release/rais dist/${{ env.RAIS_ARTIFACT_NAME }}
+          chmod +x dist/${{ env.RAIS_ARTIFACT_NAME }}
 
       - name: Sign macOS binaries (if certificate is configured)
         if: matrix.platform_id == 'macos'
@@ -156,18 +173,17 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | tr -d '"')
           /usr/bin/codesign --force --options runtime --timestamp \
             --sign "$MAC_SIGNING_IDENTITY" \
-            dist/macos/RAIS
-          /usr/bin/codesign --verify --strict --verbose=2 dist/macos/RAIS
+            dist/${{ env.RAIS_ARTIFACT_NAME }}
+          /usr/bin/codesign --verify --strict --verbose=2 dist/${{ env.RAIS_ARTIFACT_NAME }}
           rm -f "$CERT_PATH"
 
-      - name: Pack macOS release bundle
+      - name: Hash macOS release file
         if: matrix.platform_id == 'macos'
         shell: bash
         run: |
-          ditto -c -k --sequesterRsrc --keepParent dist/macos "dist/${{ matrix.archive_name }}"
-          shasum -a 256 "dist/${{ matrix.archive_name }}" | awk '{print tolower($1) "  ${{ matrix.archive_name }}"}' > "dist/${{ matrix.archive_name }}.sha256"
+          shasum -a 256 "dist/${{ env.RAIS_ARTIFACT_NAME }}" | awk '{print tolower($1) "  ${{ env.RAIS_ARTIFACT_NAME }}"}' > "dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256"
 
-      - name: Notarize macOS release bundle (if notary credentials are configured)
+      - name: Notarize macOS binary (if notary credentials are configured)
         if: matrix.platform_id == 'macos'
         shell: bash
         env:
@@ -179,19 +195,24 @@ jobs:
             echo "Notary credentials not configured; skipping notarization."
             exit 0
           fi
-          xcrun notarytool submit "dist/${{ matrix.archive_name }}" \
+          # notarytool requires a zip, dmg, or pkg. Build a throwaway zip
+          # purely as a notary submission carrier; we do not publish it.
+          NOTARY_ZIP="$RUNNER_TEMP/rais-notary.zip"
+          ditto -c -k --keepParent "dist/${{ env.RAIS_ARTIFACT_NAME }}" "$NOTARY_ZIP"
+          xcrun notarytool submit "$NOTARY_ZIP" \
             --apple-id "$MAC_NOTARY_APPLE_ID" \
             --team-id "$MAC_NOTARY_TEAM_ID" \
             --password "$MAC_NOTARY_PASSWORD" \
             --wait
+          rm -f "$NOTARY_ZIP"
 
-      - name: Upload release bundle
+      - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-bundle-${{ matrix.platform_id }}
+          name: rais-${{ matrix.platform_id }}-${{ env.RAIS_ARCH }}
           path: |
-            dist/${{ matrix.archive_name }}
-            dist/${{ matrix.archive_name }}.sha256
+            dist/${{ env.RAIS_ARTIFACT_NAME }}
+            dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256
           if-no-files-found: error
 
   publish:
@@ -202,10 +223,10 @@ jobs:
       contents: write
 
     steps:
-      - name: Download release bundles
+      - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: release-bundle-*
+          pattern: rais-*
           merge-multiple: true
           path: release
 
@@ -222,11 +243,23 @@ jobs:
         run: |
           VERSION="${TAG_NAME#v}"
           PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          WINDOWS_SHA="$(awk '{print $1}' release/RAIS-windows.zip.sha256)"
-          MACOS_SHA="$(awk '{print $1}' release/RAIS-macos.zip.sha256)"
+          # Find the per-platform artifacts by their `rais-<version>-<os>-<arch>`
+          # filenames. Glob matches the binary itself (any arch) and excludes
+          # the sidecar `.sha256` file.
+          WINDOWS_PATH="$(find release -maxdepth 1 -type f -name 'rais-*-windows-*.exe' ! -name '*.sha256' | sort | head -1)"
+          MACOS_PATH="$(find release -maxdepth 1 -type f -name 'rais-*-macos-*' ! -name '*.exe' ! -name '*.sha256' | sort | head -1)"
+          if [ -z "$WINDOWS_PATH" ] || [ -z "$MACOS_PATH" ]; then
+            echo "expected per-platform artifacts under release/ but found:" >&2
+            ls release/ >&2
+            exit 1
+          fi
+          WINDOWS_NAME="$(basename "$WINDOWS_PATH")"
+          MACOS_NAME="$(basename "$MACOS_PATH")"
+          WINDOWS_SHA="$(awk '{print $1}' "${WINDOWS_PATH}.sha256")"
+          MACOS_SHA="$(awk '{print $1}' "${MACOS_PATH}.sha256")"
           RELEASE_NOTES_URL="https://github.com/${REPOSITORY}/releases/tag/${TAG_NAME}"
-          WINDOWS_URL="https://github.com/${REPOSITORY}/releases/download/${TAG_NAME}/RAIS-windows.zip"
-          MACOS_URL="https://github.com/${REPOSITORY}/releases/download/${TAG_NAME}/RAIS-macos.zip"
+          WINDOWS_URL="https://github.com/${REPOSITORY}/releases/download/${TAG_NAME}/${WINDOWS_NAME}"
+          MACOS_URL="https://github.com/${REPOSITORY}/releases/download/${TAG_NAME}/${MACOS_NAME}"
           jq -n \
             --arg version "$VERSION" \
             --arg channel "stable" \
@@ -258,10 +291,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/RAIS-windows.zip
-            release/RAIS-windows.zip.sha256
-            release/RAIS-macos.zip
-            release/RAIS-macos.zip.sha256
+            release/rais-*
             release/SHA256SUMS.txt
             release/rais-update-stable.json
           generate_release_notes: true

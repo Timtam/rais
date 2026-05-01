@@ -759,6 +759,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &stage,
                     &ApplySelfUpdateOptions {
                         install_root,
+                        install_target_basename: None,
                         package_install_lock_path: None,
                     },
                 )?;
@@ -1383,7 +1384,6 @@ fn print_self_update_stage_report(report: &SelfUpdateStageReport) {
 fn print_self_update_apply_report(report: &SelfUpdateApplyReport) {
     print_self_update_stage_report(&report.stage);
     println!("Install root: {}", report.install_root.display());
-    println!("Extraction directory: {}", report.extraction_dir.display());
     println!("Replaced files: {}", report.replaced_files.len());
     for replaced in &report.replaced_files {
         println!(
