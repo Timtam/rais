@@ -124,11 +124,11 @@ mod tests {
     #[test]
     fn normalizes_reaper_windows_fixed_file_versions() {
         assert_eq!(
-            version_string_for_path(Path::new(r"C:\REAPER\reaper.exe"), &[7, 6, 9, 0]),
+            version_string_for_path(Path::new("/REAPER/reaper.exe"), &[7, 6, 9, 0]),
             "7.69"
         );
         assert_eq!(
-            version_string_for_path(Path::new(r"C:\REAPER\reaper.exe"), &[7, 7, 0, 0]),
+            version_string_for_path(Path::new("/REAPER/reaper.exe"), &[7, 7, 0, 0]),
             "7.70"
         );
     }
@@ -137,13 +137,13 @@ mod tests {
     fn keeps_non_reaper_versions_in_standard_dotted_form() {
         assert_eq!(
             version_string_for_path(
-                Path::new(r"C:\REAPER\UserPlugins\reaper_osara64.dll"),
+                Path::new("/REAPER/UserPlugins/reaper_osara64.dll"),
                 &[1, 2, 6, 0]
             ),
             "1.2.6"
         );
         assert_eq!(
-            version_string_for_path(Path::new(r"C:\REAPER\reaper.exe"), &[7, 69, 0, 0]),
+            version_string_for_path(Path::new("/REAPER/reaper.exe"), &[7, 69, 0, 0]),
             "7.69"
         );
     }
