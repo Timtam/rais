@@ -290,6 +290,38 @@ fn detect_version_from_files_with_probes(
         }
     }
 
+    if package_id == PACKAGE_SWS {
+        for file in files {
+            if let Some(version) = sws_version_from_binary(file)? {
+                return Ok(Some((
+                    version,
+                    "sws-binary-version-string".to_string(),
+                    Confidence::Medium,
+                    vec![
+                        "Version came from a best-effort scan for SWS's embedded `version #commit` string."
+                            .to_string(),
+                    ],
+                )));
+            }
+        }
+    }
+
+    if package_id == PACKAGE_REAPACK {
+        for file in files {
+            if let Some(version) = reapack_version_from_binary(file)? {
+                return Ok(Some((
+                    version,
+                    "reapack-binary-version-string".to_string(),
+                    Confidence::Medium,
+                    vec![
+                        "Version came from a best-effort scan for ReaPack's embedded user-agent string."
+                            .to_string(),
+                    ],
+                )));
+            }
+        }
+    }
+
     Ok(None)
 }
 
@@ -297,6 +329,97 @@ fn embedded_snapshot_version_from_binary(path: &Path) -> Result<Option<crate::ve
     let bytes = fs::read(path).with_path(path)?;
     let text = String::from_utf8_lossy(&bytes);
     Ok(embedded_snapshot_version_from_text(&text))
+}
+
+fn sws_version_from_binary(path: &Path) -> Result<Option<crate::version::Version>> {
+    let bytes = fs::read(path).with_path(path)?;
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(sws_version_from_text(&text))
+}
+
+/// Look for SWS's distinctive `<version> #<git-hash>` literal — embedded in
+/// the about-dialog and user-agent strings (e.g., `2.14.0.1 #2dadf4b`). The
+/// trailing space-hash-hex anchor is what makes this safe to grep without
+/// false positives on arbitrary digit clusters in the binary.
+fn sws_version_from_text(text: &str) -> Option<crate::version::Version> {
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    while start < bytes.len() {
+        if !bytes[start].is_ascii_digit() {
+            start += 1;
+            continue;
+        }
+
+        let mut end = start;
+        let mut dot_count = 0;
+        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
+            if bytes[end] == b'.' {
+                dot_count += 1;
+            }
+            end += 1;
+        }
+
+        // SWS releases are at least three-component (e.g., 2.14.0); accept
+        // both 3- and 4-component forms.
+        if dot_count < 2 || bytes.get(end..end + 2) != Some(b" #") {
+            start += 1;
+            continue;
+        }
+
+        let mut hash_end = end + 2;
+        while hash_end < bytes.len() && bytes[hash_end].is_ascii_hexdigit() {
+            hash_end += 1;
+        }
+        if hash_end - (end + 2) < 6 {
+            start += 1;
+            continue;
+        }
+
+        let candidate = &text[start..end];
+        if let Ok(version) = crate::version::Version::parse(candidate) {
+            return Some(version);
+        }
+        start += 1;
+    }
+
+    None
+}
+
+fn reapack_version_from_binary(path: &Path) -> Result<Option<crate::version::Version>> {
+    let bytes = fs::read(path).with_path(path)?;
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(reapack_version_from_text(&text))
+}
+
+/// Look for ReaPack's distinctive `ReaPack/<version>` user-agent literal (or
+/// the legacy `ReaPack v<version>` form some builds embed in the about
+/// dialog). The "ReaPack" prefix is unique enough that the version digits
+/// that follow are reliably ReaPack's own.
+fn reapack_version_from_text(text: &str) -> Option<crate::version::Version> {
+    for prefix in ["ReaPack/", "ReaPack v"] {
+        let mut cursor = 0;
+        while cursor < text.len() {
+            let Some(idx) = text[cursor..].find(prefix) else {
+                break;
+            };
+            let after = &text[cursor + idx + prefix.len()..];
+            let end = after
+                .as_bytes()
+                .iter()
+                .position(|byte| !(byte.is_ascii_digit() || *byte == b'.'))
+                .unwrap_or(after.len());
+            let candidate = after[..end].trim_end_matches('.');
+            if !candidate.is_empty()
+                && candidate.contains('.')
+                && let Ok(version) = crate::version::Version::parse(candidate)
+            {
+                return Some(version);
+            }
+            cursor += idx + prefix.len();
+        }
+    }
+
+    None
 }
 
 fn embedded_snapshot_version_from_text(text: &str) -> Option<crate::version::Version> {
@@ -651,7 +774,7 @@ mod tests {
 
     use super::{
         DiscoveryOptions, default_standard_installation, detect_components, discover_installations,
-        embedded_snapshot_version_from_text,
+        embedded_snapshot_version_from_text, reapack_version_from_text, sws_version_from_text,
     };
     use crate::model::Platform;
     use crate::package::{PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_SWS};
@@ -754,6 +877,85 @@ mod tests {
 
         assert_eq!(osara.version.as_ref().unwrap().raw(), "2024.3.6.1332");
         assert_eq!(osara.detector, "osara-binary-version-string");
+    }
+
+    #[test]
+    fn parses_sws_version_with_commit_hash() {
+        let version = sws_version_from_text("SWS Extension v2.14.0.1 #2dadf4b\0").unwrap();
+        assert_eq!(version.raw(), "2.14.0.1");
+    }
+
+    #[test]
+    fn parses_sws_three_component_version_with_commit_hash() {
+        let version = sws_version_from_text("v2.14.0 #abcdef0\0").unwrap();
+        assert_eq!(version.raw(), "2.14.0");
+    }
+
+    #[test]
+    fn rejects_sws_version_pattern_without_commit_hash() {
+        assert!(sws_version_from_text("plain 1.2.3 with no anchor").is_none());
+    }
+
+    #[test]
+    fn detects_sws_version_by_binary_scan_when_metadata_is_unavailable() {
+        let dir = tempdir().unwrap();
+        let plugins = dir.path().join("UserPlugins");
+        fs::create_dir_all(&plugins).unwrap();
+        fs::write(
+            plugins.join("reaper_sws-x64.dll"),
+            b"SWS Extension\0v2.14.0.1 #2dadf4b\0",
+        )
+        .unwrap();
+
+        let detections =
+            super::detect_components_with_probes(dir.path(), Platform::Windows, |_| None).unwrap();
+        let sws = detections
+            .iter()
+            .find(|detection| detection.package_id == PACKAGE_SWS)
+            .unwrap();
+
+        assert_eq!(sws.version.as_ref().unwrap().raw(), "2.14.0.1");
+        assert_eq!(sws.detector, "sws-binary-version-string");
+    }
+
+    #[test]
+    fn parses_reapack_version_from_user_agent() {
+        let version =
+            reapack_version_from_text("Mozilla/5.0 ReaPack/1.2.6 (Cockos REAPER)\0").unwrap();
+        assert_eq!(version.raw(), "1.2.6");
+    }
+
+    #[test]
+    fn parses_reapack_version_from_legacy_about_form() {
+        let version = reapack_version_from_text("\0ReaPack v1.2.6\0").unwrap();
+        assert_eq!(version.raw(), "1.2.6");
+    }
+
+    #[test]
+    fn rejects_reapack_version_without_anchor() {
+        assert!(reapack_version_from_text("just 1.2.6 by itself").is_none());
+    }
+
+    #[test]
+    fn detects_reapack_version_by_binary_scan_when_metadata_is_unavailable() {
+        let dir = tempdir().unwrap();
+        let plugins = dir.path().join("UserPlugins");
+        fs::create_dir_all(&plugins).unwrap();
+        fs::write(
+            plugins.join("reaper_reapack-x64.dll"),
+            b"User-Agent: ReaPack/1.2.6 (REAPER)\0",
+        )
+        .unwrap();
+
+        let detections =
+            super::detect_components_with_probes(dir.path(), Platform::Windows, |_| None).unwrap();
+        let reapack = detections
+            .iter()
+            .find(|detection| detection.package_id == PACKAGE_REAPACK)
+            .unwrap();
+
+        assert_eq!(reapack.version.as_ref().unwrap().raw(), "1.2.6");
+        assert_eq!(reapack.detector, "reapack-binary-version-string");
     }
 
     #[test]
