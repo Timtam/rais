@@ -19,15 +19,47 @@ pub const REAKONTROL_GITHUB_LATEST_URL: &str =
     "https://api.github.com/repos/jcsteh/reaKontrol/releases/latest";
 
 pub fn fetch_latest_versions() -> Result<Vec<AvailablePackage>> {
-    let client = Client::builder()
+    let client = build_http_client()?;
+    let mut packages = Vec::new();
+    for (package_id, url, parser) in providers() {
+        let body = http_get_text(&client, url)?;
+        let version = parser(&body, url)?;
+        packages.push(AvailablePackage {
+            package_id: package_id.to_string(),
+            version: Some(version),
+        });
+    }
+    Ok(packages)
+}
+
+/// Fetch the latest version for a single package. Useful when a UI wants to
+/// stream per-package results as they arrive instead of blocking on the full
+/// batch.
+pub fn fetch_latest_for_package(package_id: &str) -> Result<Version> {
+    let (_, url, parser) = providers()
+        .into_iter()
+        .find(|(id, _, _)| *id == package_id)
+        .ok_or_else(|| RaisError::RemoteData {
+            url: String::new(),
+            message: format!("no latest-version provider configured for package {package_id}"),
+        })?;
+    let client = build_http_client()?;
+    let body = http_get_text(&client, url)?;
+    parser(&body, url)
+}
+
+fn build_http_client() -> Result<Client> {
+    Client::builder()
         .user_agent(USER_AGENT)
         .build()
         .map_err(|source| RaisError::Http {
             url: "client-builder".to_string(),
             source,
-        })?;
+        })
+}
 
-    let providers = [
+fn providers() -> [(&'static str, &'static str, VersionParser); 5] {
+    [
         (
             PACKAGE_REAPER,
             REAPER_DOWNLOAD_URL,
@@ -53,19 +85,7 @@ pub fn fetch_latest_versions() -> Result<Vec<AvailablePackage>> {
             REAKONTROL_GITHUB_LATEST_URL,
             parse_reakontrol_snapshot_version as VersionParser,
         ),
-    ];
-
-    let mut packages = Vec::new();
-    for (package_id, url, parser) in providers {
-        let body = http_get_text(&client, url)?;
-        let version = parser(&body, url)?;
-        packages.push(AvailablePackage {
-            package_id: package_id.to_string(),
-            version: Some(version),
-        });
-    }
-
-    Ok(packages)
+    ]
 }
 
 type VersionParser = fn(&str, &str) -> Result<Version>;

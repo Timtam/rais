@@ -34,26 +34,70 @@ fn with_ui_localizer<F: FnOnce(&Localizer)>(f: F) {
         }
     });
 }
+
+/// Stages of the deferred latest-version fetch the wizard runs once the user
+/// transitions Target → Packages.
+enum VersionCheckEvent {
+    /// "Checking <package>…" — emitted before each fetch starts.
+    Checking { package_id: String },
+    /// Per-package outcome: a fetched version, or an error message.
+    Result {
+        package_id: String,
+        outcome: std::result::Result<String, String>,
+    },
+    /// Worker has finished iterating all packages — the UI should rebuild the
+    /// package list with the fetched data and re-enable interaction.
+    Finished,
+}
+
+/// Dispatcher set up by the Target → Packages click handler so the
+/// version-check worker's `call_after` posts can mutate UI-thread-only state
+/// (Rc-based package_rows, package_notes, can_install) without violating Send.
+type VersionCheckDispatcher = Box<dyn FnMut(VersionCheckEvent)>;
+
+thread_local! {
+    static VERSION_CHECK_DISPATCHER: RefCell<Option<VersionCheckDispatcher>> =
+        const { RefCell::new(None) };
+}
+
+fn install_version_check_dispatcher(dispatcher: VersionCheckDispatcher) {
+    VERSION_CHECK_DISPATCHER.with(|cell| {
+        *cell.borrow_mut() = Some(dispatcher);
+    });
+}
+
+fn dispatch_version_check_event(event: VersionCheckEvent) {
+    VERSION_CHECK_DISPATCHER.with(|cell| {
+        if let Some(dispatcher) = cell.borrow_mut().as_mut() {
+            dispatcher(event);
+        }
+    });
+}
+use rais_core::latest::fetch_latest_for_package;
+use rais_core::plan::AvailablePackage;
 use rais_ui_wxdragon::{
-    OsaraKeymapChoice, TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel,
-    WizardOutcomeReport, build_review_preview_for_package_rows, custom_portable_target_row,
-    execute_wizard_install, format_package_install_lock_blocking_message,
-    format_self_update_apply_summary, format_self_update_check_summary,
-    install_request_from_target_and_rows, load_wizard_model, localizer_from_options,
-    manual_attention_handling_summary, osara_keymap_note, osara_selected_for_rows,
-    package_requires_manual_attention, preview_manual_instruction_lines, refreshed_target_row,
-    relaunch_rais_after_apply, run_wizard_package_install_lock_check, run_wizard_self_update_apply,
-    run_wizard_self_update_check, save_wizard_outcome_report, wizard_outcome_report_from_error,
-    wizard_outcome_report_from_success, wizard_package_plan_for_target,
+    OsaraKeymapChoice, PackageRow, TargetRow, UiBootstrapOptions, WizardInstallOptions,
+    WizardModel, WizardOutcomeReport, build_review_preview_for_package_rows,
+    custom_portable_target_row, execute_wizard_install,
+    format_package_install_lock_blocking_message, format_self_update_apply_summary,
+    format_self_update_check_summary, install_request_from_target_and_rows, load_wizard_model,
+    localized_package_display_name, localizer_from_options, manual_attention_handling_summary,
+    osara_keymap_note, osara_selected_for_rows, package_requires_manual_attention,
+    preview_manual_instruction_lines, refreshed_target_row, relaunch_rais_after_apply,
+    run_wizard_package_install_lock_check, run_wizard_self_update_apply,
+    run_wizard_self_update_check, save_wizard_outcome_report, wizard_desired_package_ids,
+    wizard_outcome_report_from_error, wizard_outcome_report_from_success,
+    wizard_package_plan_for_target, wizard_package_plan_for_target_with_available,
 };
 use wxdragon::prelude::*;
 use wxdragon::widgets::SimpleBook;
 
 const TARGET_STEP: usize = 0;
-const PACKAGES_STEP: usize = 1;
-const REVIEW_STEP: usize = 2;
-const PROGRESS_STEP: usize = 3;
-const DONE_STEP: usize = 4;
+const VERSION_CHECK_STEP: usize = 1;
+const PACKAGES_STEP: usize = 2;
+const REVIEW_STEP: usize = 3;
+const PROGRESS_STEP: usize = 4;
+const DONE_STEP: usize = 5;
 
 #[derive(Default)]
 struct SelfUpdateUiState {
@@ -115,6 +159,10 @@ struct WizardWidgets {
     target_choice: Choice,
     portable_folder: DirPickerCtrl,
     target_details: TextCtrl,
+    version_check_status: StaticText,
+    version_check_gauge: Gauge,
+    version_check_error_heading: StaticText,
+    version_check_error_log: TextCtrl,
     package_checklist: CheckListBox,
     package_details: TextCtrl,
     osara_keymap_replace: CheckBox,
@@ -136,6 +184,7 @@ pub fn run() {
     let _ = wxdragon::main(|_| {
         let bootstrap = UiBootstrapOptions {
             locale: resolve_runtime_locale(),
+            online_versions: false,
             ..UiBootstrapOptions::default()
         };
         match localizer_from_options(&bootstrap) {
@@ -268,7 +317,13 @@ pub fn run() {
             let can_install = Rc::clone(&can_install);
             let review_can_install = Rc::clone(&review_can_install);
             back.on_click(move |_| {
-                let step = current_step.load(Ordering::SeqCst).saturating_sub(1);
+                // PACKAGES_STEP → TARGET_STEP: skip the version-check step on
+                // the way back, since re-running the fetch from a Back press
+                // is not what the user is asking for.
+                let step = match current_step.load(Ordering::SeqCst) {
+                    PACKAGES_STEP => TARGET_STEP,
+                    other => other.saturating_sub(1),
+                };
                 current_step.store(step, Ordering::SeqCst);
                 update_navigation(
                     step,
@@ -318,7 +373,23 @@ pub fn run() {
                                     &model,
                                     &package_rows.borrow(),
                                 );
-                                PACKAGES_STEP
+                                start_version_check(VersionCheckUi {
+                                    widgets,
+                                    model: Arc::clone(&model),
+                                    package_rows: Rc::clone(&package_rows),
+                                    package_notes: Rc::clone(&package_notes),
+                                    can_install: Rc::clone(&can_install),
+                                    review_can_install: Rc::clone(&review_can_install),
+                                    target: selected_target,
+                                    book: book.clone(),
+                                    step_label: step_label.clone(),
+                                    labels: Arc::clone(&labels),
+                                    back: back.clone(),
+                                    next: next.clone(),
+                                    install: install.clone(),
+                                    current_step: Arc::clone(&current_step),
+                                });
+                                VERSION_CHECK_STEP
                             }
                             Err(error) => {
                                 widgets.target_details.set_value(&error.to_string());
@@ -860,6 +931,24 @@ fn add_pages(
     let (target_choice, portable_folder, target_details) = build_target_page(&target_page, model);
     book.add_page(&target_page, &model.steps[TARGET_STEP].label, true, None);
 
+    let version_check_page = Panel::builder(book).build();
+    let (
+        version_check_status,
+        version_check_gauge,
+        version_check_error_heading,
+        version_check_error_log,
+    ) = build_version_check_page(
+        &version_check_page,
+        model,
+        wizard_desired_package_ids(model.platform).len() as i32,
+    );
+    book.add_page(
+        &version_check_page,
+        &model.steps[VERSION_CHECK_STEP].label,
+        false,
+        None,
+    );
+
     let packages_page = Panel::builder(book).build();
     let (package_checklist, package_details, osara_keymap_replace, osara_keymap_note) =
         build_packages_page(&packages_page, model, package_rows);
@@ -899,6 +988,10 @@ fn add_pages(
         target_choice,
         portable_folder,
         target_details,
+        version_check_status,
+        version_check_gauge,
+        version_check_error_heading,
+        version_check_error_log,
         package_checklist,
         package_details,
         osara_keymap_replace,
@@ -1101,6 +1194,213 @@ fn build_language_footer(root_panel: &Panel, root: &BoxSizer, model: &WizardMode
     });
 }
 
+/// Captures everything the version-check dispatcher needs to drive the
+/// dedicated version-check page: widgets, model, package-row state for the
+/// auto-rebuild on success, and the navigation handles needed to advance to
+/// the Packages step.
+struct VersionCheckUi {
+    widgets: WizardWidgets,
+    model: Arc<WizardModel>,
+    package_rows: Rc<RefCell<Vec<PackageRow>>>,
+    package_notes: Rc<RefCell<Vec<String>>>,
+    can_install: Rc<Cell<bool>>,
+    review_can_install: Rc<Cell<bool>>,
+    target: TargetRow,
+    book: SimpleBook,
+    step_label: StaticText,
+    labels: Arc<Vec<String>>,
+    back: Button,
+    next: Button,
+    install: Button,
+    current_step: Arc<AtomicUsize>,
+}
+
+/// Reset the version-check page to its starting state, install the dispatcher
+/// that handles per-package events on the UI thread, and spawn the worker
+/// thread. The dispatcher auto-advances to the Packages step on full success;
+/// on any failure it stays on the version-check page with the error log
+/// populated and the Back button enabled.
+fn start_version_check(ui: VersionCheckUi) {
+    let package_ids = wizard_desired_package_ids(ui.model.platform);
+    let package_count = package_ids.len() as i32;
+    ui.widgets
+        .version_check_status
+        .set_label(&ui.model.text.version_check_status_pending);
+    ui.widgets.version_check_gauge.set_value(0);
+    ui.widgets
+        .version_check_gauge
+        .set_range(package_count.max(1));
+    ui.widgets.version_check_error_log.set_value("");
+    // The error region stays out of the tab order and the a11y tree until a
+    // check actually fails — see render_version_check_errors for the show.
+    ui.widgets.version_check_error_heading.hide();
+    ui.widgets.version_check_error_log.hide();
+
+    let mut accumulated: Vec<AvailablePackage> = Vec::new();
+    let mut errors: Vec<(String, String)> = Vec::new();
+    let mut completed: i32 = 0;
+
+    let dispatcher = move |event: VersionCheckEvent| match event {
+        VersionCheckEvent::Checking { package_id } => {
+            with_ui_localizer(|localizer| {
+                let display = localized_package_display_name(localizer, &package_id);
+                let line = localizer
+                    .format(
+                        "wizard-version-check-status-checking",
+                        &[("package", display.as_str())],
+                    )
+                    .value;
+                ui.widgets.version_check_status.set_label(&line);
+            });
+        }
+        VersionCheckEvent::Result {
+            package_id,
+            outcome,
+        } => {
+            completed += 1;
+            ui.widgets.version_check_gauge.set_value(completed);
+            match outcome {
+                Ok(version_str) => match rais_core::version::Version::parse(&version_str) {
+                    Ok(version) => {
+                        accumulated.push(AvailablePackage {
+                            package_id,
+                            version: Some(version),
+                        });
+                    }
+                    Err(error) => {
+                        errors.push((package_id, error.to_string()));
+                    }
+                },
+                Err(message) => {
+                    errors.push((package_id, message));
+                }
+            }
+        }
+        VersionCheckEvent::Finished => {
+            if errors.is_empty() {
+                match wizard_package_plan_for_target_with_available(
+                    &ui.model,
+                    Some(&ui.target),
+                    &accumulated,
+                ) {
+                    Ok(plan) => {
+                        *ui.package_rows.borrow_mut() = plan.package_rows;
+                        *ui.package_notes.borrow_mut() = plan.notes;
+                        ui.can_install.set(plan.can_install);
+                        ui.review_can_install.set(false);
+                        rebuild_package_list_widgets(&ui.widgets, &ui.package_rows.borrow());
+                        ui.current_step.store(PACKAGES_STEP, Ordering::SeqCst);
+                        update_navigation(
+                            PACKAGES_STEP,
+                            &ui.book,
+                            &ui.step_label,
+                            ui.labels.as_slice(),
+                            &ui.back,
+                            &ui.next,
+                            &ui.install,
+                            effective_can_install(&ui.can_install, &ui.review_can_install),
+                            true,
+                        );
+                    }
+                    Err(error) => {
+                        errors.push((String::new(), error.to_string()));
+                        render_version_check_errors(&ui, &errors);
+                    }
+                }
+            } else {
+                render_version_check_errors(&ui, &errors);
+            }
+        }
+    };
+
+    install_version_check_dispatcher(Box::new(dispatcher));
+    spawn_version_check_worker(package_ids);
+}
+
+/// Render error lines to the version-check page's error TextCtrl and update
+/// the status text to point the user at Back/Close.
+fn render_version_check_errors(ui: &VersionCheckUi, errors: &[(String, String)]) {
+    with_ui_localizer(|localizer| {
+        let mut lines = Vec::with_capacity(errors.len());
+        for (package_id, message) in errors {
+            let display = if package_id.is_empty() {
+                String::new()
+            } else {
+                localized_package_display_name(localizer, package_id)
+            };
+            let line = localizer
+                .format(
+                    "wizard-version-check-error-line",
+                    &[("package", display.as_str()), ("message", message.as_str())],
+                )
+                .value;
+            lines.push(line);
+        }
+        ui.widgets
+            .version_check_error_log
+            .set_value(&lines.join("\n"));
+        // Surface the error region now that there is content for screen
+        // readers + the tab order to expose.
+        ui.widgets.version_check_error_heading.show(true);
+        ui.widgets.version_check_error_log.show(true);
+        let status = localizer
+            .format(
+                "wizard-version-check-status-error",
+                &[("error_count", errors.len().to_string().as_str())],
+            )
+            .value;
+        ui.widgets.version_check_status.set_label(&status);
+    });
+}
+
+/// Re-render the package CheckListBox after the deferred fetch repopulates
+/// `package_rows`. Invoked on successful version check, just before the
+/// auto-advance to the Packages step.
+fn rebuild_package_list_widgets(widgets: &WizardWidgets, package_rows: &[PackageRow]) {
+    widgets.package_checklist.clear();
+    for (index, row) in package_rows.iter().enumerate() {
+        widgets.package_checklist.append(&row.summary);
+        widgets.package_checklist.check(index as u32, row.selected);
+    }
+    let initial = package_rows
+        .first()
+        .map(package_details)
+        .unwrap_or_default();
+    widgets.package_details.set_value(&initial);
+}
+
+/// Spawn the deferred latest-version fetch on a background thread. Each
+/// per-package outcome is forwarded to the UI thread via `call_after`, which
+/// invokes the dispatcher installed by the click handler.
+fn spawn_version_check_worker(package_ids: Vec<String>) {
+    std::thread::spawn(move || {
+        for package_id in package_ids {
+            let id_for_checking = package_id.clone();
+            wxdragon::call_after(Box::new(move || {
+                dispatch_version_check_event(VersionCheckEvent::Checking {
+                    package_id: id_for_checking,
+                });
+            }));
+
+            let outcome = match fetch_latest_for_package(&package_id) {
+                Ok(version) => Ok(version.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+
+            let id_for_result = package_id.clone();
+            wxdragon::call_after(Box::new(move || {
+                dispatch_version_check_event(VersionCheckEvent::Result {
+                    package_id: id_for_result,
+                    outcome,
+                });
+            }));
+        }
+        wxdragon::call_after(Box::new(move || {
+            dispatch_version_check_event(VersionCheckEvent::Finished);
+        }));
+    });
+}
+
 /// Relaunch the running RAIS executable with `RAIS_LOCALE=<locale>` set so the
 /// new locale takes effect immediately, then exit. Errors during relaunch are
 /// printed to stderr and the current process keeps running so the user is not
@@ -1279,6 +1579,60 @@ fn build_packages_page(
 
     page.set_sizer(sizer, true);
     (checklist, details, osara_keymap_replace, osara_keymap_note)
+}
+
+fn build_version_check_page(
+    page: &Panel,
+    model: &WizardModel,
+    package_count: i32,
+) -> (StaticText, Gauge, StaticText, TextCtrl) {
+    let sizer = BoxSizer::builder(Orientation::Vertical).build();
+    add_heading(
+        page,
+        &sizer,
+        &model.text.version_check_heading,
+        "rais-version-check-heading",
+    );
+    let status = StaticText::builder(page)
+        .with_label(&model.text.version_check_status_pending)
+        .build();
+    status.set_name("rais-version-check-status");
+    sizer.add(&status, 0, SizerFlag::All | SizerFlag::Expand, 6);
+
+    add_label(
+        page,
+        &sizer,
+        &model.text.version_check_progress_label,
+        "rais-version-check-progress-label",
+    );
+    let gauge = Gauge::builder(page)
+        .with_range(package_count.max(1))
+        .build();
+    gauge.set_name("rais-version-check-progress");
+    sizer.add(&gauge, 0, SizerFlag::All | SizerFlag::Expand, 6);
+
+    let error_heading = StaticText::builder(page)
+        .with_label(&model.text.version_check_error_heading)
+        .build();
+    error_heading.set_name("rais-version-check-error-heading");
+    sizer.add(&error_heading, 0, SizerFlag::All | SizerFlag::Expand, 6);
+    let error_log = TextCtrl::builder(page)
+        .with_value("")
+        .with_style(TextCtrlStyle::MultiLine | TextCtrlStyle::ReadOnly | TextCtrlStyle::WordWrap)
+        .with_size(Size::new(-1, 120))
+        .build();
+    error_log.set_name("rais-version-check-error-log");
+    sizer.add(&error_log, 1, SizerFlag::All | SizerFlag::Expand, 6);
+
+    // Hide the error region until something fails so screen readers do not
+    // see an empty Failed-checks/error-log pair while a check is in progress.
+    // Show()/Hide() removes the controls from the tab order and the
+    // accessibility tree; we re-Show() them in render_version_check_errors.
+    error_heading.hide();
+    error_log.hide();
+
+    page.set_sizer(sizer, true);
+    (status, gauge, error_heading, error_log)
 }
 
 fn build_review_page(page: &Panel, model: &WizardModel) -> TextCtrl {
@@ -1861,6 +2215,7 @@ fn update_navigation(
     back.enable(step > TARGET_STEP && step < DONE_STEP);
     next.enable(match step {
         TARGET_STEP => target_valid,
+        // VERSION_CHECK_STEP auto-advances on success; never user-driven.
         PACKAGES_STEP | PROGRESS_STEP => true,
         _ => false,
     });

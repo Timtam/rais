@@ -27,6 +27,7 @@ detect-source-reapack-registry = ReaPack-Registry
 status-package-installed = { $package } installiert
 
 wizard-step-target = Ziel
+wizard-step-version-check = Versionsprüfung
 wizard-step-packages = Pakete
 wizard-step-review = Überprüfung
 wizard-step-progress = Fortschritt
@@ -79,6 +80,17 @@ wizard-target-details = Pfad der REAPER-Anwendung: { $app_path }
 
 wizard-packages-heading = Pakete auswählen
 wizard-packages-list-label = Zu installierende oder zu aktualisierende Pakete
+
+wizard-version-check-heading = Prüfung auf neueste Versionen
+wizard-version-check-status-pending = Versionsprüfung wird vorbereitet…
+# $package is the localized package display name.
+wizard-version-check-status-checking = { $package } wird geprüft…
+# $error_count is the number of failed checks.
+wizard-version-check-status-error = { $error_count } Versionsprüfung(en) fehlgeschlagen. Wählen Sie „Zurück“, um ein anderes Ziel zu versuchen, oder schließen Sie RAIS.
+wizard-version-check-progress-label = Fortschritt
+wizard-version-check-error-heading = Fehlgeschlagene Prüfungen
+# $package is the localized package display name; $message is the failure message.
+wizard-version-check-error-line = { $package }: { $message }
 wizard-package-details-label = Paketdetails
 wizard-packages-osara-keymap-heading = OSARA-Tastenzuordnung
 wizard-packages-osara-keymap-replace-label = Aktuelle Tastenzuordnung durch OSARA-Tastenzuordnung ersetzen

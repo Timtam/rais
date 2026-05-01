@@ -27,6 +27,7 @@ detect-source-reapack-registry = ReaPack registry
 status-package-installed = { $package } installed
 
 wizard-step-target = Target
+wizard-step-version-check = Version check
 wizard-step-packages = Packages
 wizard-step-review = Review
 wizard-step-progress = Progress
@@ -79,6 +80,17 @@ wizard-target-details = REAPER application path: { $app_path }
 
 wizard-packages-heading = Choose packages
 wizard-packages-list-label = Packages to install or update
+
+wizard-version-check-heading = Checking latest versions
+wizard-version-check-status-pending = Preparing latest-version check…
+# $package is the localized package display name.
+wizard-version-check-status-checking = Checking { $package }…
+# $error_count is the number of failed checks.
+wizard-version-check-status-error = { $error_count } version check(s) failed. Use Back to try a different target, or close RAIS.
+wizard-version-check-progress-label = Progress
+wizard-version-check-error-heading = Failed checks
+# $package is the localized package display name; $message is the failure message.
+wizard-version-check-error-line = { $package }: { $message }
 wizard-package-details-label = Package details
 wizard-packages-osara-keymap-heading = OSARA key map
 wizard-packages-osara-keymap-replace-label = Replace current key map with OSARA key map

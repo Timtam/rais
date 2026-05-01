@@ -107,6 +107,10 @@ pub struct WizardText {
     pub target_custom_portable_note: String,
     pub packages_heading: String,
     pub packages_list_label: String,
+    pub version_check_heading: String,
+    pub version_check_status_pending: String,
+    pub version_check_progress_label: String,
+    pub version_check_error_heading: String,
     pub package_details_label: String,
     pub packages_osara_keymap_heading: String,
     pub packages_osara_keymap_replace_label: String,
@@ -175,6 +179,7 @@ pub struct WizardText {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WizardStep {
     Target,
+    VersionCheck,
     Packages,
     Review,
     Progress,
@@ -523,6 +528,10 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         target_custom_portable_note: localizer.text("wizard-target-custom-portable-note").value,
         packages_heading: localizer.text("wizard-packages-heading").value,
         packages_list_label: localizer.text("wizard-packages-list-label").value,
+        version_check_heading: localizer.text("wizard-version-check-heading").value,
+        version_check_status_pending: localizer.text("wizard-version-check-status-pending").value,
+        version_check_progress_label: localizer.text("wizard-version-check-progress-label").value,
+        version_check_error_heading: localizer.text("wizard-version-check-error-heading").value,
         package_details_label: localizer.text("wizard-package-details-label").value,
         packages_osara_keymap_heading: localizer.text("wizard-packages-osara-keymap-heading").value,
         packages_osara_keymap_replace_label: localizer
@@ -691,6 +700,7 @@ fn mnemonic_matches(label_char: char, mnemonic: char) -> bool {
 fn wizard_steps(localizer: &Localizer) -> Vec<WizardStepLabel> {
     [
         (WizardStep::Target, "wizard-step-target"),
+        (WizardStep::VersionCheck, "wizard-step-version-check"),
         (WizardStep::Packages, "wizard-step-packages"),
         (WizardStep::Review, "wizard-step-review"),
         (WizardStep::Progress, "wizard-step-progress"),
@@ -1224,6 +1234,19 @@ pub fn wizard_package_plan_for_target(
     model: &WizardModel,
     target: Option<&TargetRow>,
 ) -> Result<WizardPackagePlan> {
+    wizard_package_plan_for_target_with_available(model, target, &model.available_packages)
+}
+
+/// Like `wizard_package_plan_for_target`, but uses an explicit
+/// `available_packages` list instead of the one stored in the model. This is
+/// what the wizard calls after the GUI's background latest-version fetch
+/// completes so the package list can be re-rendered with fresh upstream data
+/// without rebuilding the whole model.
+pub fn wizard_package_plan_for_target_with_available(
+    model: &WizardModel,
+    target: Option<&TargetRow>,
+    available_packages: &[AvailablePackage],
+) -> Result<WizardPackagePlan> {
     let localizer = localizer_from_options(&model.bootstrap_options)?;
     let detections = match target {
         Some(target) => detect_components(&target.path, model.platform)?,
@@ -1234,7 +1257,7 @@ pub fn wizard_package_plan_for_target(
         target.map(|target| installation_from_target_row(model, target)),
         &detections,
         &desired,
-        &model.available_packages,
+        available_packages,
     );
     let package_specs = builtin_package_specs(model.platform);
     let package_rows = package_rows(
@@ -1254,6 +1277,24 @@ pub fn wizard_package_plan_for_target(
         notes: plan.notes,
         can_install,
     })
+}
+
+/// Localized package display name for `package_id`, falling back to the raw id
+/// when no Fluent key is available. Used by the version-check progress log.
+pub fn localized_package_display_name(localizer: &Localizer, package_id: &str) -> String {
+    let key = format!("package-{package_id}");
+    let text = localizer.text(&key);
+    if text.missing {
+        package_id.to_string()
+    } else {
+        text.value
+    }
+}
+
+/// List of package ids the wizard cares about for a given platform — exposed
+/// so the GUI can iterate them without duplicating builtin_package_specs.
+pub fn wizard_desired_package_ids(platform: Platform) -> Vec<String> {
+    wizard_package_ids(platform)
 }
 
 fn wizard_package_ids(platform: Platform) -> Vec<String> {
@@ -2597,7 +2638,7 @@ mod tests {
             model.window_title,
             "REAPER Accessibility Installation Software"
         );
-        assert_eq!(model.steps.len(), 5);
+        assert_eq!(model.steps.len(), 6);
         assert_eq!(model.target_rows.len(), 1);
         assert!(model.target_rows[0].selected);
         assert!(model.target_rows[0].portable);
