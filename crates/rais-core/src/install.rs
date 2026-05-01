@@ -3,10 +3,13 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use tempfile::TempDir;
 
+use crate::archive::extract_user_plugin_from_archive;
 use crate::artifact::{ArtifactKind, CachedArtifact};
 use crate::error::{IoPathContext, RaisError, Result};
 use crate::hash::sha256_file;
+use crate::package::{PackageSpec, package_specs_by_id};
 use crate::preflight::{PreflightOptions, PreflightReport, run_install_preflight};
 use crate::receipt::{
     RECEIPT_RELATIVE_PATH, load_install_state, receipt_path, save_install_state,
@@ -88,17 +91,12 @@ pub fn install_cached_artifacts(
     let mut replacement_backup_set: Option<PathBuf> = None;
 
     for artifact in artifacts {
-        if artifact.descriptor.kind != ArtifactKind::ExtensionBinary {
-            return Err(RaisError::UnsupportedArtifactKind {
-                package_id: artifact.descriptor.package_id.clone(),
-                kind: artifact.descriptor.kind,
-            });
-        }
+        let prepared = prepare_install_source(artifact)?;
 
-        let relative_target = PathBuf::from("UserPlugins").join(&artifact.descriptor.file_name);
+        let relative_target = PathBuf::from("UserPlugins").join(&prepared.target_file_name);
         let target_path = resource_path.join(&relative_target);
         let target_exists = target_path.is_file();
-        let target_matches = target_exists && sha256_file(&target_path)? == artifact.sha256;
+        let target_matches = target_exists && sha256_file(&target_path)? == prepared.source_sha256;
         let backup_path = if target_exists && !target_matches {
             let backup_set = resource_path.join("RAIS").join("backups").join(&timestamp);
             replacement_backup_set.get_or_insert_with(|| backup_set.clone());
@@ -110,12 +108,12 @@ pub fn install_cached_artifacts(
         let action = classify_action(options.dry_run, target_exists, target_matches);
         report.actions.push(InstallFileReport {
             package_id: artifact.descriptor.package_id.clone(),
-            source_path: artifact.path.clone(),
+            source_path: prepared.source_path.clone(),
             target_path: target_path.clone(),
             backup_path: backup_path.clone(),
             action,
-            size: artifact.size,
-            sha256: artifact.sha256.clone(),
+            size: prepared.source_size,
+            sha256: prepared.source_sha256.clone(),
         });
 
         if options.dry_run {
@@ -123,7 +121,12 @@ pub fn install_cached_artifacts(
         }
 
         if !target_matches {
-            install_extension_file(artifact, &target_path, backup_path.as_deref())?;
+            install_extension_file(
+                &prepared.source_path,
+                &prepared.source_sha256,
+                &target_path,
+                backup_path.as_deref(),
+            )?;
         }
 
         upsert_package_receipt(
@@ -176,8 +179,65 @@ fn classify_action(dry_run: bool, target_exists: bool, target_matches: bool) -> 
     }
 }
 
+struct PreparedInstallSource {
+    source_path: PathBuf,
+    source_sha256: String,
+    source_size: u64,
+    target_file_name: String,
+    _extraction_dir: Option<TempDir>,
+}
+
+fn prepare_install_source(artifact: &CachedArtifact) -> Result<PreparedInstallSource> {
+    match artifact.descriptor.kind {
+        ArtifactKind::ExtensionBinary => Ok(PreparedInstallSource {
+            source_path: artifact.path.clone(),
+            source_sha256: artifact.sha256.clone(),
+            source_size: artifact.size,
+            target_file_name: artifact.descriptor.file_name.clone(),
+            _extraction_dir: None,
+        }),
+        ArtifactKind::Archive => {
+            let spec = lookup_install_spec(
+                &artifact.descriptor.package_id,
+                artifact.descriptor.platform,
+            )?;
+            let extraction_dir = TempDir::new().map_err(|source| RaisError::Io {
+                path: PathBuf::from("rais-archive-extract"),
+                source,
+            })?;
+            let extracted =
+                extract_user_plugin_from_archive(&artifact.path, &spec, extraction_dir.path())?;
+            let source_sha256 = sha256_file(&extracted.extracted_path)?;
+            let source_size = fs::metadata(&extracted.extracted_path)
+                .with_path(&extracted.extracted_path)?
+                .len();
+            Ok(PreparedInstallSource {
+                source_path: extracted.extracted_path,
+                source_sha256,
+                source_size,
+                target_file_name: extracted.file_name,
+                _extraction_dir: Some(extraction_dir),
+            })
+        }
+        kind => Err(RaisError::UnsupportedArtifactKind {
+            package_id: artifact.descriptor.package_id.clone(),
+            kind,
+        }),
+    }
+}
+
+fn lookup_install_spec(package_id: &str, platform: crate::model::Platform) -> Result<PackageSpec> {
+    package_specs_by_id(platform)
+        .remove(package_id)
+        .ok_or_else(|| RaisError::UnsupportedArtifactKind {
+            package_id: package_id.to_string(),
+            kind: ArtifactKind::Archive,
+        })
+}
+
 fn install_extension_file(
-    artifact: &CachedArtifact,
+    source_path: &Path,
+    source_sha256: &str,
     target_path: &Path,
     backup_path: Option<&Path>,
 ) -> Result<()> {
@@ -190,13 +250,13 @@ fn install_extension_file(
         fs::remove_file(&temp_path).with_path(&temp_path)?;
     }
 
-    fs::copy(&artifact.path, &temp_path).with_path(&temp_path)?;
+    fs::copy(source_path, &temp_path).with_path(&temp_path)?;
     let staged_hash = sha256_file(&temp_path)?;
-    if staged_hash != artifact.sha256 {
+    if staged_hash != source_sha256 {
         let _ = fs::remove_file(&temp_path);
         return Err(RaisError::HashMismatch {
             path: temp_path,
-            expected: artifact.sha256.clone(),
+            expected: source_sha256.to_string(),
             actual: staged_hash,
         });
     }
@@ -317,7 +377,7 @@ mod tests {
     use crate::error::RaisError;
     use crate::hash::sha256_file;
     use crate::model::{Architecture, Platform};
-    use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK};
+    use crate::package::{PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK};
     use crate::receipt::{
         InstallState, InstalledFileReceipt, PackageReceipt, load_install_state, save_install_state,
     };
@@ -548,5 +608,131 @@ mod tests {
             sha256,
             reused_existing_file: false,
         }
+    }
+
+    #[test]
+    fn extracts_and_installs_user_plugin_from_archive_artifact() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let dir = tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let archive_path = cache_dir.join("reaKontrol_windows_2026.2.16.100.cafef00d.zip");
+        let plugin_bytes = b"reakontrol-binary-bytes";
+        {
+            let file = fs::File::create(&archive_path).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            writer.start_file("README.txt", options).unwrap();
+            writer.write_all(b"docs").unwrap();
+            writer.start_file("reaper_kontrol.dll", options).unwrap();
+            writer.write_all(plugin_bytes).unwrap();
+            writer.finish().unwrap();
+        }
+        let archive_sha = sha256_file(&archive_path).unwrap();
+        let archive_size = fs::metadata(&archive_path).unwrap().len();
+
+        let artifact = CachedArtifact {
+            descriptor: ArtifactDescriptor {
+                package_id: PACKAGE_REAKONTROL.to_string(),
+                version: Version::parse("2026.2.16.100").unwrap(),
+                platform: Platform::Windows,
+                architecture: Architecture::Universal,
+                kind: ArtifactKind::Archive,
+                url: "https://example.test/reaKontrol_windows_2026.2.16.100.cafef00d.zip"
+                    .to_string(),
+                file_name: "reaKontrol_windows_2026.2.16.100.cafef00d.zip".to_string(),
+            },
+            path: archive_path,
+            size: archive_size,
+            sha256: archive_sha.clone(),
+            reused_existing_file: false,
+        };
+
+        let report = install_cached_artifacts(
+            dir.path(),
+            &[artifact],
+            &InstallOptions {
+                dry_run: false,
+                allow_reaper_running: true,
+                target_app_path: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.actions[0].action, InstallFileAction::Installed);
+        assert_eq!(
+            report.actions[0].target_path,
+            dir.path().join("UserPlugins").join("reaper_kontrol.dll")
+        );
+        assert_eq!(report.actions[0].size, plugin_bytes.len() as u64);
+        let target = dir.path().join("UserPlugins").join("reaper_kontrol.dll");
+        assert_eq!(fs::read(&target).unwrap(), plugin_bytes);
+
+        let state = load_install_state(dir.path()).unwrap().unwrap();
+        let receipt = state.packages.get(PACKAGE_REAKONTROL).unwrap();
+        assert_eq!(receipt.source_sha256.as_deref(), Some(archive_sha.as_str()));
+        assert_eq!(receipt.installed_files.len(), 1);
+        assert_eq!(
+            receipt.installed_files[0].path,
+            PathBuf::from("UserPlugins/reaper_kontrol.dll")
+        );
+    }
+
+    #[test]
+    fn dry_run_archive_artifact_reports_planned_target_without_writing() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let dir = tempdir().unwrap();
+        let archive_path = dir.path().join("reaKontrol_mac_test.zip");
+        {
+            let file = fs::File::create(&archive_path).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            writer.start_file("reaper_kontrol.dylib", options).unwrap();
+            writer.write_all(b"mac-bytes").unwrap();
+            writer.finish().unwrap();
+        }
+        let archive_sha = sha256_file(&archive_path).unwrap();
+        let archive_size = fs::metadata(&archive_path).unwrap().len();
+
+        let artifact = CachedArtifact {
+            descriptor: ArtifactDescriptor {
+                package_id: PACKAGE_REAKONTROL.to_string(),
+                version: Version::parse("2026.2.16.100").unwrap(),
+                platform: Platform::MacOs,
+                architecture: Architecture::Universal,
+                kind: ArtifactKind::Archive,
+                url: "https://example.test/reaKontrol_mac_test.zip".to_string(),
+                file_name: "reaKontrol_mac_test.zip".to_string(),
+            },
+            path: archive_path,
+            size: archive_size,
+            sha256: archive_sha,
+            reused_existing_file: false,
+        };
+
+        let report = install_cached_artifacts(
+            dir.path(),
+            &[artifact],
+            &InstallOptions {
+                dry_run: true,
+                allow_reaper_running: true,
+                target_app_path: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.actions[0].action, InstallFileAction::WouldInstall);
+        assert_eq!(
+            report.actions[0].target_path,
+            dir.path().join("UserPlugins").join("reaper_kontrol.dylib")
+        );
+        assert!(!dir.path().join("UserPlugins").exists());
+        assert!(load_install_state(dir.path()).unwrap().is_none());
     }
 }

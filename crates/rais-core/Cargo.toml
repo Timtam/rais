@@ -12,11 +12,10 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sysinfo.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 unic-langid.workspace = true
+zip.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
-
-[dev-dependencies]
-tempfile.workspace = true

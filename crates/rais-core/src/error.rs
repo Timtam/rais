@@ -66,6 +66,15 @@ pub enum RaisError {
         kind: crate::artifact::ArtifactKind,
     },
 
+    #[error("archive {archive} for {package_id} did not contain a {package_id} extension binary")]
+    ArchiveMissingExtensionBinary {
+        archive: PathBuf,
+        package_id: String,
+    },
+
+    #[error("archive {archive} could not be read: {message}")]
+    ArchiveRead { archive: PathBuf, message: String },
+
     #[error("preflight failed: {message}")]
     PreflightFailed { message: String },
 

@@ -127,6 +127,9 @@ pub fn package_automation_support(
         expected_artifact_kind(package_id, platform, architecture),
     ) {
         (_, Ok(ArtifactKind::ExtensionBinary)) => PackageAutomationSupport::Direct,
+        (crate::package::PACKAGE_REAKONTROL, Ok(ArtifactKind::Archive)) => {
+            PackageAutomationSupport::Direct
+        }
         (crate::package::PACKAGE_REAPER, Ok(ArtifactKind::Installer))
             if matches!(platform, Platform::Windows) =>
         {
@@ -405,6 +408,9 @@ fn automation_support_for_artifact(
 ) -> PackageAutomationSupport {
     match artifact.kind {
         ArtifactKind::ExtensionBinary => PackageAutomationSupport::Direct,
+        ArtifactKind::Archive if artifact.package_id == crate::package::PACKAGE_REAKONTROL => {
+            PackageAutomationSupport::Direct
+        }
         ArtifactKind::Installer
             if artifact.package_id == crate::package::PACKAGE_REAPER
                 && matches!(artifact.platform, Platform::Windows) =>
@@ -1492,7 +1498,9 @@ mod tests {
     use crate::detection::detect_components;
     use crate::error::RaisError;
     use crate::model::{Architecture, ComponentDetection, Confidence, Platform};
-    use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS};
+    use crate::package::{
+        PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS,
+    };
     use crate::plan::PlanActionKind;
     use crate::receipt::{InstallState, load_install_state, save_install_state};
     use crate::version::Version;
@@ -1679,6 +1687,22 @@ mod tests {
                 PACKAGE_REAPACK,
                 Platform::Windows,
                 Architecture::X64
+            ),
+            PackageAutomationSupport::Direct
+        );
+        assert_eq!(
+            super::package_automation_support(
+                PACKAGE_REAKONTROL,
+                Platform::Windows,
+                Architecture::X64
+            ),
+            PackageAutomationSupport::Direct
+        );
+        assert_eq!(
+            super::package_automation_support(
+                PACKAGE_REAKONTROL,
+                Platform::MacOs,
+                Architecture::Arm64
             ),
             PackageAutomationSupport::Direct
         );
