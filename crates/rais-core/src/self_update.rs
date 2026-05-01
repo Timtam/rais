@@ -1,8 +1,14 @@
+use std::env;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
-use crate::error::RaisError;
+use crate::error::{IoPathContext, RaisError};
+use crate::hash::sha256_file;
 use crate::model::Platform;
 use crate::version::Version;
 
@@ -58,6 +64,18 @@ pub struct SelfUpdateCheckReport {
     pub asset: SelfUpdateAssetSelection,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelfUpdateStageReport {
+    pub check: SelfUpdateCheckReport,
+    pub staging_dir: PathBuf,
+    pub staged_asset_path: Option<PathBuf>,
+    pub downloaded: bool,
+    pub reused_existing_file: bool,
+    pub verified_sha256: Option<String>,
+    pub ready_to_apply: bool,
+    pub status_message: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct RawSelfUpdateManifest {
     version: String,
@@ -93,6 +111,28 @@ pub fn current_rais_version() -> Result<Version> {
         "build-metadata",
         "current_version",
     )
+}
+
+pub fn default_self_update_staging_dir() -> PathBuf {
+    if cfg!(target_os = "windows") {
+        if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(local_app_data)
+                .join("RAIS")
+                .join("self-update");
+        }
+    }
+
+    if cfg!(target_os = "macos") {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Caches")
+                .join("RAIS")
+                .join("self-update");
+        }
+    }
+
+    env::temp_dir().join("rais-self-update")
 }
 
 pub fn fetch_self_update_manifest(manifest_url: &str) -> Result<SelfUpdateManifest> {
@@ -166,6 +206,15 @@ pub fn check_self_update(platform: Platform, manifest_url: &str) -> Result<SelfU
     evaluate_self_update_report(platform, manifest_url, current_rais_version()?, &manifest)
 }
 
+pub fn stage_self_update(
+    platform: Platform,
+    manifest_url: &str,
+    staging_dir: &Path,
+) -> Result<SelfUpdateStageReport> {
+    let report = check_self_update(platform, manifest_url)?;
+    stage_self_update_from_report(&report, staging_dir)
+}
+
 fn evaluate_self_update_report(
     platform: Platform,
     manifest_url: &str,
@@ -200,6 +249,94 @@ fn evaluate_self_update_report(
         update_available: latest_semver > current_semver,
         requires_manual_transition,
         asset: select_asset_for_platform(platform, manifest, manifest_url)?,
+    })
+}
+
+fn stage_self_update_from_report(
+    report: &SelfUpdateCheckReport,
+    staging_dir: &Path,
+) -> Result<SelfUpdateStageReport> {
+    if !report.update_available {
+        return Ok(SelfUpdateStageReport {
+            check: report.clone(),
+            staging_dir: staging_dir.to_path_buf(),
+            staged_asset_path: None,
+            downloaded: false,
+            reused_existing_file: false,
+            verified_sha256: None,
+            ready_to_apply: false,
+            status_message: "Current RAIS version is already up to date.".to_string(),
+        });
+    }
+
+    if report.requires_manual_transition {
+        return Ok(SelfUpdateStageReport {
+            check: report.clone(),
+            staging_dir: staging_dir.to_path_buf(),
+            staged_asset_path: None,
+            downloaded: false,
+            reused_existing_file: false,
+            verified_sha256: None,
+            ready_to_apply: false,
+            status_message:
+                "This RAIS update requires a manual transition before staging can continue."
+                    .to_string(),
+        });
+    }
+
+    let (file_name, local_source_path) = resolve_update_asset_source(&report.asset.url)?;
+    let version_dir = staging_dir.join(report.latest_version.raw());
+    fs::create_dir_all(&version_dir).with_path(&version_dir)?;
+
+    let target_path = version_dir.join(file_name);
+    if target_path.is_file() {
+        let existing_sha256 = sha256_file(&target_path)?;
+        if existing_sha256 == report.asset.sha256 {
+            return Ok(SelfUpdateStageReport {
+                check: report.clone(),
+                staging_dir: staging_dir.to_path_buf(),
+                staged_asset_path: Some(target_path),
+                downloaded: false,
+                reused_existing_file: true,
+                verified_sha256: Some(existing_sha256),
+                ready_to_apply: true,
+                status_message: format!(
+                    "Verified existing staged RAIS update {}.",
+                    report.latest_version
+                ),
+            });
+        }
+
+        fs::remove_file(&target_path).with_path(&target_path)?;
+    }
+
+    download_self_update_asset(
+        &report.asset.url,
+        local_source_path.as_deref(),
+        &target_path,
+    )?;
+    let verified_sha256 = sha256_file(&target_path)?;
+    if verified_sha256 != report.asset.sha256 {
+        let _ = fs::remove_file(&target_path);
+        return Err(RaisError::HashMismatch {
+            path: target_path,
+            expected: report.asset.sha256.clone(),
+            actual: verified_sha256,
+        });
+    }
+
+    Ok(SelfUpdateStageReport {
+        check: report.clone(),
+        staging_dir: staging_dir.to_path_buf(),
+        staged_asset_path: Some(target_path),
+        downloaded: true,
+        reused_existing_file: false,
+        verified_sha256: Some(report.asset.sha256.clone()),
+        ready_to_apply: true,
+        status_message: format!(
+            "Downloaded and verified staged RAIS update {}.",
+            report.latest_version
+        ),
     })
 }
 
@@ -248,6 +385,104 @@ fn parse_asset(
     })
 }
 
+fn download_self_update_asset(
+    url: &str,
+    local_source_path: Option<&Path>,
+    target_path: &Path,
+) -> Result<()> {
+    let part_path = target_path.with_extension(format!(
+        "{}.part",
+        target_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("download")
+    ));
+
+    if let Some(source_path) = local_source_path {
+        fs::copy(source_path, &part_path).with_path(source_path)?;
+        fs::rename(&part_path, target_path).with_path(target_path)?;
+        return Ok(());
+    }
+
+    validate_remote_self_update_url(url)?;
+    let client = http_client()?;
+    let mut response = client
+        .get(url)
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(|source| RaisError::Http {
+            url: url.to_string(),
+            source,
+        })?;
+    let mut file = fs::File::create(&part_path).with_path(&part_path)?;
+    std::io::copy(&mut response, &mut file).with_path(&part_path)?;
+    file.flush().with_path(&part_path)?;
+    drop(file);
+
+    fs::rename(&part_path, target_path).with_path(target_path)?;
+    Ok(())
+}
+
+fn resolve_update_asset_source(url_or_path: &str) -> Result<(String, Option<PathBuf>)> {
+    if let Some(path) = local_update_asset_source_path(url_or_path)? {
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| RaisError::RemoteData {
+                url: url_or_path.to_string(),
+                message: "self-update asset path does not contain a file name".to_string(),
+            })?;
+        return Ok((file_name.to_string(), Some(path)));
+    }
+
+    validate_remote_self_update_url(url_or_path)?;
+    let file_name = file_name_from_url(url_or_path).ok_or_else(|| RaisError::RemoteData {
+        url: url_or_path.to_string(),
+        message: "self-update asset URL does not contain a file name".to_string(),
+    })?;
+    Ok((file_name, None))
+}
+
+fn local_update_asset_source_path(url_or_path: &str) -> Result<Option<PathBuf>> {
+    let path = PathBuf::from(url_or_path);
+    if path.is_file() {
+        Ok(Some(path))
+    } else {
+        Ok(None)
+    }
+}
+
+fn validate_remote_self_update_url(url: &str) -> Result<()> {
+    if url.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(RaisError::InvalidArtifactUrl {
+            url: url.to_string(),
+            message: "self-update downloads must use HTTPS".to_string(),
+        })
+    }
+}
+
+fn file_name_from_url(url: &str) -> Option<String> {
+    let without_query = url.split_once('?').map_or(url, |(path, _query)| path);
+    without_query
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
+}
+
+fn http_client() -> Result<Client> {
+    Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|source| RaisError::Http {
+            url: "client-builder".to_string(),
+            source,
+        })
+}
+
 fn parse_semantic_version(raw: &str, url: &str, field: &str) -> Result<Version> {
     semantic_version_from_str(raw, url, field)?;
     Version::parse(raw)
@@ -294,10 +529,16 @@ fn is_valid_sha256(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
     use super::{
-        SelfUpdateManifest, current_rais_version, evaluate_self_update_report,
-        parse_self_update_manifest,
+        SelfUpdateAssetSelection, SelfUpdateCheckReport, SelfUpdateManifest, current_rais_version,
+        evaluate_self_update_report, parse_self_update_manifest, stage_self_update_from_report,
     };
+    use crate::RaisError;
+    use crate::hash::sha256_file;
     use crate::model::Platform;
     use crate::version::Version;
 
@@ -422,6 +663,89 @@ mod tests {
         assert_eq!(version.raw(), env!("CARGO_PKG_VERSION"));
     }
 
+    #[test]
+    fn stages_update_from_local_asset_and_verifies_hash() {
+        let source_dir = tempdir().unwrap();
+        let staging_dir = tempdir().unwrap();
+        let asset_path = source_dir.path().join("RAIS-windows.zip");
+        fs::write(&asset_path, b"rais-update").unwrap();
+        let expected_sha256 = sha256_file(&asset_path).unwrap();
+
+        let report = stage_self_update_from_report(
+            &sample_check_report(asset_path.display().to_string(), &expected_sha256),
+            staging_dir.path(),
+        )
+        .unwrap();
+
+        assert!(report.downloaded);
+        assert!(!report.reused_existing_file);
+        assert!(report.ready_to_apply);
+        assert_eq!(
+            report.staged_asset_path.as_ref().unwrap(),
+            &staging_dir.path().join("0.2.0").join("RAIS-windows.zip")
+        );
+        assert_eq!(
+            report.verified_sha256.as_deref(),
+            Some(expected_sha256.as_str())
+        );
+    }
+
+    #[test]
+    fn reuses_existing_staged_update_when_hash_matches() {
+        let source_dir = tempdir().unwrap();
+        let staging_dir = tempdir().unwrap();
+        let asset_path = source_dir.path().join("RAIS-windows.zip");
+        fs::write(&asset_path, b"rais-update").unwrap();
+        let expected_sha256 = sha256_file(&asset_path).unwrap();
+        let check = sample_check_report(asset_path.display().to_string(), &expected_sha256);
+
+        let first = stage_self_update_from_report(&check, staging_dir.path()).unwrap();
+        let second = stage_self_update_from_report(&check, staging_dir.path()).unwrap();
+
+        assert!(first.downloaded);
+        assert!(!first.reused_existing_file);
+        assert!(second.reused_existing_file);
+        assert!(!second.downloaded);
+        assert!(second.ready_to_apply);
+    }
+
+    #[test]
+    fn does_not_stage_when_current_version_is_already_latest() {
+        let staging_dir = tempdir().unwrap();
+        let mut check = sample_check_report(
+            "https://example.test/RAIS-windows.zip".to_string(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        check.update_available = false;
+
+        let report = stage_self_update_from_report(&check, staging_dir.path()).unwrap();
+
+        assert!(!report.ready_to_apply);
+        assert!(report.staged_asset_path.is_none());
+        assert!(report.status_message.contains("up to date"));
+    }
+
+    #[test]
+    fn removes_bad_staged_file_when_hash_mismatch_is_detected() {
+        let source_dir = tempdir().unwrap();
+        let staging_dir = tempdir().unwrap();
+        let asset_path = source_dir.path().join("RAIS-windows.zip");
+        fs::write(&asset_path, b"rais-update").unwrap();
+
+        let error = stage_self_update_from_report(
+            &sample_check_report(
+                asset_path.display().to_string(),
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
+            staging_dir.path(),
+        )
+        .unwrap_err();
+
+        let staged_path = staging_dir.path().join("0.2.0").join("RAIS-windows.zip");
+        assert!(matches!(error, RaisError::HashMismatch { .. }));
+        assert!(!staged_path.exists());
+    }
+
     fn sample_manifest() -> SelfUpdateManifest {
         parse_self_update_manifest(
             r#"{
@@ -444,5 +768,24 @@ mod tests {
             MANIFEST_URL,
         )
         .unwrap()
+    }
+
+    fn sample_check_report(url: String, sha256: &str) -> SelfUpdateCheckReport {
+        SelfUpdateCheckReport {
+            manifest_url: MANIFEST_URL.to_string(),
+            current_version: Version::parse("0.1.0").unwrap(),
+            latest_version: Version::parse("0.2.0").unwrap(),
+            channel: "stable".to_string(),
+            published_at: "2026-04-25T00:00:00Z".to_string(),
+            release_notes_url: Some("https://example.test/releases/v0.2.0".to_string()),
+            minimum_supported_previous_version: Some(Version::parse("0.1.0").unwrap()),
+            update_available: true,
+            requires_manual_transition: false,
+            asset: SelfUpdateAssetSelection {
+                platform: Platform::Windows,
+                url,
+                sha256: sha256.to_string(),
+            },
+        }
     }
 }

@@ -2,7 +2,9 @@ use reqwest::blocking::Client;
 use serde_json::Value;
 
 use crate::error::{RaisError, Result};
-use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS};
+use crate::package::{
+    PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS,
+};
 use crate::plan::AvailablePackage;
 use crate::version::Version;
 
@@ -13,6 +15,8 @@ pub const OSARA_UPDATE_URL: &str = "https://osara.reaperaccessibility.com/snapsh
 pub const SWS_HOME_URL: &str = "https://sws-extension.org/";
 pub const REAPACK_GITHUB_LATEST_URL: &str =
     "https://api.github.com/repos/cfillion/reapack/releases/latest";
+pub const REAKONTROL_GITHUB_LATEST_URL: &str =
+    "https://api.github.com/repos/jcsteh/reaKontrol/releases/latest";
 
 pub fn fetch_latest_versions() -> Result<Vec<AvailablePackage>> {
     let client = Client::builder()
@@ -43,6 +47,11 @@ pub fn fetch_latest_versions() -> Result<Vec<AvailablePackage>> {
             PACKAGE_REAPACK,
             REAPACK_GITHUB_LATEST_URL,
             parse_github_latest_release_json as VersionParser,
+        ),
+        (
+            PACKAGE_REAKONTROL,
+            REAKONTROL_GITHUB_LATEST_URL,
+            parse_reakontrol_snapshot_version as VersionParser,
         ),
     ];
 
@@ -103,6 +112,50 @@ pub fn parse_github_latest_release_json(body: &str, url: &str) -> Result<Version
         });
     };
     Version::parse(tag_name.trim_start_matches('v'))
+}
+
+pub fn parse_reakontrol_snapshot_version(body: &str, url: &str) -> Result<Version> {
+    let value: Value = serde_json::from_str(body).map_err(|source| RaisError::RemoteData {
+        url: url.to_string(),
+        message: source.to_string(),
+    })?;
+    let assets = value
+        .get("assets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| RaisError::RemoteData {
+            url: url.to_string(),
+            message: "missing array field: assets".to_string(),
+        })?;
+
+    let mut latest: Option<Version> = None;
+    for asset in assets {
+        let Some(name) = asset.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(version) = reakontrol_version_from_asset_name(name) else {
+            continue;
+        };
+        latest = Some(match latest {
+            Some(current) if current.cmp_lenient(&version).is_ge() => current,
+            _ => version,
+        });
+    }
+
+    latest.ok_or_else(|| RaisError::RemoteData {
+        url: url.to_string(),
+        message: "no ReaKontrol snapshot asset matched the expected name pattern".to_string(),
+    })
+}
+
+pub(crate) fn reakontrol_version_from_asset_name(name: &str) -> Option<Version> {
+    let stem = name.strip_suffix(".zip")?;
+    let after_platform = stem
+        .strip_prefix("reaKontrol_windows_")
+        .or_else(|| stem.strip_prefix("reaKontrol_mac_"))?;
+    let version_part = after_platform
+        .rsplit_once('.')
+        .map(|(left, _commit)| left)?;
+    Version::parse(version_part).ok()
 }
 
 pub fn parse_sws_latest_version(body: &str, url: &str) -> Result<Version> {
@@ -196,9 +249,10 @@ fn collect_digits(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        OSARA_UPDATE_URL, REAPACK_GITHUB_LATEST_URL, REAPER_DOWNLOAD_URL, SWS_HOME_URL,
-        parse_github_latest_release_json, parse_osara_update_json, parse_reaper_latest_version,
-        parse_sws_latest_version,
+        OSARA_UPDATE_URL, REAKONTROL_GITHUB_LATEST_URL, REAPACK_GITHUB_LATEST_URL,
+        REAPER_DOWNLOAD_URL, SWS_HOME_URL, parse_github_latest_release_json,
+        parse_osara_update_json, parse_reakontrol_snapshot_version, parse_reaper_latest_version,
+        parse_sws_latest_version, reakontrol_version_from_asset_name,
     };
 
     #[test]
@@ -235,5 +289,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(version.raw(), "7.69");
+    }
+
+    #[test]
+    fn extracts_reakontrol_version_from_asset_name() {
+        let version =
+            reakontrol_version_from_asset_name("reaKontrol_windows_2025.6.6.7.bfbe7606.zip")
+                .unwrap();
+        assert_eq!(version.raw(), "2025.6.6.7");
+        let version =
+            reakontrol_version_from_asset_name("reaKontrol_mac_2026.2.16.100.deadbeef.zip")
+                .unwrap();
+        assert_eq!(version.raw(), "2026.2.16.100");
+        assert!(reakontrol_version_from_asset_name("README.md").is_none());
+    }
+
+    #[test]
+    fn picks_highest_reakontrol_snapshot_version_from_assets() {
+        let body = r#"{
+            "tag_name": "snapshots",
+            "assets": [
+                {"name": "reaKontrol_windows_2025.6.6.7.bfbe7606.zip"},
+                {"name": "reaKontrol_mac_2026.2.16.100.cafef00d.zip"},
+                {"name": "reaKontrol_windows_2026.2.16.100.cafef00d.zip"},
+                {"name": "reaKontrol_mac_2025.7.25.10.4ce6b01f.zip"}
+            ]
+        }"#;
+        let version =
+            parse_reakontrol_snapshot_version(body, REAKONTROL_GITHUB_LATEST_URL).unwrap();
+        assert_eq!(version.raw(), "2026.2.16.100");
+    }
+
+    #[test]
+    fn rejects_reakontrol_release_with_no_matching_assets() {
+        let body = r#"{"tag_name": "snapshots", "assets": [{"name": "README.md"}]}"#;
+        let error =
+            parse_reakontrol_snapshot_version(body, REAKONTROL_GITHUB_LATEST_URL).unwrap_err();
+        assert!(error.to_string().contains("ReaKontrol"));
     }
 }

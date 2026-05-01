@@ -26,7 +26,8 @@ use rais_core::rollback::{
     list_backup_sets, restore_backup_set,
 };
 use rais_core::self_update::{
-    DEFAULT_SELF_UPDATE_MANIFEST_URL, SelfUpdateCheckReport, check_self_update,
+    DEFAULT_SELF_UPDATE_MANIFEST_URL, SelfUpdateCheckReport, SelfUpdateStageReport,
+    check_self_update, default_self_update_staging_dir, stage_self_update,
 };
 use rais_core::setup::{SetupOptions, SetupReport, execute_setup_operation};
 use serde::Serialize;
@@ -268,6 +269,14 @@ enum SelfUpdateCommand {
     Check {
         #[arg(long, default_value = DEFAULT_SELF_UPDATE_MANIFEST_URL)]
         manifest_url: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Stage {
+        #[arg(long, default_value = DEFAULT_SELF_UPDATE_MANIFEST_URL)]
+        manifest_url: String,
+        #[arg(long)]
+        staging_dir: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -701,6 +710,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
                     print_self_update_report(&report);
+                }
+            }
+            SelfUpdateCommand::Stage {
+                manifest_url,
+                staging_dir,
+                json,
+            } => {
+                let platform =
+                    Platform::current().ok_or(rais_core::RaisError::UnsupportedPlatform)?;
+                let staging_dir = staging_dir.unwrap_or_else(default_self_update_staging_dir);
+                let report = stage_self_update(platform, &manifest_url, &staging_dir)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print_self_update_stage_report(&report);
                 }
             }
         },
@@ -1285,6 +1309,29 @@ fn print_self_update_report(report: &SelfUpdateCheckReport) {
     println!("Asset SHA-256: {}", report.asset.sha256);
 }
 
+fn print_self_update_stage_report(report: &SelfUpdateStageReport) {
+    print_self_update_report(&report.check);
+    println!("Staging directory: {}", report.staging_dir.display());
+    println!(
+        "Staged asset: {}",
+        report
+            .staged_asset_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "not staged".to_string())
+    );
+    println!("Downloaded: {}", yes_no(report.downloaded));
+    println!(
+        "Reused existing staged file: {}",
+        yes_no(report.reused_existing_file)
+    );
+    println!("Ready to apply: {}", yes_no(report.ready_to_apply));
+    if let Some(sha256) = report.verified_sha256.as_ref() {
+        println!("Verified SHA-256: {sha256}");
+    }
+    println!("Status: {}", report.status_message);
+}
+
 fn portability_status_label(status: PortabilityCheckStatus) -> &'static str {
     match status {
         PortabilityCheckStatus::Passed => "passed",
@@ -1303,7 +1350,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, Command, SelfUpdateCommand};
+    use super::{Cli, Command, DEFAULT_SELF_UPDATE_MANIFEST_URL, SelfUpdateCommand};
 
     #[test]
     fn setup_command_parses_target_app_path() {
@@ -1401,6 +1448,35 @@ mod tests {
                     assert_eq!(manifest_url, "https://example.test/rais-update-stable.json");
                     assert!(!json);
                 }
+                other => panic!("unexpected self-update command: {other:?}"),
+            },
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn self_update_stage_command_parses_staging_dir() {
+        let cli = Cli::try_parse_from([
+            "rais",
+            "self-update",
+            "stage",
+            "--staging-dir",
+            "C:\\Temp\\RAIS-Update",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::SelfUpdate { command } => match command {
+                SelfUpdateCommand::Stage {
+                    staging_dir,
+                    manifest_url,
+                    json,
+                } => {
+                    assert_eq!(staging_dir, Some(PathBuf::from("C:\\Temp\\RAIS-Update")));
+                    assert_eq!(manifest_url, DEFAULT_SELF_UPDATE_MANIFEST_URL);
+                    assert!(!json);
+                }
+                other => panic!("unexpected self-update command: {other:?}"),
             },
             other => panic!("unexpected command: {other:?}"),
         }

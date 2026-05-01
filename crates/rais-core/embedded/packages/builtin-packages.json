@@ -94,6 +94,27 @@
         "windows": [".dll"],
         "macos": [".dylib"]
       }
+    },
+    {
+      "id": "reakontrol",
+      "display_name": "ReaKontrol",
+      "display_name_key": "package-reakontrol",
+      "package_kind": "user_plugin_binary",
+      "required": false,
+      "recommended": true,
+      "supported_platforms": ["windows", "macos"],
+      "supported_architectures": ["x86", "x64", "arm64", "arm64-ec", "universal"],
+      "latest_version_provider": "reakontrol_github_snapshots",
+      "artifact_provider": "reakontrol_github_snapshots",
+      "detectors": ["rais_receipt", "user_plugin_file"],
+      "install_steps": ["copy_user_plugin_binary"],
+      "uninstall_steps": ["remove_user_plugin_binary"],
+      "backup_policy": "backup_overwritten_files",
+      "user_plugin_prefixes": ["reaper_kontrol"],
+      "user_plugin_suffixes": {
+        "windows": [".dll"],
+        "macos": [".dylib"]
+      }
     }
   ]
 }

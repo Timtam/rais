@@ -10,12 +10,14 @@ use serde_json::Value;
 use crate::error::{IoPathContext, RaisError, Result};
 use crate::hash::sha256_file;
 use crate::latest::{
-    OSARA_UPDATE_URL, REAPACK_GITHUB_LATEST_URL, REAPER_DOWNLOAD_URL, SWS_HOME_URL,
-    parse_github_latest_release_json, parse_osara_update_json, parse_reaper_latest_version,
-    parse_sws_latest_version,
+    OSARA_UPDATE_URL, REAKONTROL_GITHUB_LATEST_URL, REAPACK_GITHUB_LATEST_URL, REAPER_DOWNLOAD_URL,
+    SWS_HOME_URL, parse_github_latest_release_json, parse_osara_update_json,
+    parse_reaper_latest_version, parse_sws_latest_version, reakontrol_version_from_asset_name,
 };
 use crate::model::{Architecture, Platform};
-use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS};
+use crate::package::{
+    PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS,
+};
 use crate::version::Version;
 
 const USER_AGENT: &str = "RAIS/0.1 (+https://github.com/reaper-accessibility/rais)";
@@ -63,6 +65,7 @@ pub fn resolve_latest_artifacts(
             PACKAGE_OSARA => resolve_osara_artifact(&client, platform, architecture)?,
             PACKAGE_SWS => resolve_sws_artifact(&client, platform, architecture)?,
             PACKAGE_REAPACK => resolve_reapack_artifact(&client, platform, architecture)?,
+            PACKAGE_REAKONTROL => resolve_reakontrol_artifact(&client, platform, architecture)?,
             _ => {
                 return Err(RaisError::NoArtifactFound {
                     package_id: package_id.clone(),
@@ -87,6 +90,7 @@ pub fn expected_artifact_kind(
         PACKAGE_OSARA => expected_osara_artifact_kind(platform),
         PACKAGE_SWS => expected_sws_artifact_kind(platform, architecture),
         PACKAGE_REAPACK => expected_reapack_artifact_kind(platform, architecture),
+        PACKAGE_REAKONTROL => expected_reakontrol_artifact_kind(platform),
         _ => Err(RaisError::NoArtifactFound {
             package_id: package_id.to_string(),
             platform,
@@ -507,6 +511,82 @@ fn expected_reapack_artifact_kind(
     }
 }
 
+fn resolve_reakontrol_artifact(
+    client: &Client,
+    platform: Platform,
+    architecture: Architecture,
+) -> Result<ArtifactDescriptor> {
+    let body = http_get_text(client, REAKONTROL_GITHUB_LATEST_URL)?;
+    resolve_reakontrol_artifact_from_release_body(&body, platform, architecture)
+}
+
+fn resolve_reakontrol_artifact_from_release_body(
+    body: &str,
+    platform: Platform,
+    architecture: Architecture,
+) -> Result<ArtifactDescriptor> {
+    let value: Value = serde_json::from_str(body).map_err(|source| RaisError::RemoteData {
+        url: REAKONTROL_GITHUB_LATEST_URL.to_string(),
+        message: source.to_string(),
+    })?;
+    let assets = value
+        .get("assets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| RaisError::RemoteData {
+            url: REAKONTROL_GITHUB_LATEST_URL.to_string(),
+            message: "missing array field: assets".to_string(),
+        })?;
+
+    let platform_token = match platform {
+        Platform::Windows => "reaKontrol_windows_",
+        Platform::MacOs => "reaKontrol_mac_",
+    };
+
+    let mut best: Option<(crate::version::Version, String, String)> = None;
+    for asset in assets {
+        let Some(name) = asset.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if !name.starts_with(platform_token) || !name.ends_with(".zip") {
+            continue;
+        }
+        let Some(url) = asset.get("browser_download_url").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(version) = reakontrol_version_from_asset_name(name) else {
+            continue;
+        };
+        best = Some(match best {
+            Some((current_version, current_name, current_url))
+                if current_version.cmp_lenient(&version).is_ge() =>
+            {
+                (current_version, current_name, current_url)
+            }
+            _ => (version, name.to_string(), url.to_string()),
+        });
+    }
+
+    let (version, file_name, url) = best.ok_or_else(|| RaisError::NoArtifactFound {
+        package_id: PACKAGE_REAKONTROL.to_string(),
+        platform,
+        architecture,
+    })?;
+
+    Ok(ArtifactDescriptor {
+        package_id: PACKAGE_REAKONTROL.to_string(),
+        version,
+        platform,
+        architecture: Architecture::Universal,
+        kind: ArtifactKind::Archive,
+        url,
+        file_name,
+    })
+}
+
+fn expected_reakontrol_artifact_kind(_platform: Platform) -> Result<ArtifactKind> {
+    Ok(ArtifactKind::Archive)
+}
+
 fn artifact_from_href(
     package_id: &str,
     version: Version,
@@ -698,9 +778,11 @@ mod tests {
 
     use crate::artifact::{
         absolute_url, expected_artifact_kind, file_name_from_url, find_href_containing,
-        resolve_reapack_asset_from_fixture,
+        resolve_reakontrol_artifact_from_release_body, resolve_reapack_asset_from_fixture,
     };
-    use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS};
+    use crate::package::{
+        PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS,
+    };
     use tempfile::tempdir;
 
     use super::*;
@@ -831,6 +913,76 @@ mod tests {
             expected_artifact_kind(PACKAGE_REAPACK, Platform::Windows, Architecture::X64).unwrap(),
             ArtifactKind::ExtensionBinary
         );
+        assert_eq!(
+            expected_artifact_kind(PACKAGE_REAKONTROL, Platform::Windows, Architecture::X64)
+                .unwrap(),
+            ArtifactKind::Archive
+        );
+        assert_eq!(
+            expected_artifact_kind(PACKAGE_REAKONTROL, Platform::MacOs, Architecture::Arm64)
+                .unwrap(),
+            ArtifactKind::Archive
+        );
+    }
+
+    #[test]
+    fn resolves_reakontrol_archive_for_platform() {
+        let body = r#"{
+            "tag_name": "snapshots",
+            "assets": [
+                {
+                    "name": "reaKontrol_windows_2025.6.6.7.bfbe7606.zip",
+                    "browser_download_url": "https://github.com/jcsteh/reaKontrol/releases/download/snapshots/reaKontrol_windows_2025.6.6.7.bfbe7606.zip"
+                },
+                {
+                    "name": "reaKontrol_windows_2026.2.16.100.cafef00d.zip",
+                    "browser_download_url": "https://github.com/jcsteh/reaKontrol/releases/download/snapshots/reaKontrol_windows_2026.2.16.100.cafef00d.zip"
+                },
+                {
+                    "name": "reaKontrol_mac_2026.2.16.100.cafef00d.zip",
+                    "browser_download_url": "https://github.com/jcsteh/reaKontrol/releases/download/snapshots/reaKontrol_mac_2026.2.16.100.cafef00d.zip"
+                }
+            ]
+        }"#;
+
+        let windows = resolve_reakontrol_artifact_from_release_body(
+            body,
+            Platform::Windows,
+            Architecture::X64,
+        )
+        .unwrap();
+        assert_eq!(windows.kind, ArtifactKind::Archive);
+        assert_eq!(windows.version.raw(), "2026.2.16.100");
+        assert_eq!(
+            windows.file_name,
+            "reaKontrol_windows_2026.2.16.100.cafef00d.zip"
+        );
+        assert!(
+            windows
+                .url
+                .starts_with("https://github.com/jcsteh/reaKontrol/")
+        );
+        assert_eq!(windows.architecture, Architecture::Universal);
+
+        let mac = resolve_reakontrol_artifact_from_release_body(
+            body,
+            Platform::MacOs,
+            Architecture::Arm64,
+        )
+        .unwrap();
+        assert_eq!(mac.file_name, "reaKontrol_mac_2026.2.16.100.cafef00d.zip");
+    }
+
+    #[test]
+    fn errors_when_reakontrol_release_has_no_matching_assets() {
+        let body = r#"{"tag_name": "snapshots", "assets": []}"#;
+        let error = resolve_reakontrol_artifact_from_release_body(
+            body,
+            Platform::Windows,
+            Architecture::X64,
+        )
+        .unwrap_err();
+        assert!(matches!(error, RaisError::NoArtifactFound { .. }));
     }
 
     fn file_url_for_test(path: &Path) -> String {

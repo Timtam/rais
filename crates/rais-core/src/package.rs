@@ -8,6 +8,7 @@ pub const PACKAGE_REAPER: &str = "reaper";
 pub const PACKAGE_OSARA: &str = "osara";
 pub const PACKAGE_SWS: &str = "sws";
 pub const PACKAGE_REAPACK: &str = "reapack";
+pub const PACKAGE_REAKONTROL: &str = "reakontrol";
 
 pub const BUILTIN_PACKAGE_MANIFEST_ID: &str = "builtin-packages.json";
 const BUILTIN_PACKAGE_MANIFEST: &str = include_str!("../embedded/packages/builtin-packages.json");
@@ -95,6 +96,7 @@ pub enum LatestVersionProvider {
     OsaraUpdateJson,
     SwsHomePage,
     ReapackGithubRelease,
+    ReakontrolGithubSnapshots,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +106,7 @@ pub enum ArtifactProvider {
     OsaraSnapshots,
     SwsDownloadPage,
     ReapackGithubReleaseAssets,
+    ReakontrolGithubSnapshots,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,8 +276,8 @@ mod tests {
     use crate::model::{Architecture, Platform};
     use crate::package::{
         ArtifactProvider, BackupPolicy, InstallStep, LatestVersionProvider, PACKAGE_OSARA,
-        PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS, PackageDetector, PackageKind,
-        SupportedPlatform, builtin_package_specs, default_desired_package_ids,
+        PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS, PackageDetector,
+        PackageKind, SupportedPlatform, builtin_package_specs, default_desired_package_ids,
         embedded_package_manifest, embedded_package_manifest_source, package_specs_by_id,
         parse_package_manifest,
     };
@@ -284,7 +287,7 @@ mod tests {
         let manifest = embedded_package_manifest();
 
         assert_eq!(manifest.schema_version, 1);
-        assert_eq!(manifest.packages.len(), 4);
+        assert_eq!(manifest.packages.len(), 5);
         assert!(
             manifest
                 .packages
@@ -296,6 +299,37 @@ mod tests {
                 .packages
                 .iter()
                 .any(|package| package.id == PACKAGE_OSARA)
+        );
+        assert!(
+            manifest
+                .packages
+                .iter()
+                .any(|package| package.id == PACKAGE_REAKONTROL)
+        );
+        let reakontrol = manifest
+            .packages
+            .iter()
+            .find(|package| package.id == PACKAGE_REAKONTROL)
+            .unwrap();
+        assert_eq!(reakontrol.package_kind, PackageKind::UserPluginBinary);
+        assert_eq!(
+            reakontrol.latest_version_provider,
+            Some(LatestVersionProvider::ReakontrolGithubSnapshots)
+        );
+        assert_eq!(
+            reakontrol.artifact_provider,
+            Some(ArtifactProvider::ReakontrolGithubSnapshots)
+        );
+        assert_eq!(reakontrol.user_plugin_prefixes, vec!["reaper_kontrol"]);
+        assert!(
+            reakontrol
+                .install_steps
+                .contains(&InstallStep::CopyUserPluginBinary)
+        );
+        assert!(
+            reakontrol
+                .detectors
+                .contains(&PackageDetector::UserPluginFile)
         );
         let reaper = manifest
             .packages
@@ -371,6 +405,7 @@ mod tests {
                 PACKAGE_OSARA.to_string(),
                 PACKAGE_SWS.to_string(),
                 PACKAGE_REAPACK.to_string(),
+                PACKAGE_REAKONTROL.to_string(),
             ]
         );
     }

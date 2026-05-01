@@ -1260,6 +1260,9 @@ fn planned_verification_paths(
         crate::package::PACKAGE_REAPACK => {
             vec![resource_path.join("UserPlugins")]
         }
+        crate::package::PACKAGE_REAKONTROL => {
+            vec![resource_path.join("UserPlugins")]
+        }
         _ => vec![resource_path.to_path_buf()],
     };
 
@@ -1447,6 +1450,7 @@ fn package_title_name(package_id: &str) -> &'static str {
         crate::package::PACKAGE_OSARA => "OSARA",
         crate::package::PACKAGE_SWS => "SWS",
         crate::package::PACKAGE_REAPACK => "ReaPack",
+        crate::package::PACKAGE_REAKONTROL => "ReaKontrol",
         _ => "package",
     }
 }

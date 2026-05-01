@@ -13,6 +13,7 @@ package-reaper = REAPER
 package-osara = OSARA
 package-sws = SWS Extension
 package-reapack = ReaPack
+package-reakontrol = ReaKontrol
 
 detect-installed = Installed
 detect-not-installed = Not installed
