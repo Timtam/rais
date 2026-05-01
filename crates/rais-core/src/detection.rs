@@ -61,15 +61,28 @@ pub fn detect_components(
     resource_path: &Path,
     platform: Platform,
 ) -> Result<Vec<ComponentDetection>> {
+    detect_components_with_probes(
+        resource_path,
+        platform,
+        rais_platform::read_uninstall_display_version,
+    )
+}
+
+pub(crate) fn detect_components_with_probes(
+    resource_path: &Path,
+    platform: Platform,
+    uninstall_display_version: fn(&str) -> Option<String>,
+) -> Result<Vec<ComponentDetection>> {
     let state = load_install_state(resource_path)?;
     let mut detections = Vec::new();
 
     for spec in builtin_package_specs(platform) {
-        detections.push(detect_component(
+        detections.push(detect_component_with_probes(
             resource_path,
             platform,
             &spec,
             state.as_ref(),
+            uninstall_display_version,
         )?);
     }
 
@@ -81,6 +94,22 @@ pub fn detect_component(
     platform: Platform,
     spec: &PackageSpec,
     state: Option<&crate::receipt::InstallState>,
+) -> Result<ComponentDetection> {
+    detect_component_with_probes(
+        resource_path,
+        platform,
+        spec,
+        state,
+        rais_platform::read_uninstall_display_version,
+    )
+}
+
+pub(crate) fn detect_component_with_probes(
+    resource_path: &Path,
+    platform: Platform,
+    spec: &PackageSpec,
+    state: Option<&crate::receipt::InstallState>,
+    uninstall_display_version: fn(&str) -> Option<String>,
 ) -> Result<ComponentDetection> {
     match verify_package_receipt(resource_path, state, &spec.id)? {
         ReceiptVerification::Verified(receipt) => {
@@ -129,9 +158,12 @@ pub fn detect_component(
         ));
     }
 
-    if let Some((version, detector, confidence, notes)) =
-        detect_version_from_files(resource_path, &files, &spec.id)?
-    {
+    if let Some((version, detector, confidence, notes)) = detect_version_from_files_with_probes(
+        resource_path,
+        &files,
+        &spec.id,
+        uninstall_display_version,
+    )? {
         return Ok(ComponentDetection {
             package_id: spec.id.clone(),
             display_name: spec.display_name.clone(),
@@ -156,16 +188,17 @@ pub fn detect_component(
     })
 }
 
-fn detect_version_from_files(
+fn detect_version_from_files_with_probes(
     resource_path: &Path,
     files: &[PathBuf],
     package_id: &str,
+    uninstall_display_version: fn(&str) -> Option<String>,
 ) -> Result<Option<(crate::version::Version, String, Confidence, Vec<String>)>> {
     // OSARA: Windows installers register a `DisplayVersion` under the standard
     // Uninstall key. Prefer that for non-RAIS-managed OSARA installs because
     // it reflects what the user sees in Programs and Features.
     if package_id == PACKAGE_OSARA {
-        if let Some(value) = rais_platform::read_uninstall_display_version("OSARA") {
+        if let Some(value) = uninstall_display_version("OSARA") {
             if let Ok(version) = crate::version::Version::parse(&value) {
                 return Ok(Some((
                     version,
@@ -635,7 +668,11 @@ mod tests {
         )
         .unwrap();
 
-        let detections = detect_components(dir.path(), Platform::Windows).unwrap();
+        // Inject a no-op uninstall-registry probe so the test does not pick up
+        // any OSARA install that happens to be present on the dev/CI host —
+        // the binary-scan fallback is what we are exercising here.
+        let detections =
+            super::detect_components_with_probes(dir.path(), Platform::Windows, |_| None).unwrap();
         let osara = detections
             .iter()
             .find(|detection| detection.package_id == PACKAGE_OSARA)

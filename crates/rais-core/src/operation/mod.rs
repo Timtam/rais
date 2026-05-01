@@ -28,14 +28,12 @@ use crate::receipt::{
 };
 use crate::rollback::{BackupManifest, BackupManifestFile, save_backup_manifest};
 
-use self::osara::{
-    apply_osara_keymap_replacement, osara_manual_steps, osara_windows_installer_arguments,
-};
-use self::reaper::{
-    reaper_macos_app_bundle_install_target, reaper_manual_steps, reaper_windows_installer_arguments,
-};
-use self::sws::{sws_manual_steps, sws_windows_installer_arguments};
+use self::osara::osara_manual_steps;
+use self::reaper::reaper_manual_steps;
+use self::sws::sws_manual_steps;
 use crate::upstream::{execute_planned_execution, verify_planned_execution_paths};
+
+const DEFAULT_UNATTENDED_INSTALL_MESSAGE: &str = "RAIS ran the upstream installer unattended, verified the expected target paths, and updated the RAIS receipt.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageOperationOptions {
@@ -108,6 +106,16 @@ pub struct PlannedExecutionPlan {
     pub verification_paths: Vec<PathBuf>,
 }
 
+/// Per-package override used by `planned_execution_for_artifact` when a
+/// specific (package, kind, platform) combination needs a different
+/// `PlannedExecutionKind` or argument list than the generic Archive/DiskImage
+/// fallbacks.
+pub(super) struct PlannedExecutionOverride {
+    pub(super) kind: PlannedExecutionKind,
+    pub(super) arguments: Vec<String>,
+    pub(super) use_cached_working_dir: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PackageAutomationSupport {
@@ -138,54 +146,44 @@ pub fn package_automation_support(
     platform: Platform,
     architecture: Architecture,
 ) -> PackageAutomationSupport {
-    match (
-        package_id,
-        expected_artifact_kind(package_id, platform, architecture),
-    ) {
-        (_, Ok(ArtifactKind::ExtensionBinary)) => PackageAutomationSupport::Direct,
-        (crate::package::PACKAGE_REAKONTROL, Ok(ArtifactKind::Archive)) => {
-            PackageAutomationSupport::Direct
-        }
-        (crate::package::PACKAGE_SWS, Ok(ArtifactKind::DiskImage))
-            if matches!(platform, Platform::MacOs) =>
-        {
-            PackageAutomationSupport::Direct
-        }
-        (crate::package::PACKAGE_REAPER, Ok(ArtifactKind::DiskImage))
-            if matches!(platform, Platform::MacOs) =>
-        {
-            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::DiskImageInstall)
-        }
-        (crate::package::PACKAGE_OSARA, Ok(ArtifactKind::Archive))
-            if matches!(platform, Platform::MacOs) =>
-        {
-            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::ArchiveExtraction)
-        }
-        (crate::package::PACKAGE_REAPER, Ok(ArtifactKind::Installer))
-            if matches!(platform, Platform::Windows) =>
-        {
-            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
-        }
-        (crate::package::PACKAGE_OSARA, Ok(ArtifactKind::Installer))
-            if matches!(platform, Platform::Windows) =>
-        {
-            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
-        }
-        (crate::package::PACKAGE_SWS, Ok(ArtifactKind::Installer))
-            if matches!(platform, Platform::Windows) =>
-        {
-            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
-        }
-        (_, Ok(ArtifactKind::Installer)) => {
+    let kind = match expected_artifact_kind(package_id, platform, architecture) {
+        Ok(kind) => kind,
+        Err(_) => return PackageAutomationSupport::Unavailable,
+    };
+    automation_support_dispatch(package_id, kind, platform)
+}
+
+fn automation_support_dispatch(
+    package_id: &str,
+    kind: ArtifactKind,
+    platform: Platform,
+) -> PackageAutomationSupport {
+    if matches!(kind, ArtifactKind::ExtensionBinary) {
+        return PackageAutomationSupport::Direct;
+    }
+    if package_id == crate::package::PACKAGE_REAKONTROL && matches!(kind, ArtifactKind::Archive) {
+        return PackageAutomationSupport::Direct;
+    }
+    let per_package = match package_id {
+        crate::package::PACKAGE_REAPER => reaper::automation_support_for(kind, platform),
+        crate::package::PACKAGE_OSARA => osara::automation_support_for(kind, platform),
+        crate::package::PACKAGE_SWS => sws::automation_support_for(kind, platform),
+        _ => None,
+    };
+    if let Some(verdict) = per_package {
+        return verdict;
+    }
+    match kind {
+        ArtifactKind::Installer => {
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::VendorInstaller)
         }
-        (_, Ok(ArtifactKind::Archive)) => {
+        ArtifactKind::Archive => {
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::ArchiveExtraction)
         }
-        (_, Ok(ArtifactKind::DiskImage)) => {
+        ArtifactKind::DiskImage => {
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::DiskImageInstall)
         }
-        (_, Err(_)) => PackageAutomationSupport::Unavailable,
+        ArtifactKind::ExtensionBinary => unreachable!("ExtensionBinary handled above"),
     }
 }
 
@@ -447,57 +445,7 @@ fn automation_support_for_artifact(
     artifact: &ArtifactDescriptor,
     _options: &PackageOperationOptions,
 ) -> PackageAutomationSupport {
-    match artifact.kind {
-        ArtifactKind::ExtensionBinary => PackageAutomationSupport::Direct,
-        ArtifactKind::Archive if artifact.package_id == crate::package::PACKAGE_REAKONTROL => {
-            PackageAutomationSupport::Direct
-        }
-        ArtifactKind::DiskImage
-            if artifact.package_id == crate::package::PACKAGE_SWS
-                && matches!(artifact.platform, Platform::MacOs) =>
-        {
-            PackageAutomationSupport::Direct
-        }
-        ArtifactKind::DiskImage
-            if artifact.package_id == crate::package::PACKAGE_REAPER
-                && matches!(artifact.platform, Platform::MacOs) =>
-        {
-            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::DiskImageInstall)
-        }
-        ArtifactKind::Archive
-            if artifact.package_id == crate::package::PACKAGE_OSARA
-                && matches!(artifact.platform, Platform::MacOs) =>
-        {
-            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::ArchiveExtraction)
-        }
-        ArtifactKind::Installer
-            if artifact.package_id == crate::package::PACKAGE_REAPER
-                && matches!(artifact.platform, Platform::Windows) =>
-        {
-            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
-        }
-        ArtifactKind::Installer
-            if artifact.package_id == crate::package::PACKAGE_OSARA
-                && matches!(artifact.platform, Platform::Windows) =>
-        {
-            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
-        }
-        ArtifactKind::Installer
-            if artifact.package_id == crate::package::PACKAGE_SWS
-                && matches!(artifact.platform, Platform::Windows) =>
-        {
-            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller)
-        }
-        ArtifactKind::Installer => {
-            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::VendorInstaller)
-        }
-        ArtifactKind::Archive => {
-            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::ArchiveExtraction)
-        }
-        ArtifactKind::DiskImage => {
-            PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::DiskImageInstall)
-        }
-    }
+    automation_support_dispatch(&artifact.package_id, artifact.kind, artifact.platform)
 }
 
 #[derive(Debug, Clone)]
@@ -682,19 +630,13 @@ fn executed_unattended_item(
     )?;
     verify_planned_execution_paths(&planned_execution)?;
 
-    let message = if planned.artifact.package_id == crate::package::PACKAGE_OSARA
-        && replace_osara_keymap
-    {
-        if post_install.backup_paths.is_empty() {
-            "RAIS ran the upstream installer unattended, applied the OSARA key map replacement, and updated the RAIS receipt."
-                .to_string()
-        } else {
-            "RAIS ran the upstream installer unattended, backed up reaper-kb.ini, applied the OSARA key map replacement, and updated the RAIS receipt."
-                .to_string()
-        }
-    } else {
-        "RAIS ran the upstream installer unattended, verified the expected target paths, and updated the RAIS receipt."
-            .to_string()
+    let message = match planned.artifact.package_id.as_str() {
+        crate::package::PACKAGE_OSARA => osara::unattended_install_message(
+            replace_osara_keymap,
+            !post_install.backup_paths.is_empty(),
+        )
+        .unwrap_or_else(|| DEFAULT_UNATTENDED_INSTALL_MESSAGE.to_string()),
+        _ => DEFAULT_UNATTENDED_INSTALL_MESSAGE.to_string(),
     };
 
     Ok(PackageOperationItem {
@@ -750,18 +692,10 @@ fn receipt_paths_for_artifact(
     let mut paths = Vec::new();
 
     if artifact.package_id == crate::package::PACKAGE_REAPER {
-        if let Some(path) = effective_target_app_path
-            .as_ref()
-            .filter(|path| path.exists())
-        {
-            paths.push(path.clone());
-            if target_likely_portable(resource_path, Some(path)) {
-                let ini_path = resource_path.join("reaper.ini");
-                if ini_path.exists() {
-                    paths.push(ini_path);
-                }
-            }
-        }
+        paths.extend(reaper::receipt_paths(
+            resource_path,
+            effective_target_app_path.as_deref(),
+        ));
     }
 
     let package_specs = package_specs_by_id(artifact.platform);
@@ -775,30 +709,10 @@ fn receipt_paths_for_artifact(
 
     match artifact.package_id.as_str() {
         crate::package::PACKAGE_OSARA => {
-            let keymap_path = resource_path.join("KeyMaps").join("OSARA.ReaperKeyMap");
-            if keymap_path.exists() {
-                paths.push(keymap_path);
-            }
-            let support_dir = resource_path.join("osara");
-            if support_dir.exists() {
-                paths.push(support_dir);
-            }
-            if replace_osara_keymap {
-                let current_keymap = resource_path.join("reaper-kb.ini");
-                if current_keymap.exists() {
-                    paths.push(current_keymap);
-                }
-            }
+            paths.extend(osara::receipt_paths(resource_path, replace_osara_keymap));
         }
         crate::package::PACKAGE_SWS => {
-            let script_path = resource_path.join("Scripts").join("sws_python.py");
-            if script_path.exists() {
-                paths.push(script_path);
-            }
-            let grooves_path = resource_path.join("Data").join("Grooves");
-            if grooves_path.exists() {
-                paths.push(grooves_path);
-            }
+            paths.extend(sws::receipt_paths(resource_path));
         }
         _ => {}
     }
@@ -826,24 +740,15 @@ fn post_execute_unattended_artifact(
     target_app_path: Option<&Path>,
     replace_osara_keymap: bool,
 ) -> Result<UnattendedPostInstallReport> {
-    let mut report = UnattendedPostInstallReport::default();
-
     if artifact.package_id == crate::package::PACKAGE_OSARA {
-        if matches!(artifact.platform, Platform::Windows)
-            && target_likely_portable(resource_path, target_app_path)
-        {
-            let uninstall_path = resource_path.join("osara").join("uninstall.exe");
-            if uninstall_path.is_file() {
-                std::fs::remove_file(&uninstall_path).with_path(&uninstall_path)?;
-            }
-        }
-
-        if replace_osara_keymap {
-            report = apply_osara_keymap_replacement(resource_path)?;
-        }
+        return osara::post_install_unattended(
+            resource_path,
+            artifact.platform,
+            target_app_path,
+            replace_osara_keymap,
+        );
     }
-
-    Ok(report)
+    Ok(UnattendedPostInstallReport::default())
 }
 
 pub(super) fn backup_file_for_unattended_change(
@@ -990,6 +895,25 @@ fn planned_execution_for_artifact(
         replace_osara_keymap,
     );
 
+    if let Some(override_) = planned_execution_override_for_artifact(
+        artifact,
+        resource_path,
+        effective_target_app_path.as_deref(),
+    ) {
+        return PlannedExecutionPlan {
+            kind: override_.kind,
+            program: None,
+            arguments: override_.arguments,
+            working_directory: if override_.use_cached_working_dir {
+                cached_artifact.and_then(|cached| cached.path.parent().map(Path::to_path_buf))
+            } else {
+                None
+            },
+            artifact_location,
+            verification_paths,
+        };
+    }
+
     match artifact.kind {
         ArtifactKind::Installer => PlannedExecutionPlan {
             kind: PlannedExecutionKind::LaunchInstallerExecutable,
@@ -1004,20 +928,6 @@ fn planned_execution_for_artifact(
             artifact_location,
             verification_paths,
         },
-        ArtifactKind::Archive
-            if artifact.package_id == crate::package::PACKAGE_OSARA
-                && matches!(artifact.platform, Platform::MacOs) =>
-        {
-            PlannedExecutionPlan {
-                kind: PlannedExecutionKind::ExtractArchiveAndCopyOsaraAssets,
-                program: None,
-                arguments: vec![resource_path.display().to_string()],
-                working_directory: cached_artifact
-                    .and_then(|cached| cached.path.parent().map(Path::to_path_buf)),
-                artifact_location,
-                verification_paths,
-            }
-        }
         ArtifactKind::Archive => PlannedExecutionPlan {
             kind: PlannedExecutionKind::ExtractArchiveAndRunInstaller,
             program: None,
@@ -1027,23 +937,6 @@ fn planned_execution_for_artifact(
             artifact_location,
             verification_paths,
         },
-        ArtifactKind::DiskImage
-            if artifact.package_id == crate::package::PACKAGE_REAPER
-                && matches!(artifact.platform, Platform::MacOs) =>
-        {
-            let (bundle_basename, install_destination) = reaper_macos_app_bundle_install_target(
-                resource_path,
-                effective_target_app_path.as_deref(),
-            );
-            PlannedExecutionPlan {
-                kind: PlannedExecutionKind::MountDiskImageAndCopyAppBundle,
-                program: None,
-                arguments: vec![bundle_basename, install_destination.display().to_string()],
-                working_directory: None,
-                artifact_location,
-                verification_paths,
-            }
-        }
         ArtifactKind::DiskImage => PlannedExecutionPlan {
             kind: PlannedExecutionKind::MountDiskImageAndRunInstaller,
             program: None,
@@ -1064,31 +957,46 @@ fn planned_execution_for_artifact(
     }
 }
 
+fn planned_execution_override_for_artifact(
+    artifact: &ArtifactDescriptor,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+) -> Option<PlannedExecutionOverride> {
+    match artifact.package_id.as_str() {
+        crate::package::PACKAGE_REAPER => reaper::planned_execution_override(
+            artifact.kind,
+            artifact.platform,
+            resource_path,
+            target_app_path,
+        ),
+        crate::package::PACKAGE_OSARA => {
+            osara::planned_execution_override(artifact.kind, artifact.platform, resource_path)
+        }
+        _ => None,
+    }
+}
+
 fn installer_arguments_for_artifact(
     artifact: &ArtifactDescriptor,
     resource_path: &Path,
     target_app_path: Option<&Path>,
 ) -> Vec<String> {
-    if artifact.package_id == crate::package::PACKAGE_REAPER
-        && artifact.kind == ArtifactKind::Installer
-        && matches!(artifact.platform, Platform::Windows)
-    {
-        return reaper_windows_installer_arguments(resource_path, target_app_path);
-    }
-    if artifact.package_id == crate::package::PACKAGE_OSARA
-        && artifact.kind == ArtifactKind::Installer
-        && matches!(artifact.platform, Platform::Windows)
-    {
-        return osara_windows_installer_arguments(resource_path);
-    }
-    if artifact.package_id == crate::package::PACKAGE_SWS
-        && artifact.kind == ArtifactKind::Installer
-        && matches!(artifact.platform, Platform::Windows)
-    {
-        return sws_windows_installer_arguments(resource_path);
-    }
-
-    Vec::new()
+    let per_package = match artifact.package_id.as_str() {
+        crate::package::PACKAGE_REAPER => reaper::installer_arguments(
+            artifact.kind,
+            artifact.platform,
+            resource_path,
+            target_app_path,
+        ),
+        crate::package::PACKAGE_OSARA => {
+            osara::installer_arguments(artifact.kind, artifact.platform, resource_path)
+        }
+        crate::package::PACKAGE_SWS => {
+            sws::installer_arguments(artifact.kind, artifact.platform, resource_path)
+        }
+        _ => None,
+    };
+    per_package.unwrap_or_default()
 }
 
 fn effective_target_app_path(

@@ -1,10 +1,33 @@
 use std::path::{Path, PathBuf};
 
 use crate::artifact::ArtifactKind;
+use crate::model::Platform;
 
-use super::target_likely_portable;
+use super::{
+    PackageAutomationSupport, PlannedAutomationKind, PlannedExecutionKind,
+    PlannedExecutionOverride, target_likely_portable,
+};
 
 pub(super) const TITLE: &str = "REAPER";
+
+/// REAPER-specific automation routing. Returns `Some(verdict)` when REAPER
+/// upgrades the generic planned-unattended verdict to an unattended one for
+/// the given (kind, platform); returns `None` to defer to the generic
+/// fallback chain.
+pub(super) fn automation_support_for(
+    kind: ArtifactKind,
+    platform: Platform,
+) -> Option<PackageAutomationSupport> {
+    match (kind, platform) {
+        (ArtifactKind::Installer, Platform::Windows) => Some(
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::VendorInstaller),
+        ),
+        (ArtifactKind::DiskImage, Platform::MacOs) => Some(
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::DiskImageInstall),
+        ),
+        _ => None,
+    }
+}
 
 pub(super) fn manual_install_notes(
     resource_path: &Path,
@@ -28,6 +51,22 @@ pub(super) fn manual_install_notes(
     notes
 }
 
+/// Files written by an unattended REAPER install that the receipt should
+/// reference, scoped to ones that actually exist on disk after the run.
+pub(super) fn receipt_paths(resource_path: &Path, target_app_path: Option<&Path>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = target_app_path.filter(|path| path.exists()) {
+        paths.push(path.to_path_buf());
+        if target_likely_portable(resource_path, Some(path)) {
+            let ini_path = resource_path.join("reaper.ini");
+            if ini_path.exists() {
+                paths.push(ini_path);
+            }
+        }
+    }
+    paths
+}
+
 pub(super) fn verification_paths(
     resource_path: &Path,
     target_app_path: Option<&Path>,
@@ -44,7 +83,42 @@ pub(super) fn verification_paths(
     paths
 }
 
-pub(super) fn reaper_windows_installer_arguments(
+pub(super) fn installer_arguments(
+    kind: ArtifactKind,
+    platform: Platform,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+) -> Option<Vec<String>> {
+    match (kind, platform) {
+        (ArtifactKind::Installer, Platform::Windows) => Some(reaper_windows_installer_arguments(
+            resource_path,
+            target_app_path,
+        )),
+        _ => None,
+    }
+}
+
+pub(super) fn planned_execution_override(
+    kind: ArtifactKind,
+    platform: Platform,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+) -> Option<PlannedExecutionOverride> {
+    match (kind, platform) {
+        (ArtifactKind::DiskImage, Platform::MacOs) => {
+            let (bundle_basename, install_destination) =
+                reaper_macos_app_bundle_install_target(resource_path, target_app_path);
+            Some(PlannedExecutionOverride {
+                kind: PlannedExecutionKind::MountDiskImageAndCopyAppBundle,
+                arguments: vec![bundle_basename, install_destination.display().to_string()],
+                use_cached_working_dir: false,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn reaper_windows_installer_arguments(
     resource_path: &Path,
     target_app_path: Option<&Path>,
 ) -> Vec<String> {
@@ -128,7 +202,7 @@ pub(super) fn reaper_manual_steps(
     }
 }
 
-pub(super) fn reaper_macos_app_bundle_install_target(
+fn reaper_macos_app_bundle_install_target(
     resource_path: &Path,
     target_app_path: Option<&Path>,
 ) -> (String, PathBuf) {
@@ -143,7 +217,7 @@ pub(super) fn reaper_macos_app_bundle_install_target(
     (bundle, destination_dir)
 }
 
-pub(super) fn reaper_install_destination(target_app_path: &Path) -> PathBuf {
+fn reaper_install_destination(target_app_path: &Path) -> PathBuf {
     if target_app_path
         .extension()
         .and_then(|extension| extension.to_str())

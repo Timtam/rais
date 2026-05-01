@@ -2,9 +2,13 @@
 //!
 //! Today this exposes `read_uninstall_display_version`, which reads the
 //! `DisplayVersion` REG_SZ value from
-//! `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\<key_name>`
-//! (and the WoW6432Node mirror), the standard location vendor installers
-//! write to so Windows' Programs and Features dialog can show the version.
+//! `(HKCU|HKLM)\Software\Microsoft\Windows\CurrentVersion\Uninstall\<key_name>`,
+//! the standard location vendor installers write to so Windows' Programs and
+//! Features dialog can show the version. We probe `HKCU` first because
+//! per-user installers (OSARA's NSIS installer among them) record there;
+//! `HKLM` (with both 64-bit and `WoW6432Node` views) is queried as a fallback
+//! for machine-wide installs.
+//!
 //! On non-Windows platforms the function returns `None`.
 
 #[cfg(windows)]
@@ -12,8 +16,8 @@ use std::os::windows::ffi::OsStrExt;
 
 #[cfg(windows)]
 use windows_sys::Win32::System::Registry::{
-    HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_SZ, RegCloseKey,
-    RegOpenKeyExW, RegQueryValueExW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+    REG_SZ, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
 };
 
 const UNINSTALL_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
@@ -25,11 +29,16 @@ pub fn read_uninstall_display_version(key_name: &str) -> Option<String> {
 
 #[cfg(windows)]
 fn read_uninstall_display_version_impl(key_name: &str) -> Option<String> {
-    // Probe the 64-bit view first, then the WoW6432Node mirror used by
-    // 32-bit installers on 64-bit Windows.
-    for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
-        let subkey = format!("{UNINSTALL_KEY}\\{key_name}");
-        if let Some(version) = query_display_version(&subkey, view) {
+    let subkey = format!("{UNINSTALL_KEY}\\{key_name}");
+    // HKCU has no 32/64-bit redirection, so a single view suffices there.
+    // HKLM gets both views to cover 32-bit installers on 64-bit Windows.
+    let candidates: [(HKEY, u32); 3] = [
+        (HKEY_CURRENT_USER, 0),
+        (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY),
+        (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY),
+    ];
+    for (root, view) in candidates {
+        if let Some(version) = query_display_version(root, &subkey, view) {
             return Some(version);
         }
     }
@@ -42,13 +51,12 @@ fn read_uninstall_display_version_impl(_key_name: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
-fn query_display_version(subkey: &str, view: u32) -> Option<String> {
+fn query_display_version(root: HKEY, subkey: &str, view: u32) -> Option<String> {
     let subkey_w = wide_string(subkey);
     let value_w = wide_string("DisplayVersion");
     let mut hkey = std::ptr::null_mut();
     let access = KEY_QUERY_VALUE | view;
-    let status =
-        unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey_w.as_ptr(), 0, access, &mut hkey) };
+    let status = unsafe { RegOpenKeyExW(root, subkey_w.as_ptr(), 0, access, &mut hkey) };
     if status != 0 || hkey.is_null() {
         return None;
     }
