@@ -197,3 +197,31 @@ GitHub Actions workflow files live under `.github/workflows/`:
 - `release.yml`: builds tagged `v*` releases, publishes GitHub Release assets,
   emits checksums, and generates `rais-update-stable.json` for future RAIS
   self-update support
+
+### Optional release signing and notarization
+
+The release workflow signs and notarizes the published binaries when the
+matching repository secrets are configured. Secrets are all opt-in: when they
+are absent the steps log a message and skip themselves, and the release still
+publishes (unsigned) so this never blocks an OSS-only release. Set the secrets
+below to enable signing.
+
+Windows Authenticode (`signtool sign /tr <timestamp> /td SHA256 /fd SHA256`)
+- `WINDOWS_SIGNING_CERTIFICATE_BASE64` — base64-encoded `.pfx`/`.p12` code
+  signing certificate (`base64 -w0 cert.pfx`).
+- `WINDOWS_SIGNING_CERTIFICATE_PASSWORD` — password protecting the certificate.
+
+macOS code signing (`codesign --options runtime --timestamp`) and notarization
+(`xcrun notarytool submit --wait`)
+- `MACOS_SIGNING_CERTIFICATE_BASE64` — base64-encoded Developer ID Application
+  `.p12` (`base64 -i cert.p12`).
+- `MACOS_SIGNING_CERTIFICATE_PASSWORD` — password protecting the `.p12`.
+- `MACOS_SIGNING_IDENTITY` — codesign identity string, e.g.
+  `Developer ID Application: Your Name (TEAMID)`.
+- `MACOS_NOTARY_APPLE_ID` — Apple ID email for notarization submissions.
+- `MACOS_NOTARY_TEAM_ID` — Apple Developer team ID.
+- `MACOS_NOTARY_PASSWORD` — app-specific password generated at appleid.apple.com.
+
+If the codesign secrets are set but the notary secrets are not, the workflow
+still produces a code-signed (but un-notarized) macOS bundle. Notarization is
+gated independently so each step degrades gracefully.
