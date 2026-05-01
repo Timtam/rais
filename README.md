@@ -177,14 +177,21 @@ cargo run -p rais-ui-wxdragon --features gui
 ```powershell
 cargo fmt
 cargo test
+# macOS only: real-upstream smoke tests that download REAPER, OSARA, SWS, and
+# ReaKontrol live and assert the install + receipt flow. Skipped by default;
+# CI runs these on macos-latest after the regular Verify job passes.
+cargo test -p rais-core --test macos_upstream_smoke -- --ignored --test-threads=1
 ```
 
 ## CI/CD
 
 GitHub Actions workflow files live under `.github/workflows/`:
 
-- `ci.yml`: runs formatting/tests on Windows and macOS and uploads release-style
-  build artifacts for every push and pull request
+- `ci.yml`: runs formatting/tests on Windows and macOS, then on macOS only runs
+  a `macos-smoke` job that downloads the live upstream artifacts (REAPER DMG,
+  OSARA snapshot ZIP, SWS DMG, ReaKontrol ZIP) and exercises the full install +
+  receipt pipeline against them, and finally uploads release-style build
+  artifacts for every push and pull request
 - `release.yml`: builds tagged `v*` releases, publishes GitHub Release assets,
   emits checksums, and generates `rais-update-stable.json` for future RAIS
   self-update support
