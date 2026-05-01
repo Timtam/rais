@@ -34,23 +34,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-      - name: Test rais-core
-        run: cargo test -p rais-core
+      - name: Test workspace
+        run: cargo test --workspace
 
-      - name: Test rais-ui-wxdragon
-        run: cargo test -p rais-ui-wxdragon
-
-      - name: Test rais-cli
-        run: cargo test -p rais-cli
-
-      - name: Check rais-cli
-        run: cargo check -p rais-cli
-
-      - name: Build release CLI
-        run: cargo build --release -p rais-cli
-
-      - name: Build release non-GUI UI shell
-        run: cargo build --release -p rais-ui-wxdragon
+      - name: Build release rais binary (no GUI feature)
+        run: cargo build --release -p rais
 
   artifacts:
     name: Artifact (${{ matrix.platform_id }})
@@ -61,10 +49,10 @@ jobs:
         include:
           - os: windows-latest
             platform_id: windows
-            archive_name: RAIS-windows.zip
+            artifact_name: RAIS.exe
           - os: macos-latest
             platform_id: macos
-            archive_name: RAIS-macos.zip
+            artifact_name: RAIS
 
     steps:
       - name: Checkout
@@ -93,43 +81,32 @@ jobs:
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
           echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
 
-      - name: Build release GUI artifact and CLI
-        run: |
-          cargo build --release -p rais-ui-wxdragon --features gui
-          cargo build --release -p rais-cli
+      - name: Build release rais binary with GUI feature
+        run: cargo build --release -p rais --features gui
 
-      - name: Package Windows release bundle
+      - name: Stage Windows artifact
         if: matrix.platform_id == 'windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist\windows | Out-Null
-          Copy-Item target\release\rais-ui-wxdragon.exe dist\windows\RAIS.exe -Force
-          Copy-Item target\release\rais-cli.exe dist\windows\rais-cli.exe -Force
-          if (Test-Path target\release\rais-ui-wxdragon.pdb) {
-            Copy-Item target\release\rais-ui-wxdragon.pdb dist\windows\RAIS.pdb -Force
-          }
-          if (Test-Path target\release\rais-cli.pdb) {
-            Copy-Item target\release\rais-cli.pdb dist\windows\rais-cli.pdb -Force
-          }
-          Compress-Archive -Path dist\windows\* -DestinationPath dist\${{ matrix.archive_name }} -Force
-          $Hash = (Get-FileHash dist\${{ matrix.archive_name }} -Algorithm SHA256).Hash.ToLowerInvariant()
-          "{0}  {1}" -f $Hash, "${{ matrix.archive_name }}" | Set-Content dist\${{ matrix.archive_name }}.sha256
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\release\rais.exe dist\${{ matrix.artifact_name }} -Force
+          $Hash = (Get-FileHash dist\${{ matrix.artifact_name }} -Algorithm SHA256).Hash.ToLowerInvariant()
+          "{0}  {1}" -f $Hash, "${{ matrix.artifact_name }}" | Set-Content dist\${{ matrix.artifact_name }}.sha256
 
-      - name: Package macOS release bundle
+      - name: Stage macOS artifact
         if: matrix.platform_id == 'macos'
         shell: bash
         run: |
-          mkdir -p dist/macos
-          cp target/release/rais-ui-wxdragon dist/macos/RAIS
-          cp target/release/rais-cli dist/macos/rais-cli
-          ditto -c -k --sequesterRsrc --keepParent dist/macos "dist/${{ matrix.archive_name }}"
-          shasum -a 256 "dist/${{ matrix.archive_name }}" | awk '{print tolower($1) "  ${{ matrix.archive_name }}"}' > "dist/${{ matrix.archive_name }}.sha256"
+          mkdir -p dist
+          cp target/release/rais dist/${{ matrix.artifact_name }}
+          chmod +x dist/${{ matrix.artifact_name }}
+          shasum -a 256 dist/${{ matrix.artifact_name }} | awk '{print tolower($1) "  ${{ matrix.artifact_name }}"}' > dist/${{ matrix.artifact_name }}.sha256
 
-      - name: Upload release-style artifact
+      - name: Upload single-file artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-bundle-${{ matrix.platform_id }}
+          name: rais-${{ matrix.platform_id }}
           path: |
-            dist/${{ matrix.archive_name }}
-            dist/${{ matrix.archive_name }}.sha256
+            dist/${{ matrix.artifact_name }}
+            dist/${{ matrix.artifact_name }}.sha256
           if-no-files-found: error

@@ -1,0 +1,16 @@
+[package]
+name = "rais"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+gui = ["rais-ui-wxdragon/gui"]
+
+[dependencies]
+rais-cli = { path = "../rais-cli" }
+rais-ui-wxdragon = { path = "../rais-ui-wxdragon" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }

@@ -41,14 +41,14 @@ if ($Release) {
     $ProfileName = "release"
 }
 
-& cargo build -p rais-ui-wxdragon --features gui @ProfileArgs
+& cargo build -p rais --features gui @ProfileArgs
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$SourceExe = Join-Path $RepoRoot "target\$ProfileName\rais-ui-wxdragon.exe"
+$SourceExe = Join-Path $RepoRoot "target\$ProfileName\rais.exe"
 if (-not (Test-Path -LiteralPath $SourceExe)) {
-    throw "Expected wxDragon executable was not produced: $SourceExe"
+    throw "Expected RAIS executable was not produced: $SourceExe"
 }
 
 if ([System.IO.Path]::IsPathRooted($OutDir)) {

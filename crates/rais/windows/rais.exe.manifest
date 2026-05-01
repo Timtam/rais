@@ -3,7 +3,7 @@
   <assemblyIdentity
     version="0.1.0.0"
     processorArchitecture="*"
-    name="RAIS.RAISWxDragon"
+    name="RAIS.RAIS"
     type="win32" />
   <description>REAPER Accessibility Installation Software</description>
   <dependency>

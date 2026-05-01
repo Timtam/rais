@@ -6,11 +6,11 @@ fn main() {
     if target_os == "windows" && target_env == "msvc" {
         let manifest_path = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap())
             .join("windows")
-            .join("rais-ui-wxdragon.exe.manifest");
+            .join("rais.exe.manifest");
         println!("cargo:rerun-if-changed={}", manifest_path.display());
-        println!("cargo:rustc-link-arg-bin=rais-ui-wxdragon=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg-bin=rais=/MANIFEST:EMBED");
         println!(
-            "cargo:rustc-link-arg-bin=rais-ui-wxdragon=/MANIFESTINPUT:{}",
+            "cargo:rustc-link-arg-bin=rais=/MANIFESTINPUT:{}",
             manifest_path.display()
         );
     }

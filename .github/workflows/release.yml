@@ -56,28 +56,19 @@ jobs:
       - name: Run release validation
         run: |
           cargo fmt --all --check
-          cargo test -p rais-core
-          cargo test -p rais-ui-wxdragon
-          cargo test -p rais-cli
-          cargo check -p rais-cli
+          cargo test --workspace
 
-      - name: Build release GUI artifact and CLI
-        run: |
-          cargo build --release -p rais-ui-wxdragon --features gui
-          cargo build --release -p rais-cli
+      - name: Build release rais binary with GUI feature
+        run: cargo build --release -p rais --features gui
 
       - name: Stage Windows release files
         if: matrix.platform_id == 'windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist\windows | Out-Null
-          Copy-Item target\release\rais-ui-wxdragon.exe dist\windows\RAIS.exe -Force
-          Copy-Item target\release\rais-cli.exe dist\windows\rais-cli.exe -Force
-          if (Test-Path target\release\rais-ui-wxdragon.pdb) {
-            Copy-Item target\release\rais-ui-wxdragon.pdb dist\windows\RAIS.pdb -Force
-          }
-          if (Test-Path target\release\rais-cli.pdb) {
-            Copy-Item target\release\rais-cli.pdb dist\windows\rais-cli.pdb -Force
+          Copy-Item target\release\rais.exe dist\windows\RAIS.exe -Force
+          if (Test-Path target\release\rais.pdb) {
+            Copy-Item target\release\rais.pdb dist\windows\RAIS.pdb -Force
           }
 
       - name: Sign Windows binaries (if certificate is configured)
@@ -112,9 +103,9 @@ jobs:
               /tr "http://timestamp.digicert.com" `
               /td SHA256 `
               /fd SHA256 `
-              dist\windows\RAIS.exe dist\windows\rais-cli.exe
+              dist\windows\RAIS.exe
             if ($LASTEXITCODE -ne 0) { throw "signtool sign failed with exit $LASTEXITCODE" }
-            & $signtool.FullName verify /pa /q dist\windows\RAIS.exe dist\windows\rais-cli.exe
+            & $signtool.FullName verify /pa /q dist\windows\RAIS.exe
             if ($LASTEXITCODE -ne 0) { throw "signtool verify failed with exit $LASTEXITCODE" }
           }
           finally {
@@ -134,9 +125,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/macos
-          cp target/release/rais-ui-wxdragon dist/macos/RAIS
-          cp target/release/rais-cli dist/macos/rais-cli
-          chmod +x dist/macos/RAIS dist/macos/rais-cli
+          cp target/release/rais dist/macos/RAIS
+          chmod +x dist/macos/RAIS
 
       - name: Sign macOS binaries (if certificate is configured)
         if: matrix.platform_id == 'macos'
@@ -166,8 +156,8 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | tr -d '"')
           /usr/bin/codesign --force --options runtime --timestamp \
             --sign "$MAC_SIGNING_IDENTITY" \
-            dist/macos/RAIS dist/macos/rais-cli
-          /usr/bin/codesign --verify --strict --verbose=2 dist/macos/RAIS dist/macos/rais-cli
+            dist/macos/RAIS
+          /usr/bin/codesign --verify --strict --verbose=2 dist/macos/RAIS
           rm -f "$CERT_PATH"
 
       - name: Pack macOS release bundle

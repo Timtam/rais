@@ -1,3 +1,14 @@
+#[cfg(feature = "gui")]
+mod wx_app;
+
+/// Run the wxDragon wizard. Wraps the internal `wx_app::run` so the merged
+/// `rais` binary can spawn the GUI without needing to know the module's
+/// internals.
+#[cfg(feature = "gui")]
+pub fn run_gui() {
+    wx_app::run();
+}
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;

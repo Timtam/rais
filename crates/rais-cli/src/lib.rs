@@ -316,7 +316,9 @@ impl From<CliArchitecture> for Architecture {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Parse the process argv via clap and dispatch to the matching subcommand.
+/// Used by the merged `rais` binary when it sees CLI arguments.
+pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {

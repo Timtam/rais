@@ -73,9 +73,7 @@ fn dispatch_version_check_event(event: VersionCheckEvent) {
         }
     });
 }
-use rais_core::latest::fetch_latest_for_package;
-use rais_core::plan::AvailablePackage;
-use rais_ui_wxdragon::{
+use crate::{
     OsaraKeymapChoice, PackageRow, TargetRow, UiBootstrapOptions, WizardInstallOptions,
     WizardModel, WizardOutcomeReport, build_review_preview_for_package_rows,
     custom_portable_target_row, execute_wizard_install,
@@ -89,6 +87,8 @@ use rais_ui_wxdragon::{
     wizard_outcome_report_from_error, wizard_outcome_report_from_success,
     wizard_package_plan_for_target, wizard_package_plan_for_target_with_available,
 };
+use rais_core::latest::fetch_latest_for_package;
+use rais_core::plan::AvailablePackage;
 use wxdragon::prelude::*;
 use wxdragon::widgets::SimpleBook;
 
@@ -924,7 +924,7 @@ pub fn run() {
 fn add_pages(
     book: &SimpleBook,
     model: &WizardModel,
-    package_rows: Rc<RefCell<Vec<rais_ui_wxdragon::PackageRow>>>,
+    package_rows: Rc<RefCell<Vec<crate::PackageRow>>>,
     self_update_status: StatusBar,
 ) -> WizardWidgets {
     let target_page = Panel::builder(book).build();
@@ -1424,7 +1424,7 @@ fn relaunch_with_locale(locale: &str) {
 fn build_packages_page(
     page: &Panel,
     model: &WizardModel,
-    package_rows: Rc<RefCell<Vec<rais_ui_wxdragon::PackageRow>>>,
+    package_rows: Rc<RefCell<Vec<crate::PackageRow>>>,
 ) -> (CheckListBox, TextCtrl, CheckBox, TextCtrl) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(
@@ -1798,7 +1798,7 @@ fn target_details_for_index(model: &WizardModel, index: usize) -> String {
         .unwrap_or_else(|| model.text.target_empty.clone())
 }
 
-fn package_details(row: &rais_ui_wxdragon::PackageRow) -> String {
+fn package_details(row: &crate::PackageRow) -> String {
     row.details.clone()
 }
 
@@ -1806,7 +1806,7 @@ fn progress_details_for_start(
     model: &WizardModel,
     target: Option<&TargetRow>,
     selected_package_indices: &[usize],
-    package_rows: &[rais_ui_wxdragon::PackageRow],
+    package_rows: &[crate::PackageRow],
     osara_keymap_choice: OsaraKeymapChoice,
     cache_dir: Option<&Path>,
 ) -> String {
@@ -1949,7 +1949,7 @@ fn refresh_package_checklist(
     osara_keymap_replace: &CheckBox,
     osara_keymap_note: &TextCtrl,
     model: &WizardModel,
-    rows: &[rais_ui_wxdragon::PackageRow],
+    rows: &[crate::PackageRow],
 ) {
     checklist.clear();
     for (index, row) in rows.iter().enumerate() {
@@ -1968,7 +1968,7 @@ fn refresh_package_checklist(
 
 fn sync_osara_keymap_widgets(
     model: &WizardModel,
-    rows: &[rais_ui_wxdragon::PackageRow],
+    rows: &[crate::PackageRow],
     checklist: &CheckListBox,
     checkbox: &CheckBox,
     note: &TextCtrl,
@@ -2161,7 +2161,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{can_launch_reaper_path, planned_reaper_launch_path_for_target};
-    use rais_ui_wxdragon::TargetRow;
+    use crate::TargetRow;
 
     #[test]
     fn launchability_requires_existing_path() {
