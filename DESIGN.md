@@ -469,6 +469,11 @@ user can finish the install by pressing Next a few times.
    - Check boxes for REAPER, OSARA, SWS, ReaPack, ReaKontrol, JAWS scripts
      (Windows only), and later packages. Each row reads as plain text:
      "OSARA — installed 2024.3.6, latest 2026.2.16, will update".
+   - The selected row's details pane shows the package's localized
+     description (one or two plain-language sentences explaining what the
+     package is and why a user might want it). The same description is
+     exposed by the CLI via `rais packages`, so users can read about every
+     package before deciding to install it.
    - Defaults: install or update missing/outdated recommended accessibility
      packages.
    - OSARA key map: RAIS replaces `reaper-kb.ini` with the OSARA key map after
@@ -476,18 +481,37 @@ user can finish the install by pressing Next a few times.
      mentioned in the final report. The CLI keeps `--preserve-osara-keymap`
      for power users who want the opt-out.
 
-4. Review
+4. ReaPack donation acknowledgement (only when ReaPack is being installed
+   or updated this run)
+   - Dedicated wizard page that mirrors the donation hint from
+     <https://reapack.com/>. Plain language, in the active locale:
+     ReaPack is free software, donations are optional, here is the
+     donation URL.
+   - A focusable link to <https://reapack.com/donate> and an explicit
+     checkbox or "I understand, continue" control. Continue is disabled
+     until the acknowledgement is set. Going back to step 3 clears the
+     acknowledgement so the user always re-confirms after changing the
+     selection.
+   - In the CLI, the same acknowledgement is surfaced as an interactive
+     prompt before staging. For unattended use the user passes
+     `--accept-reapack-donation-notice`; without it, `apply-packages` /
+     `setup` refuses to stage ReaPack and exits non-zero with a clear
+     message that points at the flag.
+   - Skipped automatically on runs where ReaPack is neither installed nor
+     updated.
+
+5. Review
    - Short plain-language summary: target path, packages to be installed or
      updated, an indication that backups will be made if any existing files
      will be replaced. No backup-file paths, no admin-prompt enumeration, no
      planned-execution metadata in the GUI summary; all of that is still
      written to the saved report and exposed by the CLI.
 
-5. Install/update progress
+6. Install/update progress
    - Single progress bar plus one current-step line. A "Show details" toggle
      reveals the underlying log for users who want it; collapsed by default.
 
-6. Done
+7. Done
    - One sentence summarizing success or failure.
    - Buttons: Launch REAPER, Open resource folder, Save report. The
      signature-verification counts, lock-file paths, and similar diagnostics
@@ -593,9 +617,11 @@ rewriting the installer engine.
 PackageSpec {
   id,
   display_name_key,
+  display_description_key,
   package_kind,
   required,
   recommended,
+  requires_user_acknowledgement,
   min_reaper_version,
   supported_platforms,
   supported_architectures,
@@ -607,6 +633,22 @@ PackageSpec {
   backup_policy
 }
 ```
+
+Every package ships a `display_description_key` that resolves to a one- or
+two-sentence localized description of what the package is and why a user
+might want it. The wizard surfaces the description in the package details
+pane (the same spot that today shows the handling/version block); the CLI
+exposes it via `rais packages` so non-technical users can read about
+REAPER, OSARA, SWS, ReaPack, ReaKontrol, and the JAWS scripts before
+deciding what to install.
+
+`requires_user_acknowledgement` is set on packages whose upstream policy or
+licensing posture asks for an explicit acknowledgement before install — see
+the ReaPack donation rule below. Default is `false`. When set, RAIS must
+not start the install for that package until the user has confirmed the
+package-specific acknowledgement message in the GUI (a dedicated wizard
+page) or in the CLI (an interactive prompt or an explicit
+`--accept-<package>-notice` flag for unattended runs).
 
 Initial package kinds:
 
@@ -658,6 +700,21 @@ strategies:
 - ReaPack:
   - install unattended by placing the correct verified binary into
     `UserPlugins` for the selected REAPER architecture.
+  - mark the package with `requires_user_acknowledgement = true`. Whenever
+    a RAIS run would install or update ReaPack, the wizard must show a
+    dedicated confirmation page before the Review step, and the CLI must
+    prompt before staging the artifact. The page reproduces the donation
+    hint visible on <https://reapack.com/> in the active locale: ReaPack is
+    free software released under the terms of the LGPL, but its author
+    Christian Fillion accepts donations at <https://reapack.com/donate> to
+    support continued development. The page links to the donation URL,
+    states clearly that donating is optional and that no donation is
+    required to use ReaPack or RAIS, and only enables Continue once the
+    user has explicitly acknowledged the notice (a checkbox or focused
+    button in the GUI; an interactive prompt or
+    `--accept-reapack-donation-notice` flag in the CLI for unattended
+    runs). Skip the page entirely on runs where ReaPack is neither being
+    installed nor updated.
 - ReaKontrol:
   - install unattended by placing the correct verified binary into
     `UserPlugins` for the selected REAPER architecture or platform,
