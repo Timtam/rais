@@ -1,40 +1,61 @@
 # RAIS Design
 
-Status: initial design, 2026-04-23
+Status: revised 2026-05-01
 
 RAIS means "REAPER Accessibility Installation Software" and is pronounced like
 "rice". Its job is to install and update REAPER, OSARA, SWS, ReaPack,
-ReaKontrol, and later additional packages, while keeping the workflow usable
-with screen readers on Windows and macOS.
+ReaKontrol, JAWS-for-REAPER scripts (Windows only), and later additional
+packages, while keeping the workflow usable with screen readers on Windows and
+macOS.
+
+The audience is REAPER users — including users who are not Rust developers,
+accessibility experts, or installer engineers. RAIS must therefore choose
+sensible defaults, hide implementation detail, and avoid asking the user
+questions they cannot reasonably answer.
 
 ## Product Goals
 
-- Install into an existing standard REAPER installation.
-- Install into an existing portable REAPER installation.
-- Install REAPER and all selected accessibility packages from scratch.
-- Fully automate installation and update of REAPER, OSARA, SWS, ReaPack, and
-  ReaKontrol without requiring the user to run vendor installers or copy files
-  manually in the normal supported flow.
+- One executable. RAIS ships as a single self-contained binary per platform.
+  Run with no arguments → graphical wizard; run with any argument or `--help` →
+  CLI. There is no separate `rais-cli` binary, no helper executable, no
+  installer, no companion resource folder.
+- On Windows the executable does not pop up a console window when launched as
+  a GUI; the same binary still attaches to the parent console when run from a
+  command prompt with arguments.
+- Release builds are optimized for file size first, then runtime speed
+  (`opt-level = "z"`, fat LTO, single codegen unit, stripped symbols, panic
+  abort) so a download stays small for users on metered or slow connections.
+- The wizard is short, opinionated, and free of jargon. RAIS picks the
+  defaults a non-technical user would otherwise have to research, and presents
+  results in plain terms ("REAPER 7.69 installed", "OSARA up to date") rather
+  than internal mechanics ("detector: rais-receipt", "confidence: High",
+  "PlannedAutomationKind::VendorInstaller").
+- Install into an existing standard REAPER installation, into an existing
+  portable REAPER installation, or set up REAPER plus the selected packages
+  from scratch.
+- Fully automate installation and update of REAPER, OSARA, SWS, ReaPack,
+  ReaKontrol, and the Windows-only JAWS-for-REAPER scripts without asking the
+  user to run vendor installers or copy files manually in the normal flow.
 - Update REAPER and selected packages when newer versions are available.
 - Detect installed versions where technically possible and clearly report
   "installed, version unknown" where it is not reliable.
 - Prefer user-level installation paths for extensions so admin rights are not
   needed unless installing REAPER itself into a protected location.
 - Preserve user configuration by default where possible, but when OSARA is
-  selected RAIS should default to replacing the active key map with the OSARA
-  key map after backing up `reaper-kb.ini`; preserving the current key map
-  should be an explicit opt-out.
-- Make every user-visible string localizable from the beginning.
-- Make RAIS itself as portable as possible: the preferred distribution is one
-  executable file that can be downloaded, launched, used, and deleted without a
-  RAIS installer, companion resource folder, or permanent RAIS installation.
+  selected RAIS replaces the active key map with the OSARA key map after
+  backing up `reaper-kb.ini`. This is the default and is not exposed as a
+  user-facing question in the GUI; the CLI keeps an explicit opt-out for power
+  users.
+- Make every user-visible string localizable from the beginning. Embedded
+  locales today: en-US and de-DE.
 - Build Windows and macOS artifacts automatically for every push in GitHub
-  Actions so every commit can be tested from real binaries.
+  Actions so every commit can be tested from real binaries. Artifacts are the
+  raw single-file binaries; no zipping.
 - Publish signed release artifacts through a GitHub release pipeline so tagged
   versions become downloadable binaries with checksums and update metadata.
-- Let RAIS detect when a newer RAIS version has been released and update itself
-  with as little user interaction as practical while preserving accessibility
-  and platform trust requirements.
+- Let RAIS detect when a newer RAIS version has been released and update
+  itself with as little user interaction as practical while preserving
+  accessibility and platform trust requirements.
 
 ## Source-Backed Facts
 
@@ -97,27 +118,72 @@ with screen readers on Windows and macOS.
   `include_xrc!`. Source: <https://docs.rs/wxdragon/latest/wxdragon/>
 - AccessKit is Rust accessibility infrastructure for custom-rendered UI
   toolkits and supports Windows/macOS adapters. Source: <https://accesskit.dev/>
+- The REAPER Accessibility Hoard is a public file server that hosts the
+  JAWS-for-REAPER scripts under
+  <https://hoard.reaperaccessibility.com/Custom%20actions,%20Scripts%20and%20jsfx/Windows%20Scripts/JAWS%20Scripts%20by%20Snowman/>.
+  It is the rejetto/HFS server (`https://github.com/rejetto/hfs`), which exposes
+  a documented public REST API: `POST /~/api/get_file_list` returns a JSON
+  directory listing including each entry's name, size, and modified time, which
+  RAIS can use as the latest-version provider for the JAWS scripts.
 
 ## Recommended Technical Direction
 
-Use Rust for the core application, package engine, and primary UI. The UI should
-prefer wxDragon so RAIS can stay in one Rust codebase while still using mature
-wxWidgets-backed native controls.
+Use Rust for the core application, package engine, and primary UI. The UI
+should prefer wxDragon so RAIS can stay in one Rust codebase while still using
+mature wxWidgets-backed native controls.
 
-Recommended first implementation:
+Recommended implementation:
 
 - `rais-core` in Rust: detection, manifests, downloads, verification, install
   planning, backups, receipts, localization lookup, and logging.
-- `rais-cli` in Rust: a command-line entry point used for diagnostics, tests,
-  unattended installs, and future automation.
-- `rais-ui-wxdragon` in Rust: a wxDragon UI crate calling `rais-core` directly.
-  Use wxDragon's native widgets and sizers for the main wizard. XRC may be used
-  for screen layout if it improves maintainability, but application logic should
-  remain in Rust modules and view models.
+- `rais-platform` in Rust: Windows/macOS native API isolation (file-version
+  probes, registry probes, keychain/codesign, locale probe, plist parsing,
+  disk-image mounting). One-way dependency from `rais-core` to
+  `rais-platform`.
+- `rais` in Rust (single binary, formerly `rais-cli` + `rais-ui-wxdragon`): the
+  user-facing entry point. Built with the GUI feature on by default so a release
+  binary can launch the wizard. The `main` function dispatches by argv:
+  - no arguments → run the wxDragon wizard
+  - any arguments or `--help` → run the CLI subcommand parser
+  This single-binary model removes the duplicate distribution shape and makes
+  it easy for users to memorize "the file is `RAIS.exe`/`RAIS`".
 - Build release artifacts as self-contained executables wherever the platform
   allows. Embed required UI text, default localization resources, package
   metadata, and small static assets into the binary. Do not require a RAIS
   installer for normal use.
+
+### Single-Binary Argv Dispatch
+
+Top-level `main`:
+
+1. Read `std::env::args_os()`.
+2. If exactly one argument is present (the program name itself), launch the
+   GUI. On Windows, the binary is built with `#![windows_subsystem = "windows"]`
+   so no console pops up; the GUI path uses `AttachConsole(ATTACH_PARENT_PROCESS)`
+   only when the user explicitly asks for a banner/version on stdout.
+3. Otherwise, hand the full argv to the CLI parser, which on Windows attaches
+   to the parent console (or allocates one) so help output and command
+   results are visible.
+
+The CLI subcommand surface stays roughly what `rais-cli` exposes today;
+moving it under the same crate is a packaging change, not a feature change.
+
+### Release Build Profile
+
+Release builds are tuned for binary size:
+
+```toml
+[profile.release]
+opt-level = "z"     # optimize for size
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+```
+
+`debug-assertions` stays off in release. The CI release-mode artifact check
+ensures the produced binary stays a single file with no neighboring DLL/dylib
+dependency for the normal launch path.
 
 This keeps the important logic and UI integration in Rust and avoids maintaining
 a separate C++/Objective-C/C ABI UI shell. The tradeoff is that wxDragon is a
@@ -171,15 +237,19 @@ operation data, not files required to start RAIS.
 
 Distribution goals:
 
-- Windows: prefer `RAIS.exe` as a single signed executable. Avoid an MSI or
-  setup program for the normal download. If a future installer is offered, it
-  must be optional and not the primary accessibility path.
-- macOS: prefer a signed and notarized standalone app bundle if macOS platform
-  policy makes a literal single Mach-O executable impractical for GUI launch,
-  but keep the bundle self-contained with no separate RAIS installer. A CLI-only
-  build may still be a single executable.
-- Do not require separate locale files, XRC files, icons, package manifests, or
-  certificates beside the executable for the default experience.
+- Windows: a single signed executable named `RAIS.exe`. No MSI, no setup
+  program, no companion DLLs in the default launch path. The same executable
+  serves both UI and CLI users via argv dispatch.
+- macOS: a single signed and notarized executable named `RAIS`. Use an `.app`
+  bundle layout only if macOS GUI launch policy forces it for a given
+  wxWidgets/wxDragon shape; in that case the bundle stays self-contained with
+  no separate RAIS installer, and the CLI command-line surface still works
+  against the binary inside the bundle.
+- CI artifacts and GitHub release assets are the raw single-file binaries plus
+  per-file SHA-256 sums. No `.zip` wrapper is required for single-file
+  artifacts; release notes link directly to the `RAIS.exe`/`RAIS` files.
+- Do not require separate locale files, XRC files, icons, package manifests,
+  or certificates beside the executable for the default experience.
 - Store downloads in the normal RAIS cache directory and allow the cache to be
   deleted safely.
 - Store install receipts, backups, and reports in the selected REAPER resource
@@ -220,12 +290,15 @@ GitHub Actions build pipeline for every push:
   - unit/integration tests
   - release-mode build
 - Build the distributable artifact shape, not only debug binaries:
-  - Windows: portable `RAIS.exe`
-  - macOS: self-contained signed app bundle if required for GUI launch, or a
-    single executable for CLI-only artifacts
-- Upload build artifacts to the workflow run so every push has downloadable test
-  binaries.
-- Publish checksums for workflow artifacts so testers can verify what they ran.
+  - Windows: a single `RAIS.exe`
+  - macOS: a single `RAIS` executable (or a self-contained signed `.app`
+    bundle if macOS GUI launch policy requires it for the chosen
+    wxWidgets/wxDragon shape)
+- Upload build artifacts to the workflow run so every push has downloadable
+  test binaries. Single-file artifacts upload as the bare file; no `.zip`
+  wrapper is added on top of an already-single-file binary.
+- Publish per-file SHA-256 sums alongside the artifacts so testers can
+  verify what they ran.
 
 GitHub release pipeline:
 
@@ -368,44 +441,59 @@ CLI and UI expectations:
 
 ## User Workflow
 
-The UI should be a short wizard with no hidden advanced requirements.
+The UI is a short, jargon-free wizard. Defaults are chosen so a non-technical
+user can finish the install by pressing Next a few times.
 
-1. Welcome and target choice
-   - Use detected REAPER installation
-   - Install new standard REAPER
-   - Install new portable REAPER
-   - Choose a portable folder
+1. Target
+   - One concise control: pick a detected REAPER, or pick "Install or update a
+     portable REAPER folder" and choose the folder.
+   - Detected installations show simply as "REAPER 7.69 in `<path>`" — no
+     architecture, no detection-confidence label, no evidence list. Those
+     remain available in the saved report and from the CLI for advanced
+     users.
 
-2. Installation selection
-   - Show detected candidates with type, path, REAPER version, architecture,
-     resource path, and confidence.
-   - Let the user choose one target.
+2. Version check
+   - A dedicated progress page with a progress bar, one status line ("Checking
+     OSARA…") and a hidden error region that only appears if a fetch failed.
+   - On success the wizard auto-advances to the package list. On failure the
+     page surfaces the error lines and lets the user go back or quit.
 
 3. Packages
-   - Check boxes for REAPER, OSARA, SWS, ReaPack, ReaKontrol, and later
-     packages.
-   - Each row shows installed version, available version, action, and notes.
+   - Check boxes for REAPER, OSARA, SWS, ReaPack, ReaKontrol, JAWS scripts
+     (Windows only), and later packages. Each row reads as plain text:
+     "OSARA — installed 2024.3.6, latest 2026.2.16, will update".
    - Defaults: install or update missing/outdated recommended accessibility
      packages.
-   - OSARA key map option:
-     - Install OSARA key map file.
-     - Replace the current key map with the OSARA key map by default after
-       backing up `reaper-kb.ini`.
-     - Offer "Preserve the current key map instead" as an explicit non-default
-       opt-out in both the GUI and CLI.
+   - OSARA key map: RAIS replaces `reaper-kb.ini` with the OSARA key map after
+     backing it up. The GUI does not ask the user to confirm; the backup is
+     mentioned in the final report. The CLI keeps `--preserve-osara-keymap`
+     for power users who want the opt-out.
 
 4. Review
-   - Plain text summary of files to be changed, backups to be created, and any
-     admin prompts expected.
+   - Short plain-language summary: target path, packages to be installed or
+     updated, an indication that backups will be made if any existing files
+     will be replaced. No backup-file paths, no admin-prompt enumeration, no
+     planned-execution metadata in the GUI summary; all of that is still
+     written to the saved report and exposed by the CLI.
 
 5. Install/update progress
-   - Current step.
-   - Package progress.
-   - Details button for log.
+   - Single progress bar plus one current-step line. A "Show details" toggle
+     reveals the underlying log for users who want it; collapsed by default.
 
 6. Done
-   - Success/failure summary.
-   - Buttons: Launch REAPER, Open resource folder, Save report.
+   - One sentence summarizing success or failure.
+   - Buttons: Launch REAPER, Open resource folder, Save report. The
+     signature-verification counts, lock-file paths, and similar diagnostics
+     stay in the saved report.
+
+Streamlining rules (apply when adding new wizard text):
+
+- Default to one sentence per element. If a control needs more, the second
+  sentence belongs in the saved report, not the wizard.
+- Never expose internal identifiers (detector names, automation kinds, plan
+  action enums, lock-file paths, SHA-256 prefixes) to the GUI user.
+- Power-user output (full plan, full execution log, verdicts) stays
+  reachable through the CLI and the saved report.
 
 ## Installation Discovery
 
@@ -521,6 +609,11 @@ Initial package kinds:
   backup.
 - `reapack_package`: install/update through ReaPack later, once ReaPack is
   present and REAPER has been launched.
+- `screen_reader_scripts`: copy a screen-reader-specific script bundle into
+  the user's screen-reader profile (e.g. JAWS scripts under `%APPDATA%\Freedom
+  Scientific\JAWS\<version>\Settings\enu`). Platform-gated: a package of this
+  kind only appears in the wizard when the relevant screen reader is
+  available on the host.
 
 For the initial supported package set, RAIS should implement these unattended
 strategies:
@@ -563,6 +656,20 @@ strategies:
     `UserPlugins` for the selected REAPER architecture or platform,
   - preserve existing `reaKontrol/fxMaps` user mapping data and treat it as
     user content, not package-owned files.
+- JAWS scripts (Windows only):
+  - latest-version + artifact provider: HFS REST API at
+    `hoard.reaperaccessibility.com`. RAIS calls
+    `POST /~/api/get_file_list` with the JAWS-Scripts directory as the path
+    and parses the returned JSON to pick the newest archive (date + filename
+    contain the version anchor). Source archive URLs come from the same API.
+  - install unattended by extracting the archive and placing the script set
+    into the user's JAWS settings folder (`%APPDATA%\Freedom Scientific\JAWS\
+    <version>\Settings\enu` for the highest installed JAWS version, falling
+    back to a clearly reported error if no JAWS install is detected).
+  - the package only appears in the wizard package list on Windows when JAWS
+    is detected on the host. macOS users never see the JAWS scripts row.
+  - back up any existing same-named script files before overwriting; track
+    the install through the standard RAIS receipt mechanism.
 
 ## Install Targets
 
@@ -686,24 +793,30 @@ Cargo.toml
 crates/
   rais-core/
   rais-platform/
-  rais-cli/
-  rais-ui-wxdragon/
+  rais/                # the single user-facing binary (CLI + GUI dispatch)
 ui/
   wxdragon/
     xrc/
 locales/
   en-US/
+  de-DE/
 docs/
   architecture/
 tests/
 ```
 
-`rais-core` should have no GUI dependency. `rais-platform` should isolate
-Windows/macOS APIs. The wxDragon UI should depend on `rais-core`, not the other
-way around, so another native UI shell could replace it without changing the
-package engine. Files under `locales/` and `ui/` are source/development assets;
-release builds should embed required resources instead of shipping those
-directories beside the executable.
+`rais-core` has no GUI dependency. `rais-platform` isolates Windows/macOS
+APIs. The `rais` binary crate depends on both and contains:
+
+- `cli/` — the clap-based subcommand parser (former `rais-cli` content).
+- `ui/` — the wxDragon wizard (former `rais-ui-wxdragon` content), behind a
+  `gui` Cargo feature for dev-loop builds that skip native deps.
+- `main.rs` — the argv dispatcher that picks GUI or CLI mode.
+
+This layout lets another native UI shell replace the wxDragon module without
+touching the package engine. Files under `locales/` and `ui/` are
+source/development assets; release builds embed required resources instead
+of shipping those directories beside the executable.
 
 ## Testing Strategy
 
