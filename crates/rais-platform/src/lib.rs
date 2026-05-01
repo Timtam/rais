@@ -26,5 +26,5 @@ pub use locale::os_default_locale;
 pub use paths::{
     user_appdata_dir, user_home_dir, user_local_appdata_dir, windows_program_files_dirs,
 };
-pub use registry::read_uninstall_display_version;
+pub use registry::{read_uninstall_display_version, read_uninstall_install_location};
 pub use signature::{SignatureVerdict, verify_executable_signature};

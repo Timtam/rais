@@ -24,11 +24,25 @@ const UNINSTALL_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Unins
 
 #[cfg_attr(not(windows), allow(unused_variables))]
 pub fn read_uninstall_display_version(key_name: &str) -> Option<String> {
-    read_uninstall_display_version_impl(key_name)
+    read_uninstall_value(key_name, "DisplayVersion")
+}
+
+/// Read the `InstallLocation` REG_SZ value off the Programs-and-Features
+/// uninstall key for `key_name`. Used to find non-default REAPER install
+/// directories (e.g. the default 64-bit `Program Files\REAPER (x64)` path that
+/// our hardcoded candidates do not list).
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub fn read_uninstall_install_location(key_name: &str) -> Option<String> {
+    read_uninstall_value(key_name, "InstallLocation")
+}
+
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn read_uninstall_value(key_name: &str, value_name: &str) -> Option<String> {
+    read_uninstall_value_impl(key_name, value_name)
 }
 
 #[cfg(windows)]
-fn read_uninstall_display_version_impl(key_name: &str) -> Option<String> {
+fn read_uninstall_value_impl(key_name: &str, value_name: &str) -> Option<String> {
     let subkey = format!("{UNINSTALL_KEY}\\{key_name}");
     // HKCU has no 32/64-bit redirection, so a single view suffices there.
     // HKLM gets both views to cover 32-bit installers on 64-bit Windows.
@@ -38,22 +52,22 @@ fn read_uninstall_display_version_impl(key_name: &str) -> Option<String> {
         (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY),
     ];
     for (root, view) in candidates {
-        if let Some(version) = query_display_version(root, &subkey, view) {
-            return Some(version);
+        if let Some(value) = query_uninstall_value(root, &subkey, value_name, view) {
+            return Some(value);
         }
     }
     None
 }
 
 #[cfg(not(windows))]
-fn read_uninstall_display_version_impl(_key_name: &str) -> Option<String> {
+fn read_uninstall_value_impl(_key_name: &str, _value_name: &str) -> Option<String> {
     None
 }
 
 #[cfg(windows)]
-fn query_display_version(root: HKEY, subkey: &str, view: u32) -> Option<String> {
+fn query_uninstall_value(root: HKEY, subkey: &str, value_name: &str, view: u32) -> Option<String> {
     let subkey_w = wide_string(subkey);
-    let value_w = wide_string("DisplayVersion");
+    let value_w = wide_string(value_name);
     let mut hkey = std::ptr::null_mut();
     let access = KEY_QUERY_VALUE | view;
     let status = unsafe { RegOpenKeyExW(root, subkey_w.as_ptr(), 0, access, &mut hkey) };

@@ -438,10 +438,38 @@ fn standard_windows_installation(require_existing: bool) -> Option<Installation>
 }
 
 fn windows_reaper_app_candidates() -> Vec<PathBuf> {
-    rais_platform::windows_program_files_dirs()
-        .into_iter()
-        .map(|program_files| program_files.join("REAPER").join("reaper.exe"))
-        .collect()
+    let mut candidates = Vec::new();
+
+    // Prefer the install path the REAPER uninstaller wrote to the registry.
+    // This catches non-default install dirs the user may have picked, plus the
+    // default 64-bit location `C:\Program Files\REAPER (x64)\` which the
+    // hardcoded `Program Files\REAPER\` fallback below misses.
+    for key in ["REAPER", "REAPER_x64", "REAPER (x64)", "REAPER (x86_64)"] {
+        if let Some(install_location) = rais_platform::read_uninstall_install_location(key) {
+            let trimmed = install_location.trim().trim_end_matches(['\\', '/']);
+            if !trimmed.is_empty() {
+                let candidate = PathBuf::from(trimmed).join("reaper.exe");
+                if !candidates.contains(&candidate) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+    }
+
+    // Also walk the standard Program Files dirs for both the plain `REAPER`
+    // subfolder and the `REAPER (x64)` variant the 64-bit installer uses by
+    // default. Order matters: registry hits win, then 64-bit-named variants,
+    // then the bare folder name.
+    for program_files in rais_platform::windows_program_files_dirs() {
+        for subdir in ["REAPER (x64)", "REAPER (x86_64)", "REAPER"] {
+            let candidate = program_files.join(subdir).join("reaper.exe");
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    candidates
 }
 
 fn discover_portable_windows(root: &Path) -> Option<Installation> {
