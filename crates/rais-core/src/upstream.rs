@@ -1,7 +1,8 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::Result;
+use crate::disk_image::install_app_bundle_from_disk_image;
 use crate::error::RaisError;
 use crate::operation::{PlannedExecutionKind, PlannedExecutionPlan};
 
@@ -12,6 +13,9 @@ pub fn execute_planned_execution(plan: &PlannedExecutionPlan, dry_run: bool) -> 
 
     match plan.kind {
         PlannedExecutionKind::LaunchInstallerExecutable => execute_program_plan(plan)?,
+        PlannedExecutionKind::MountDiskImageAndCopyAppBundle => {
+            execute_disk_image_app_bundle_plan(plan)?;
+        }
         PlannedExecutionKind::ExtractArchiveAndRunInstaller
         | PlannedExecutionKind::MountDiskImageAndRunInstaller => {
             return Err(RaisError::InvalidPlannedExecution {
@@ -20,6 +24,28 @@ pub fn execute_planned_execution(plan: &PlannedExecutionPlan, dry_run: bool) -> 
         }
     }
 
+    Ok(())
+}
+
+fn execute_disk_image_app_bundle_plan(plan: &PlannedExecutionPlan) -> Result<()> {
+    let bundle_basename =
+        plan.arguments
+            .first()
+            .ok_or_else(|| RaisError::InvalidPlannedExecution {
+                message: "disk-image app-bundle plan did not provide a bundle basename".to_string(),
+            })?;
+    let install_destination =
+        plan.arguments
+            .get(1)
+            .ok_or_else(|| RaisError::InvalidPlannedExecution {
+                message: "disk-image app-bundle plan did not provide an install destination"
+                    .to_string(),
+            })?;
+    install_app_bundle_from_disk_image(
+        Path::new(&plan.artifact_location),
+        Path::new(install_destination),
+        bundle_basename,
+    )?;
     Ok(())
 }
 

@@ -1883,6 +1883,10 @@ fn planned_execution_runner_label(
             "wizard-planned-runner-mount-disk-image",
             "Mount disk image and run contained installer",
         ),
+        PlannedExecutionKind::MountDiskImageAndCopyAppBundle => (
+            "wizard-planned-runner-mount-disk-image-copy-app",
+            "Mount disk image and copy contained app bundle",
+        ),
     };
     localizer
         .map(|localizer| localizer.text(id).value)

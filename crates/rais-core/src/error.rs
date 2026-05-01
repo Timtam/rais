@@ -78,6 +78,9 @@ pub enum RaisError {
     #[error("disk image {image} for {package_id} did not contain a {package_id} extension binary")]
     DiskImageMissingExtensionBinary { image: PathBuf, package_id: String },
 
+    #[error("disk image {image} did not contain the expected app bundle {bundle}")]
+    DiskImageMissingAppBundle { image: PathBuf, bundle: String },
+
     #[error("disk image {image} could not be mounted: {message}")]
     DiskImageMount { image: PathBuf, message: String },
 

@@ -80,6 +80,7 @@ pub enum PlannedExecutionKind {
     LaunchInstallerExecutable,
     ExtractArchiveAndRunInstaller,
     MountDiskImageAndRunInstaller,
+    MountDiskImageAndCopyAppBundle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +135,11 @@ pub fn package_automation_support(
             if matches!(platform, Platform::MacOs) =>
         {
             PackageAutomationSupport::Direct
+        }
+        (crate::package::PACKAGE_REAPER, Ok(ArtifactKind::DiskImage))
+            if matches!(platform, Platform::MacOs) =>
+        {
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::DiskImageInstall)
         }
         (crate::package::PACKAGE_REAPER, Ok(ArtifactKind::Installer))
             if matches!(platform, Platform::Windows) =>
@@ -421,6 +427,12 @@ fn automation_support_for_artifact(
                 && matches!(artifact.platform, Platform::MacOs) =>
         {
             PackageAutomationSupport::Direct
+        }
+        ArtifactKind::DiskImage
+            if artifact.package_id == crate::package::PACKAGE_REAPER
+                && matches!(artifact.platform, Platform::MacOs) =>
+        {
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::DiskImageInstall)
         }
         ArtifactKind::Installer
             if artifact.package_id == crate::package::PACKAGE_REAPER
@@ -991,6 +1003,23 @@ fn planned_execution_for_artifact(
             artifact_location,
             verification_paths,
         },
+        ArtifactKind::DiskImage
+            if artifact.package_id == crate::package::PACKAGE_REAPER
+                && matches!(artifact.platform, Platform::MacOs) =>
+        {
+            let (bundle_basename, install_destination) = reaper_macos_app_bundle_install_target(
+                resource_path,
+                effective_target_app_path.as_deref(),
+            );
+            PlannedExecutionPlan {
+                kind: PlannedExecutionKind::MountDiskImageAndCopyAppBundle,
+                program: None,
+                arguments: vec![bundle_basename, install_destination.display().to_string()],
+                working_directory: None,
+                artifact_location,
+                verification_paths,
+            }
+        }
         ArtifactKind::DiskImage => PlannedExecutionPlan {
             kind: PlannedExecutionKind::MountDiskImageAndRunInstaller,
             program: None,
@@ -1446,6 +1475,21 @@ fn target_likely_portable(resource_path: &Path, target_app_path: Option<&Path>) 
         .is_some_and(|target_app_path| path_is_same_or_nested(target_app_path, resource_path))
 }
 
+fn reaper_macos_app_bundle_install_target(
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+) -> (String, PathBuf) {
+    let bundle = target_app_path
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| "REAPER.app".to_string());
+    let destination_dir = target_app_path
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| resource_path.to_path_buf());
+    (bundle, destination_dir)
+}
+
 fn reaper_install_destination(target_app_path: &Path) -> PathBuf {
     if target_app_path
         .extension()
@@ -1725,6 +1769,75 @@ mod tests {
             super::package_automation_support(PACKAGE_SWS, Platform::MacOs, Architecture::X64),
             PackageAutomationSupport::Direct
         );
+        assert_eq!(
+            super::package_automation_support(
+                PACKAGE_REAPER,
+                Platform::MacOs,
+                Architecture::Universal
+            ),
+            PackageAutomationSupport::AvailableUnattended(PlannedAutomationKind::DiskImageInstall)
+        );
+    }
+
+    #[test]
+    fn reaper_macos_disk_image_planned_execution_targets_app_bundle() {
+        let resource_path = std::path::Path::new("/Users/me/Library/Application Support/REAPER");
+        let inferred_target = std::path::Path::new("/Applications/REAPER.app");
+        let descriptor = ArtifactDescriptor {
+            package_id: PACKAGE_REAPER.to_string(),
+            version: Version::parse("7.69").unwrap(),
+            platform: Platform::MacOs,
+            architecture: Architecture::Universal,
+            kind: ArtifactKind::DiskImage,
+            url: "https://www.reaper.fm/files/7.x/reaper769_universal.dmg".to_string(),
+            file_name: "reaper769_universal.dmg".to_string(),
+        };
+
+        let plan = super::planned_execution_for_artifact(
+            &descriptor,
+            None,
+            resource_path,
+            Some(inferred_target),
+            false,
+        );
+
+        assert_eq!(
+            plan.kind,
+            PlannedExecutionKind::MountDiskImageAndCopyAppBundle
+        );
+        assert_eq!(plan.arguments.len(), 2);
+        assert_eq!(plan.arguments[0], "REAPER.app");
+        assert_eq!(plan.arguments[1], "/Applications");
+    }
+
+    #[test]
+    fn reaper_macos_disk_image_planned_execution_uses_resource_path_for_portable() {
+        let resource_path = std::path::Path::new("/Users/me/PortableREAPER");
+        let portable_target = resource_path.join("REAPER.app");
+        let descriptor = ArtifactDescriptor {
+            package_id: PACKAGE_REAPER.to_string(),
+            version: Version::parse("7.69").unwrap(),
+            platform: Platform::MacOs,
+            architecture: Architecture::Universal,
+            kind: ArtifactKind::DiskImage,
+            url: "https://www.reaper.fm/files/7.x/reaper769_universal.dmg".to_string(),
+            file_name: "reaper769_universal.dmg".to_string(),
+        };
+
+        let plan = super::planned_execution_for_artifact(
+            &descriptor,
+            None,
+            resource_path,
+            Some(portable_target.as_path()),
+            false,
+        );
+
+        assert_eq!(
+            plan.kind,
+            PlannedExecutionKind::MountDiskImageAndCopyAppBundle
+        );
+        assert_eq!(plan.arguments[0], "REAPER.app");
+        assert_eq!(plan.arguments[1], resource_path.display().to_string());
     }
 
     #[test]

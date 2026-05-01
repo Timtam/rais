@@ -51,6 +51,111 @@ pub fn mount_disk_image(image_path: &Path) -> Result<MountedDiskImage> {
     })
 }
 
+pub fn install_app_bundle_from_disk_image(
+    image_path: &Path,
+    install_destination_dir: &Path,
+    bundle_basename: &str,
+) -> Result<PathBuf> {
+    let mount = mount_disk_image(image_path)?;
+    let source =
+        find_app_bundle_in_directory(mount.mount_point(), bundle_basename)?.ok_or_else(|| {
+            RaisError::DiskImageMissingAppBundle {
+                image: image_path.to_path_buf(),
+                bundle: bundle_basename.to_string(),
+            }
+        })?;
+
+    fs::create_dir_all(install_destination_dir).with_path(install_destination_dir)?;
+    let target = install_destination_dir.join(bundle_basename);
+    if target.exists() {
+        remove_path_recursive(&target)?;
+    }
+    copy_directory_recursive(&source, &target)?;
+
+    mount.detach()?;
+    Ok(target)
+}
+
+pub(crate) fn find_app_bundle_in_directory(root: &Path, basename: &str) -> Result<Option<PathBuf>> {
+    let target = basename.to_ascii_lowercase();
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > DIRECTORY_SEARCH_MAX_DEPTH {
+            continue;
+        }
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        let mut child_dirs = Vec::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if name.to_ascii_lowercase() == target {
+                return Ok(Some(path));
+            }
+            if !skip_directory(name) {
+                child_dirs.push(path);
+            }
+        }
+        for child in child_dirs {
+            stack.push((child, depth + 1));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn copy_directory_recursive(source: &Path, dest: &Path) -> Result<()> {
+    fs::create_dir_all(dest).with_path(dest)?;
+    for entry in fs::read_dir(source).with_path(source)? {
+        let entry = entry.with_path(source)?;
+        let entry_path = entry.path();
+        let entry_name = entry.file_name();
+        let target_path = dest.join(&entry_name);
+        let file_type = entry.file_type().with_path(&entry_path)?;
+        if file_type.is_dir() {
+            copy_directory_recursive(&entry_path, &target_path)?;
+        } else if file_type.is_symlink() {
+            #[cfg(unix)]
+            {
+                let link_target = fs::read_link(&entry_path).with_path(&entry_path)?;
+                std::os::unix::fs::symlink(&link_target, &target_path).with_path(&target_path)?;
+            }
+            #[cfg(not(unix))]
+            {
+                fs::copy(&entry_path, &target_path).with_path(&target_path)?;
+            }
+        } else {
+            fs::copy(&entry_path, &target_path).with_path(&target_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_path_recursive(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        fs::remove_dir_all(path).with_path(path)
+    } else if path.exists() {
+        fs::remove_file(path).with_path(path)
+    } else {
+        Ok(())
+    }
+}
+
 pub fn extract_user_plugin_from_disk_image(
     image_path: &Path,
     spec: &PackageSpec,
@@ -246,7 +351,10 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{find_user_plugin_in_directory, parse_hdiutil_attach_output};
+    use super::{
+        copy_directory_recursive, find_app_bundle_in_directory, find_user_plugin_in_directory,
+        parse_hdiutil_attach_output,
+    };
     use crate::model::Platform;
     use crate::package::{PACKAGE_SWS, package_specs_by_id};
 
@@ -302,5 +410,60 @@ mod tests {
     #[test]
     fn returns_no_mount_point_for_unrelated_output() {
         assert!(parse_hdiutil_attach_output("hdiutil: attach: error\n").is_none());
+    }
+
+    #[test]
+    fn finds_app_bundle_at_root_of_directory_tree() {
+        let dir = tempdir().unwrap();
+        let bundle = dir.path().join("REAPER.app");
+        fs::create_dir_all(bundle.join("Contents")).unwrap();
+        fs::write(bundle.join("Contents").join("Info.plist"), b"<plist/>").unwrap();
+
+        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
+        assert_eq!(found.as_deref(), Some(bundle.as_path()));
+    }
+
+    #[test]
+    fn matches_app_bundle_basename_case_insensitively() {
+        let dir = tempdir().unwrap();
+        let bundle = dir.path().join("Reaper.app");
+        fs::create_dir_all(&bundle).unwrap();
+
+        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
+        assert_eq!(found.as_deref(), Some(bundle.as_path()));
+    }
+
+    #[test]
+    fn returns_none_for_missing_app_bundle() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("README")).unwrap();
+        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn copies_directory_tree_with_nested_files() {
+        let source_root = tempdir().unwrap();
+        let source = source_root.path().join("REAPER.app");
+        fs::create_dir_all(source.join("Contents").join("MacOS")).unwrap();
+        fs::write(source.join("Contents").join("Info.plist"), b"<plist/>").unwrap();
+        fs::write(
+            source.join("Contents").join("MacOS").join("REAPER"),
+            b"binary",
+        )
+        .unwrap();
+
+        let dest_root = tempdir().unwrap();
+        let dest = dest_root.path().join("REAPER.app");
+        copy_directory_recursive(&source, &dest).unwrap();
+
+        assert_eq!(
+            fs::read(dest.join("Contents").join("MacOS").join("REAPER")).unwrap(),
+            b"binary"
+        );
+        assert_eq!(
+            fs::read(dest.join("Contents").join("Info.plist")).unwrap(),
+            b"<plist/>"
+        );
     }
 }

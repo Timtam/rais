@@ -184,3 +184,4 @@ wizard-summary-status-finished = Finished. { $installed } package item(s) instal
 wizard-planned-runner-launch-installer = Launch installer executable
 wizard-planned-runner-extract-archive = Extract archive and run contained installer
 wizard-planned-runner-mount-disk-image = Mount disk image and run contained installer
+wizard-planned-runner-mount-disk-image-copy-app = Mount disk image and copy contained app bundle
