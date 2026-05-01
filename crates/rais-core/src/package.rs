@@ -18,6 +18,7 @@ pub struct PackageSpec {
     pub id: String,
     pub display_name: String,
     pub display_name_key: String,
+    pub display_description_key: String,
     pub package_kind: PackageKind,
     pub required: bool,
     pub recommended: bool,
@@ -44,6 +45,7 @@ pub struct EmbeddedPackageSpec {
     pub id: String,
     pub display_name: String,
     pub display_name_key: String,
+    pub display_description_key: String,
     #[serde(default)]
     pub package_kind: PackageKind,
     #[serde(default)]
@@ -207,6 +209,7 @@ impl EmbeddedPackageSpec {
             id: self.id.clone(),
             display_name: self.display_name.clone(),
             display_name_key: self.display_name_key.clone(),
+            display_description_key: self.display_description_key.clone(),
             package_kind: self.package_kind,
             required: self.required,
             recommended: self.recommended,
@@ -419,6 +422,7 @@ mod tests {
                     "id": "example",
                     "display_name": "Example",
                     "display_name_key": "package-example",
+                    "display_description_key": "package-example-description",
                     "package_kind": "user_plugin_binary",
                     "required": false,
                     "recommended": false,
@@ -457,6 +461,7 @@ mod tests {
                     "id": "minimal",
                     "display_name": "Minimal",
                     "display_name_key": "package-minimal",
+                    "display_description_key": "package-minimal-description",
                     "recommended": false,
                     "user_plugin_prefixes": ["reaper_minimal"],
                     "user_plugin_suffixes": {

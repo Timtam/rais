@@ -15,6 +15,12 @@ package-sws = SWS-Erweiterung
 package-reapack = ReaPack
 package-reakontrol = ReaKontrol
 
+package-reaper-description = REAPER ist die Digital Audio Workstation, auf der alle anderen Pakete hier aufbauen. RAIS kann REAPER selbst für Sie installieren oder aktualisieren.
+package-osara-description = OSARA macht REAPER mit Screenreadern bedienbar — NVDA, JAWS und Narrator unter Windows sowie VoiceOver unter macOS. Installieren Sie OSARA, wenn Sie REAPER mit einem Screenreader nutzen.
+package-sws-description = Die SWS-Erweiterung ist eine seit langem etablierte Community-Sammlung zusätzlicher Aktionen, Skripte und Hilfsmittel, die das Bearbeiten in REAPER abrunden. Die meisten barrierefreien REAPER-Setups setzen sie voraus.
+package-reapack-description = ReaPack ist der Paketmanager für REAPER: Er installiert und aktualisiert Skripte und Erweiterungen Dritter direkt aus REAPER heraus. Installieren Sie ReaPack, wenn Sie von der REAPER-Community geteilte Skripte verwenden möchten.
+package-reakontrol-description = ReaKontrol fügt REAPER Unterstützung für Native Instruments Komplete-Kontrol-Tastaturen hinzu. Installieren Sie es, wenn Sie eine Komplete-Kontrol-Tastatur besitzen und Hardware-Steuerung nutzen möchten.
+
 detect-installed = Installiert
 detect-not-installed = Nicht installiert
 detect-version-unknown = Version unbekannt

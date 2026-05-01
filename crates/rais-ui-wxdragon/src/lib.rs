@@ -220,6 +220,7 @@ pub struct TargetRow {
 pub struct PackageRow {
     pub package_id: String,
     pub display_name: String,
+    pub description: String,
     pub selected: bool,
     pub summary: String,
     pub details: String,
@@ -2177,10 +2178,15 @@ fn package_rows(
     actions
         .iter()
         .map(|action| {
-            let display_name = specs_by_id
-                .get(action.package_id.as_str())
+            let spec = specs_by_id.get(action.package_id.as_str()).copied();
+            let display_name = spec
                 .map(|spec| localizer.text(&spec.display_name_key).value)
                 .unwrap_or_else(|| action.package_id.clone());
+            let description = spec
+                .map(|spec| localizer.text(&spec.display_description_key))
+                .filter(|text| !text.missing)
+                .map(|text| text.value)
+                .unwrap_or_default();
             let installed_version = version_text(localizer, action.installed_version.as_ref());
             let available_version = version_text(localizer, action.available_version.as_ref());
             let action_label = action_label(localizer, action.action);
@@ -2197,14 +2203,28 @@ fn package_rows(
                 .value;
             let (handling_summary, manual_attention_expected) =
                 package_handling_summary(text, &action.package_id, platform, architecture);
+            // Compose the details text shown in the wizard's package details
+            // pane. The localized description leads (so users can see what a
+            // package is before deciding what to do with it) and the
+            // power-user handling line trails. Entries with no description
+            // fall back to the previous summary-only layout.
+            let details = if description.is_empty() {
+                format!(
+                    "{summary}\n\n{}\n\n{}: {}",
+                    action.reason, text.package_details_handling_prefix, handling_summary
+                )
+            } else {
+                format!(
+                    "{summary}\n\n{description}\n\n{}\n\n{}: {}",
+                    action.reason, text.package_details_handling_prefix, handling_summary
+                )
+            };
             PackageRow {
                 package_id: action.package_id.clone(),
                 summary: summary.clone(),
-                details: format!(
-                    "{summary}\n\n{}\n\n{}: {}",
-                    action.reason, text.package_details_handling_prefix, handling_summary
-                ),
+                details,
                 display_name: display_name.clone(),
+                description,
                 selected: matches!(
                     action.action,
                     PlanActionKind::Install | PlanActionKind::Update
@@ -2666,6 +2686,20 @@ mod tests {
         assert_eq!(model.package_rows[0].display_name, "OSARA");
         assert!(model.package_rows[0].summary.contains("OSARA"));
         assert!(model.package_rows[0].details.contains("Handling:"));
+        // The localized package description from the embedded en-US locale
+        // should land in `description` and inside `details` so the wizard's
+        // package details pane explains what the package is for.
+        assert!(
+            model.package_rows[0].description.contains("screen readers"),
+            "expected OSARA description in row, got {:?}",
+            model.package_rows[0].description
+        );
+        assert!(
+            model.package_rows[0]
+                .details
+                .contains(&model.package_rows[0].description),
+            "expected OSARA description embedded in details"
+        );
         assert_eq!(model.package_rows[0].action_label, "Install");
         assert!(!model.package_rows[0].manual_attention_expected);
         assert_eq!(
@@ -3025,6 +3059,7 @@ mod tests {
         let package_rows = vec![super::PackageRow {
             package_id: PACKAGE_OSARA.to_string(),
             display_name: "OSARA".to_string(),
+            description: String::new(),
             selected: true,
             summary: "OSARA: Install".to_string(),
             details: "OSARA details".to_string(),
@@ -3190,6 +3225,7 @@ mod tests {
         let package_rows = vec![super::PackageRow {
             package_id: PACKAGE_REAPACK.to_string(),
             display_name: "ReaPack".to_string(),
+            description: String::new(),
             selected: true,
             summary: "ReaPack: Update".to_string(),
             details: "ReaPack details".to_string(),
@@ -3295,6 +3331,7 @@ mod tests {
         let package_rows = vec![super::PackageRow {
             package_id: PACKAGE_REAPER.to_string(),
             display_name: "REAPER".to_string(),
+            description: String::new(),
             selected: true,
             summary: "REAPER: Install".to_string(),
             details: "REAPER details".to_string(),
@@ -3348,6 +3385,7 @@ mod tests {
         let package_rows = vec![super::PackageRow {
             package_id: PACKAGE_REAPACK.to_string(),
             display_name: "ReaPack".to_string(),
+            description: String::new(),
             selected: true,
             summary: "ReaPack: Install".to_string(),
             details: "ReaPack details".to_string(),
@@ -3396,6 +3434,7 @@ mod tests {
         let package_rows = vec![PackageRow {
             package_id: PACKAGE_REAPER.to_string(),
             display_name: "REAPER".to_string(),
+            description: String::new(),
             selected: true,
             summary: "REAPER: Install".to_string(),
             details: "REAPER details".to_string(),

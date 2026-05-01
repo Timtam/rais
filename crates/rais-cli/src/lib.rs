@@ -8,7 +8,9 @@ use rais_core::artifact::{
 use rais_core::detection::{DiscoveryOptions, detect_components, discover_installations};
 use rais_core::install::{InstallOptions, InstallReport, install_cached_artifacts};
 use rais_core::latest::fetch_latest_versions;
-use rais_core::localization::{DEFAULT_LOCALE, LocalizedText, Localizer, available_locales};
+use rais_core::localization::{
+    DEFAULT_LOCALE, LocalizedText, Localizer, available_locales, resolve_runtime_locale,
+};
 use rais_core::model::{Architecture, Platform};
 use rais_core::operation::{
     PackageOperationOptions, PackageOperationReport, execute_package_operation,
@@ -1163,10 +1165,23 @@ fn print_setup_report(report: &SetupReport) {
 }
 
 fn print_package_specs(packages: &[rais_core::package::PackageSpec]) {
+    // Build a localizer from the embedded resources so package descriptions
+    // come out in the user's chosen language (RAIS_LOCALE / OS default /
+    // en-US fallback). Falling back to the default keeps the listing usable
+    // even on hosts where a Fluent file is missing.
+    let localizer = Localizer::embedded(&resolve_runtime_locale())
+        .or_else(|_| Localizer::embedded(DEFAULT_LOCALE))
+        .ok();
     for package in packages {
         println!("{}", package.id);
         println!("  Display name: {}", package.display_name);
         println!("  Display name key: {}", package.display_name_key);
+        if let Some(localizer) = localizer.as_ref() {
+            let description = localizer.text(&package.display_description_key);
+            if !description.missing {
+                println!("  Description: {}", description.value);
+            }
+        }
         println!("  Kind: {}", serialized_name(&package.package_kind));
         println!("  Required: {}", yes_no(package.required));
         println!("  Recommended: {}", yes_no(package.recommended));
