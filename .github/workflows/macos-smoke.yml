@@ -1,0 +1,35 @@
+name: macos-smoke
+
+on:
+  schedule:
+    # Daily at 06:00 UTC (07:00 CET / 08:00 CEST). Catches upstream-side
+    # changes (e.g. a vendor changing the DMG/ZIP layout) overnight without
+    # blocking every push.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  smoke:
+    name: macOS upstream smoke tests
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run real-upstream macOS install smoke tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo test -p rais-core --test macos_upstream_smoke -- --ignored --test-threads=1

@@ -52,26 +52,6 @@ jobs:
       - name: Build release non-GUI UI shell
         run: cargo build --release -p rais-ui-wxdragon
 
-  macos-smoke:
-    name: macOS upstream smoke tests
-    needs: verify
-    runs-on: macos-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run real-upstream macOS install smoke tests
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cargo test -p rais-core --test macos_upstream_smoke -- --ignored --test-threads=1
-
   artifacts:
     name: Artifact (${{ matrix.platform_id }})
     runs-on: ${{ matrix.os }}

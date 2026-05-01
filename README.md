@@ -187,11 +187,13 @@ cargo test -p rais-core --test macos_upstream_smoke -- --ignored --test-threads=
 
 GitHub Actions workflow files live under `.github/workflows/`:
 
-- `ci.yml`: runs formatting/tests on Windows and macOS, then on macOS only runs
-  a `macos-smoke` job that downloads the live upstream artifacts (REAPER DMG,
-  OSARA snapshot ZIP, SWS DMG, ReaKontrol ZIP) and exercises the full install +
-  receipt pipeline against them, and finally uploads release-style build
-  artifacts for every push and pull request
+- `ci.yml`: runs formatting/tests on Windows and macOS and uploads release-style
+  build artifacts for every push and pull request
+- `macos-smoke.yml`: scheduled daily at 06:00 UTC (and runnable on demand via
+  `workflow_dispatch`) on `macos-latest`. Downloads the live upstream artifacts
+  (REAPER DMG, OSARA snapshot ZIP, SWS DMG, ReaKontrol ZIP) and exercises the
+  full install + receipt pipeline against them so we catch upstream-side
+  layout changes without blocking every push
 - `release.yml`: builds tagged `v*` releases, publishes GitHub Release assets,
   emits checksums, and generates `rais-update-stable.json` for future RAIS
   self-update support
