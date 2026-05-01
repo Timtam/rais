@@ -78,6 +78,38 @@ pub fn install_app_bundle_from_disk_image(
 
 pub(crate) fn find_app_bundle_in_directory(root: &Path, basename: &str) -> Result<Option<PathBuf>> {
     let target = basename.to_ascii_lowercase();
+    if let Some(exact) = find_app_bundle_matching(root, |name| name.to_ascii_lowercase() == target)?
+    {
+        return Ok(Some(exact));
+    }
+
+    let prefix = target.strip_suffix(".app").unwrap_or(&target);
+    if prefix.is_empty() {
+        return Ok(None);
+    }
+
+    find_app_bundle_matching(root, |name| {
+        let lower = name.to_ascii_lowercase();
+        let stem = match lower.strip_suffix(".app") {
+            Some(stem) => stem,
+            None => return false,
+        };
+        if stem == prefix {
+            return true;
+        }
+        let Some(rest) = stem.strip_prefix(prefix) else {
+            return false;
+        };
+        rest.bytes()
+            .next()
+            .is_some_and(|byte| matches!(byte, b'-' | b'_' | b' ' | b'0'..=b'9'))
+    })
+}
+
+fn find_app_bundle_matching<F>(root: &Path, predicate: F) -> Result<Option<PathBuf>>
+where
+    F: Fn(&str) -> bool,
+{
     let mut stack = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
         if depth > DIRECTORY_SEARCH_MAX_DEPTH {
@@ -105,7 +137,7 @@ pub(crate) fn find_app_bundle_in_directory(root: &Path, basename: &str) -> Resul
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("");
-            if name.to_ascii_lowercase() == target {
+            if predicate(name) {
                 return Ok(Some(path));
             }
             if !skip_directory(name) {
@@ -462,6 +494,47 @@ mod tests {
     fn returns_none_for_missing_app_bundle() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("README")).unwrap();
+        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn finds_arch_specific_reaper_bundle_when_canonical_name_is_missing() {
+        let dir = tempdir().unwrap();
+        let bundle = dir.path().join("REAPER-ARM.app");
+        fs::create_dir_all(&bundle).unwrap();
+
+        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
+        assert_eq!(found.as_deref(), Some(bundle.as_path()));
+    }
+
+    #[test]
+    fn finds_numeric_suffixed_reaper_bundle_when_canonical_name_is_missing() {
+        let dir = tempdir().unwrap();
+        let bundle = dir.path().join("REAPER64.app");
+        fs::create_dir_all(&bundle).unwrap();
+
+        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
+        assert_eq!(found.as_deref(), Some(bundle.as_path()));
+    }
+
+    #[test]
+    fn prefers_exact_bundle_match_over_variant() {
+        let dir = tempdir().unwrap();
+        let exact = dir.path().join("REAPER.app");
+        fs::create_dir_all(&exact).unwrap();
+        fs::create_dir_all(dir.path().join("REAPER-ARM.app")).unwrap();
+
+        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
+        assert_eq!(found.as_deref(), Some(exact.as_path()));
+    }
+
+    #[test]
+    fn does_not_match_unrelated_app_bundles_as_reaper_variants() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("REAPERemote.app")).unwrap();
+        fs::create_dir_all(dir.path().join("Notepad.app")).unwrap();
+
         let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
         assert!(found.is_none());
     }
