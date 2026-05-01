@@ -8,7 +8,8 @@ use crate::model::{
     Platform,
 };
 use crate::package::{
-    PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_SWS, PackageSpec, builtin_package_specs,
+    PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_SWS, PackageSpec,
+    builtin_package_specs,
 };
 use crate::reapack::package_owner_for_file;
 use crate::receipt::{ReceiptVerification, load_install_state, verify_package_receipt};
@@ -259,7 +260,7 @@ fn detect_version_from_files_with_probes(
 
     if package_id == PACKAGE_OSARA {
         for file in files {
-            if let Some(version) = osara_version_from_binary(file)? {
+            if let Some(version) = embedded_snapshot_version_from_binary(file)? {
                 return Ok(Some((
                     version,
                     "osara-binary-version-string".to_string(),
@@ -273,16 +274,32 @@ fn detect_version_from_files_with_probes(
         }
     }
 
+    if package_id == PACKAGE_REAKONTROL {
+        for file in files {
+            if let Some(version) = embedded_snapshot_version_from_binary(file)? {
+                return Ok(Some((
+                    version,
+                    "reakontrol-binary-version-string".to_string(),
+                    Confidence::Medium,
+                    vec![
+                        "Version came from a best-effort scan for ReaKontrol's embedded version string."
+                            .to_string(),
+                    ],
+                )));
+            }
+        }
+    }
+
     Ok(None)
 }
 
-fn osara_version_from_binary(path: &Path) -> Result<Option<crate::version::Version>> {
+fn embedded_snapshot_version_from_binary(path: &Path) -> Result<Option<crate::version::Version>> {
     let bytes = fs::read(path).with_path(path)?;
     let text = String::from_utf8_lossy(&bytes);
-    Ok(osara_version_from_text(&text))
+    Ok(embedded_snapshot_version_from_text(&text))
 }
 
-fn osara_version_from_text(text: &str) -> Option<crate::version::Version> {
+fn embedded_snapshot_version_from_text(text: &str) -> Option<crate::version::Version> {
     let bytes = text.as_bytes();
     for start in 0..bytes.len() {
         if !bytes[start].is_ascii_digit() {
@@ -606,10 +623,10 @@ mod tests {
 
     use super::{
         DiscoveryOptions, default_standard_installation, detect_components, discover_installations,
-        osara_version_from_text,
+        embedded_snapshot_version_from_text,
     };
     use crate::model::Platform;
-    use crate::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_SWS};
+    use crate::package::{PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_SWS};
 
     #[test]
     fn detects_extensions_by_user_plugin_prefix() {
@@ -653,8 +670,37 @@ mod tests {
 
     #[test]
     fn parses_osara_snapshot_version_from_binary_text() {
-        let version = osara_version_from_text("OSARA 2024.3.6.1332,13560ef7").unwrap();
+        let version = embedded_snapshot_version_from_text("OSARA 2024.3.6.1332,13560ef7").unwrap();
         assert_eq!(version.raw(), "2024.3.6.1332");
+    }
+
+    #[test]
+    fn parses_reakontrol_snapshot_version_from_binary_text() {
+        let version =
+            embedded_snapshot_version_from_text("reaKontrol 2026.2.16.100,abcdef0").unwrap();
+        assert_eq!(version.raw(), "2026.2.16.100");
+    }
+
+    #[test]
+    fn detects_reakontrol_version_by_binary_scan_when_metadata_is_unavailable() {
+        let dir = tempdir().unwrap();
+        let plugins = dir.path().join("UserPlugins");
+        fs::create_dir_all(&plugins).unwrap();
+        fs::write(
+            plugins.join("reaper_kontrol_mk2.dll"),
+            b"reaKontrol\0snapshot\0 2026.2.16.100,abcdef0\0",
+        )
+        .unwrap();
+
+        let detections =
+            super::detect_components_with_probes(dir.path(), Platform::Windows, |_| None).unwrap();
+        let reakontrol = detections
+            .iter()
+            .find(|detection| detection.package_id == PACKAGE_REAKONTROL)
+            .unwrap();
+
+        assert_eq!(reakontrol.version.as_ref().unwrap().raw(), "2026.2.16.100");
+        assert_eq!(reakontrol.detector, "reakontrol-binary-version-string");
     }
 
     #[test]
