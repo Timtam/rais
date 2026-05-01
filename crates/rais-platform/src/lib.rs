@@ -13,6 +13,7 @@
 pub mod disk_image;
 pub mod file_version;
 pub mod paths;
+pub mod registry;
 pub mod signature;
 
 pub use disk_image::{
@@ -23,4 +24,5 @@ pub use file_version::read_file_version_parts;
 pub use paths::{
     user_appdata_dir, user_home_dir, user_local_appdata_dir, windows_program_files_dirs,
 };
+pub use registry::read_uninstall_display_version;
 pub use signature::{SignatureVerdict, verify_executable_signature};

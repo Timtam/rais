@@ -7,7 +7,9 @@ use crate::model::{
     Architecture, ComponentDetection, Confidence, Evidence, Installation, InstallationKind,
     Platform,
 };
-use crate::package::{PACKAGE_OSARA, PackageSpec, builtin_package_specs};
+use crate::package::{
+    PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_SWS, PackageSpec, builtin_package_specs,
+};
 use crate::reapack::package_owner_for_file;
 use crate::receipt::{ReceiptVerification, load_install_state, verify_package_receipt};
 
@@ -159,6 +161,44 @@ fn detect_version_from_files(
     files: &[PathBuf],
     package_id: &str,
 ) -> Result<Option<(crate::version::Version, String, Confidence, Vec<String>)>> {
+    // OSARA: Windows installers register a `DisplayVersion` under the standard
+    // Uninstall key. Prefer that for non-RAIS-managed OSARA installs because
+    // it reflects what the user sees in Programs and Features.
+    if package_id == PACKAGE_OSARA {
+        if let Some(value) = rais_platform::read_uninstall_display_version("OSARA") {
+            if let Ok(version) = crate::version::Version::parse(&value) {
+                return Ok(Some((
+                    version,
+                    "windows-uninstall-displayversion".to_string(),
+                    Confidence::High,
+                    vec![format!(
+                        "Version came from the OSARA Windows installer's Uninstall registry key."
+                    )],
+                )));
+            }
+        }
+    }
+
+    // SWS / ReaPack: when the file is registered in ReaPack's local registry
+    // database, treat that as authoritative — it reflects what ReaPack thinks
+    // is installed for users who installed the package via ReaPack rather
+    // than the standalone vendor installer.
+    if matches!(package_id, PACKAGE_SWS | PACKAGE_REAPACK) {
+        for file in files {
+            if let Some(owner) = package_owner_for_file(resource_path, file)? {
+                return Ok(Some((
+                    owner.version,
+                    "reapack-registry".to_string(),
+                    Confidence::High,
+                    vec![format!(
+                        "Version came from ReaPack registry entry {}/{}/{}.",
+                        owner.remote, owner.category, owner.package
+                    )],
+                )));
+            }
+        }
+    }
+
     for file in files {
         if let Some(version) = file_version(file)? {
             return Ok(Some((
