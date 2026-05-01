@@ -1,3 +1,7 @@
+mod osara;
+mod reaper;
+mod sws;
+
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,6 +27,15 @@ use crate::receipt::{
     upsert_package_receipt,
 };
 use crate::rollback::{BackupManifest, BackupManifestFile, save_backup_manifest};
+
+use self::osara::{
+    apply_osara_keymap_replacement, osara_manual_steps, osara_windows_installer_arguments,
+};
+use self::reaper::{
+    reaper_install_destination, reaper_macos_app_bundle_install_target, reaper_manual_steps,
+    reaper_windows_installer_arguments,
+};
+use self::sws::{sws_manual_steps, sws_primary_plugin_path, sws_windows_installer_arguments};
 use crate::upstream::{execute_planned_execution, verify_planned_execution_paths};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,9 +129,9 @@ pub enum PackageOperationStatus {
 }
 
 #[derive(Debug, Default, Clone)]
-struct UnattendedPostInstallReport {
-    backup_paths: Vec<PathBuf>,
-    backup_manifest_path: Option<PathBuf>,
+pub(super) struct UnattendedPostInstallReport {
+    pub(super) backup_paths: Vec<PathBuf>,
+    pub(super) backup_manifest_path: Option<PathBuf>,
 }
 
 pub fn package_automation_support(
@@ -834,33 +847,7 @@ fn post_execute_unattended_artifact(
     Ok(report)
 }
 
-fn apply_osara_keymap_replacement(resource_path: &Path) -> Result<UnattendedPostInstallReport> {
-    let replacement_source = resource_path.join("KeyMaps").join("OSARA.ReaperKeyMap");
-    if !replacement_source.is_file() {
-        return Err(crate::error::RaisError::PostInstallVerificationFailed {
-            missing_paths: vec![replacement_source],
-        });
-    }
-
-    let current_keymap = resource_path.join("reaper-kb.ini");
-    let mut report = UnattendedPostInstallReport::default();
-
-    if current_keymap.is_file() {
-        let (backup_path, backup_manifest_path) = backup_file_for_unattended_change(
-            resource_path,
-            crate::package::PACKAGE_OSARA,
-            &current_keymap,
-            "osara-keymap-replacement",
-        )?;
-        report.backup_paths.push(backup_path);
-        report.backup_manifest_path = Some(backup_manifest_path);
-    }
-
-    replace_file_from_source(&replacement_source, &current_keymap)?;
-    Ok(report)
-}
-
-fn backup_file_for_unattended_change(
+pub(super) fn backup_file_for_unattended_change(
     resource_path: &Path,
     package_id: &str,
     source_path: &Path,
@@ -947,7 +934,7 @@ fn write_receipt_backup_manifest(
     )
 }
 
-fn replace_file_from_source(source_path: &Path, target_path: &Path) -> Result<()> {
+pub(super) fn replace_file_from_source(source_path: &Path, target_path: &Path) -> Result<()> {
     if let Some(parent) = target_path.parent() {
         std::fs::create_dir_all(parent).with_path(parent)?;
     }
@@ -1103,30 +1090,6 @@ fn installer_arguments_for_artifact(
     }
 
     Vec::new()
-}
-
-fn reaper_windows_installer_arguments(
-    resource_path: &Path,
-    target_app_path: Option<&Path>,
-) -> Vec<String> {
-    let install_destination = target_app_path
-        .map(reaper_install_destination)
-        .unwrap_or_else(|| resource_path.to_path_buf());
-    let mut arguments = Vec::new();
-    if target_likely_portable(resource_path, target_app_path) {
-        arguments.push("/PORTABLE".to_string());
-    }
-    arguments.push("/S".to_string());
-    arguments.push(format!("/D={}", install_destination.display()));
-    arguments
-}
-
-fn osara_windows_installer_arguments(resource_path: &Path) -> Vec<String> {
-    vec!["/S".to_string(), format!("/D={}", resource_path.display())]
-}
-
-fn sws_windows_installer_arguments(resource_path: &Path) -> Vec<String> {
-    vec!["/S".to_string(), format!("/D={}", resource_path.display())]
 }
 
 fn effective_target_app_path(
@@ -1355,19 +1318,6 @@ fn planned_verification_paths(
     paths
 }
 
-fn sws_primary_plugin_path(resource_path: &Path, artifact: &ArtifactDescriptor) -> Option<PathBuf> {
-    let file_name = match (artifact.platform, artifact.architecture) {
-        (Platform::Windows, Architecture::X86) => "reaper_sws-x86.dll",
-        (Platform::Windows, Architecture::X64 | Architecture::Unknown) => "reaper_sws-x64.dll",
-        (Platform::MacOs, Architecture::X86) => "reaper_sws-i386.dylib",
-        (Platform::MacOs, Architecture::X64 | Architecture::Unknown) => "reaper_sws-x86_64.dylib",
-        (Platform::MacOs, Architecture::Arm64) => "reaper_sws-arm64.dylib",
-        _ => return None,
-    };
-
-    Some(resource_path.join("UserPlugins").join(file_name))
-}
-
 fn preview_artifact_access_step(kind: ArtifactKind) -> String {
     match kind {
         ArtifactKind::Installer => {
@@ -1383,164 +1333,9 @@ fn preview_artifact_access_step(kind: ArtifactKind) -> String {
     }
 }
 
-fn osara_manual_steps(
-    kind: ArtifactKind,
-    resource_path: &Path,
-    replace_osara_keymap: bool,
-) -> Vec<String> {
-    let mut steps = match kind {
-        ArtifactKind::Installer => vec![format!(
-            "When the OSARA installer asks for the REAPER target, choose this resource or portable folder: {}",
-            resource_path.display()
-        )],
-        ArtifactKind::Archive => vec![format!(
-            "Run the OSARA installer from the extracted archive and target this REAPER resource or portable folder: {}",
-            resource_path.display()
-        )],
-        ArtifactKind::DiskImage => vec![format!(
-            "Run the OSARA installer from the opened disk image and target this REAPER resource or portable folder: {}",
-            resource_path.display()
-        )],
-        ArtifactKind::ExtensionBinary => vec![format!(
-            "Copy the OSARA extension into this REAPER UserPlugins folder: {}",
-            resource_path.join("UserPlugins").display()
-        )],
-    };
-    if replace_osara_keymap {
-        steps.push(format!(
-            "After backing up {}, replace the current key map with the OSARA key map if the installer offers that option.",
-            resource_path.join("reaper-kb.ini").display()
-        ));
-    } else {
-        steps.push(
-            "Preserve the current key map if the OSARA installer offers a replacement option."
-                .to_string(),
-        );
-    }
-    steps
-}
-
-fn sws_manual_steps(kind: ArtifactKind, resource_path: &Path) -> Vec<String> {
-    match kind {
-        ArtifactKind::Installer => vec![format!(
-            "When the SWS installer asks which REAPER installation to update, choose the one that uses this resource folder: {}",
-            resource_path.display()
-        )],
-        ArtifactKind::DiskImage | ArtifactKind::Archive => vec![
-            "Run the SWS installer from the opened package.".to_string(),
-            format!(
-                "Choose the REAPER target that uses this resource folder: {}",
-                resource_path.display()
-            ),
-        ],
-        ArtifactKind::ExtensionBinary => vec![format!(
-            "Copy the SWS extension into this REAPER UserPlugins folder: {}",
-            resource_path.join("UserPlugins").display()
-        )],
-    }
-}
-
-fn reaper_manual_steps(
-    kind: ArtifactKind,
-    resource_path: &Path,
-    target_app_path: Option<&Path>,
-) -> Vec<String> {
-    let install_destination = target_app_path.map(reaper_install_destination);
-    if target_likely_portable(resource_path, target_app_path) {
-        return match kind {
-            ArtifactKind::Installer => vec![
-                format!(
-                    "In the REAPER installer, choose Portable install and use this folder: {}",
-                    resource_path.display()
-                ),
-                format!(
-                    "After installation, confirm that {} exists.",
-                    resource_path.join("reaper.ini").display()
-                ),
-            ],
-            ArtifactKind::DiskImage | ArtifactKind::Archive => vec![
-                format!(
-                    "Copy REAPER into this portable folder: {}",
-                    install_destination
-                        .unwrap_or_else(|| resource_path.to_path_buf())
-                        .display()
-                ),
-                format!(
-                    "Create or keep {} for the portable resource layout.",
-                    resource_path.join("reaper.ini").display()
-                ),
-            ],
-            ArtifactKind::ExtensionBinary => vec![format!(
-                "Place the REAPER application files under this target: {}",
-                resource_path.display()
-            )],
-        };
-    }
-
-    match kind {
-        ArtifactKind::Installer => {
-            let destination = install_destination.unwrap_or_else(|| resource_path.to_path_buf());
-            vec![
-                format!(
-                    "Install REAPER to this destination: {}",
-                    destination.display()
-                ),
-                format!(
-                    "After installation, start REAPER once if needed so this resource path exists: {}",
-                    resource_path.display()
-                ),
-            ]
-        }
-        ArtifactKind::DiskImage | ArtifactKind::Archive => {
-            let destination = install_destination.unwrap_or_else(|| resource_path.to_path_buf());
-            vec![
-                format!("Copy REAPER to this destination: {}", destination.display()),
-                format!(
-                    "After installation, start REAPER once if needed so this resource path exists: {}",
-                    resource_path.display()
-                ),
-            ]
-        }
-        ArtifactKind::ExtensionBinary => vec![format!(
-            "Install REAPER for the target that uses this resource path: {}",
-            resource_path.display()
-        )],
-    }
-}
-
-fn target_likely_portable(resource_path: &Path, target_app_path: Option<&Path>) -> bool {
+pub(super) fn target_likely_portable(resource_path: &Path, target_app_path: Option<&Path>) -> bool {
     target_app_path
         .is_some_and(|target_app_path| path_is_same_or_nested(target_app_path, resource_path))
-}
-
-fn reaper_macos_app_bundle_install_target(
-    resource_path: &Path,
-    target_app_path: Option<&Path>,
-) -> (String, PathBuf) {
-    let bundle = target_app_path
-        .and_then(|path| path.file_name())
-        .and_then(|name| name.to_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| "REAPER.app".to_string());
-    let destination_dir = target_app_path
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| resource_path.to_path_buf());
-    (bundle, destination_dir)
-}
-
-fn reaper_install_destination(target_app_path: &Path) -> PathBuf {
-    if target_app_path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-    {
-        target_app_path
-            .parent()
-            .unwrap_or(target_app_path)
-            .to_path_buf()
-    } else {
-        target_app_path.to_path_buf()
-    }
 }
 
 fn package_title_name(package_id: &str) -> &'static str {
