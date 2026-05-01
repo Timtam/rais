@@ -1555,15 +1555,20 @@ fn package_title_name(package_id: &str) -> &'static str {
 }
 
 fn path_is_same_or_nested(path: &Path, root: &Path) -> bool {
-    let path = normalize_path_for_match(path);
-    let root = normalize_path_for_match(root);
+    let (path, root) = matched_normalized_paths(path, root);
     path == root || path.starts_with(&root)
 }
 
-fn normalize_path_for_match(path: &Path) -> PathBuf {
-    strip_windows_verbatim_prefix(
-        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
-    )
+fn matched_normalized_paths(path: &Path, root: &Path) -> (PathBuf, PathBuf) {
+    if let (Ok(canonical_path), Ok(canonical_root)) =
+        (std::fs::canonicalize(path), std::fs::canonicalize(root))
+    {
+        return (
+            strip_windows_verbatim_prefix(canonical_path),
+            strip_windows_verbatim_prefix(canonical_root),
+        );
+    }
+    (path.to_path_buf(), root.to_path_buf())
 }
 
 fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
@@ -2244,6 +2249,7 @@ mod tests {
         assert_eq!(receipt.installed_files[0].path, target_app_path);
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn executes_osara_windows_installer_unattended_and_cleans_portable_uninstaller() {
         let dir = tempdir().unwrap();
