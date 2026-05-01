@@ -13,6 +13,18 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 version = "0.1.0"
 
+[profile.release]
+# Optimize the user-facing binary for download size first, runtime second.
+# `opt-level = "z"` minimizes code size, fat LTO + a single codegen unit let
+# the linker drop unused functions across crate boundaries, `strip = "symbols"`
+# removes debug names from the final binary, and `panic = "abort"` skips the
+# unwinding tables.
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive"] }
 fluent-bundle = "0.16"
