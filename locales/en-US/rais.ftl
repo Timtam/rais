@@ -158,6 +158,25 @@ wizard-done-self-update-error-prefix = RAIS self-update failed
 wizard-done-self-update-relaunch-prefix = Relaunched RAIS
 wizard-self-update-status-checking = Checking for RAIS updates…
 
+# $current is the running RAIS version, $latest is the version offered by the
+# release manifest, $channel is the release channel id (e.g. "stable").
+self-update-status-update-available = RAIS update available: { $current } → { $latest } (channel { $channel }). Click 'Apply RAIS update' to install.
+self-update-status-up-to-date = RAIS is up to date (current { $current }, channel { $channel }).
+
+# $version is the version that the apply pipeline targeted but did not write.
+self-update-apply-no-files-replaced = Self-update did not replace any files (target version { $version }).
+# $count is the number of files swapped on disk, $root is the install directory,
+# $version is the new RAIS version that is now in place.
+self-update-apply-replaced-summary = Replaced { $count } file(s) under { $root }; relaunch RAIS to use { $version }.
+
+# $signed / $unsigned are counts of binaries that produced each verdict.
+self-update-apply-signature-summary-signed-only = Signature verification: { $signed } signed.
+self-update-apply-signature-summary-unsigned-only = Signature verification: { $unsigned } unsigned.
+self-update-apply-signature-summary-mixed = Signature verification: { $signed } signed, { $unsigned } unsigned.
+
+# $pid is the OS process id of the other RAIS install holding the lock.
+self-update-lock-blocking = Another RAIS install is in progress (PID { $pid }). Apply is paused until it finishes.
+
 # Summary and report lines shown in the wizard progress/done views and saved outcome reports.
 wizard-summary-target = Target: { $path }
 wizard-summary-portable = Portable target: { $value }

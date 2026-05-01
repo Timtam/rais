@@ -7,17 +7,44 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
+use rais_core::localization::Localizer;
+use rais_core::lock::PackageInstallLockMetadata;
+use rais_core::self_update::SelfUpdateCheckReport;
+
+// FluentBundle is !Send, so we keep one Localizer instance per UI thread and
+// have call_after bodies read it from this thread-local rather than capturing
+// it through worker threads. The wxdragon event loop runs every call_after
+// body on the same thread that initialised UI_LOCALIZER (the main thread).
+thread_local! {
+    static UI_LOCALIZER: RefCell<Option<Rc<Localizer>>> = const { RefCell::new(None) };
+}
+
+fn install_ui_localizer(localizer: Localizer) {
+    UI_LOCALIZER.with(|cell| {
+        *cell.borrow_mut() = Some(Rc::new(localizer));
+    });
+}
+
+fn with_ui_localizer<F: FnOnce(&Localizer)>(f: F) {
+    UI_LOCALIZER.with(|cell| {
+        if let Some(localizer) = cell.borrow().as_ref() {
+            f(localizer);
+        }
+    });
+}
 use rais_ui_wxdragon::{
     OsaraKeymapChoice, TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel,
     WizardOutcomeReport, build_review_preview_for_package_rows, custom_portable_target_row,
-    execute_wizard_install, format_self_update_apply_summary, format_self_update_check_summary,
-    install_request_from_target_and_rows, load_wizard_model, manual_attention_handling_summary,
-    osara_keymap_note, osara_selected_for_rows, package_requires_manual_attention,
-    preview_manual_instruction_lines, refreshed_target_row, relaunch_rais_after_apply,
-    run_wizard_self_update_apply, run_wizard_self_update_check, save_wizard_outcome_report,
-    wizard_outcome_report_from_error, wizard_outcome_report_from_success,
-    wizard_package_plan_for_target,
+    execute_wizard_install, format_package_install_lock_blocking_message,
+    format_self_update_apply_summary, format_self_update_check_summary,
+    install_request_from_target_and_rows, load_wizard_model, localizer_from_options,
+    manual_attention_handling_summary, osara_keymap_note, osara_selected_for_rows,
+    package_requires_manual_attention, preview_manual_instruction_lines, refreshed_target_row,
+    relaunch_rais_after_apply, run_wizard_package_install_lock_check, run_wizard_self_update_apply,
+    run_wizard_self_update_check, save_wizard_outcome_report, wizard_outcome_report_from_error,
+    wizard_outcome_report_from_success, wizard_package_plan_for_target,
 };
 use wxdragon::prelude::*;
 use wxdragon::widgets::SimpleBook;
@@ -27,6 +54,61 @@ const PACKAGES_STEP: usize = 1;
 const REVIEW_STEP: usize = 2;
 const PROGRESS_STEP: usize = 3;
 const DONE_STEP: usize = 4;
+
+#[derive(Default)]
+struct SelfUpdateUiState {
+    /// Result of the one-shot manifest check at startup. `None` while the
+    /// startup probe is still running; `Some(Ok)` on success; `Some(Err)`
+    /// carries the formatted error message (RaisError isn't Clone).
+    check: Option<std::result::Result<SelfUpdateCheckReport, String>>,
+    /// Most recent lock-state observation, refreshed by the polling thread.
+    lock_holder: Option<PackageInstallLockMetadata>,
+    /// Last status string written to the status bar — used to suppress
+    /// screen-reader re-announcements when nothing has changed.
+    last_status: String,
+    /// Last apply-button enable state — same de-dup intent.
+    last_apply_enabled: bool,
+}
+
+fn render_self_update_status(
+    widgets: WizardWidgets,
+    model: &Arc<WizardModel>,
+    localizer: &Localizer,
+    state: &Arc<Mutex<SelfUpdateUiState>>,
+) {
+    let mut state = state.lock().unwrap();
+    let Some(check) = state.check.as_ref() else {
+        // Startup probe hasn't completed yet; leave the initial
+        // "Checking for RAIS updates…" placeholder in place.
+        return;
+    };
+
+    let mut status = match check {
+        Ok(report) => format_self_update_check_summary(localizer, report),
+        Err(error) => format!("{}: {}", model.text.done_self_update_error_prefix, error),
+    };
+    let mut apply_enabled = matches!(check, Ok(report) if report.update_available);
+    if let Some(holder) = &state.lock_holder {
+        if !status.is_empty() {
+            status.push(' ');
+        }
+        status.push_str(&format_package_install_lock_blocking_message(
+            localizer, holder,
+        ));
+        apply_enabled = false;
+    }
+
+    let status_changed = status != state.last_status;
+    let enable_changed = apply_enabled != state.last_apply_enabled;
+    if status_changed {
+        widgets.self_update_status.set_status_text(&status, 0);
+        state.last_status = status;
+    }
+    if enable_changed {
+        widgets.done_self_update_apply.enable(apply_enabled);
+        state.last_apply_enabled = apply_enabled;
+    }
+}
 
 #[derive(Clone, Copy)]
 struct WizardWidgets {
@@ -52,7 +134,15 @@ struct WizardWidgets {
 
 pub fn run() {
     let _ = wxdragon::main(|_| {
-        let model = match load_wizard_model(UiBootstrapOptions::default()) {
+        let bootstrap = UiBootstrapOptions::default();
+        match localizer_from_options(&bootstrap) {
+            Ok(localizer) => install_ui_localizer(localizer),
+            Err(error) => {
+                eprintln!("{error}");
+                return;
+            }
+        }
+        let model = match load_wizard_model(bootstrap) {
             Ok(model) => model,
             Err(error) => {
                 eprintln!("{error}");
@@ -564,27 +654,69 @@ pub fn run() {
             });
         }
 
+        let self_update_state = Arc::new(Mutex::new(SelfUpdateUiState::default()));
+
+        // One-shot startup probe: runs the manifest check and the lock probe,
+        // stores both into the shared state, then renders.
         {
             let model = Arc::clone(&model);
             let widgets = wizard_widgets;
+            let state = Arc::clone(&self_update_state);
             std::thread::spawn(move || {
-                let result = run_wizard_self_update_check();
-                wxdragon::call_after(Box::new(move || match result {
-                    Ok(report) => {
-                        widgets
-                            .self_update_status
-                            .set_status_text(&format_self_update_check_summary(&report), 0);
-                        widgets
-                            .done_self_update_apply
-                            .enable(report.update_available);
-                    }
-                    Err(error) => {
-                        widgets.self_update_status.set_status_text(
-                            &format!("{}: {}", model.text.done_self_update_error_prefix, error),
-                            0,
-                        );
-                    }
+                let check = run_wizard_self_update_check();
+                let lock = run_wizard_package_install_lock_check().ok().flatten();
+                {
+                    let mut state = state.lock().unwrap();
+                    state.check = Some(match check {
+                        Ok(report) => Ok(report),
+                        Err(error) => Err(error.to_string()),
+                    });
+                    state.lock_holder = lock;
+                }
+                let render_state = Arc::clone(&state);
+                let render_model = Arc::clone(&model);
+                wxdragon::call_after(Box::new(move || {
+                    with_ui_localizer(|localizer| {
+                        render_self_update_status(widgets, &render_model, localizer, &render_state);
+                    });
                 }));
+            });
+        }
+
+        // Polling thread: re-checks the install lock every few seconds and
+        // re-renders only when the holder changes (so screen readers do not
+        // re-announce an unchanged status). This catches the case where another
+        // RAIS process starts an install after our startup probe ran.
+        {
+            let model = Arc::clone(&model);
+            let widgets = wizard_widgets;
+            let state = Arc::clone(&self_update_state);
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_secs(3));
+                    let new_lock = run_wizard_package_install_lock_check().ok().flatten();
+                    let changed = {
+                        let mut state = state.lock().unwrap();
+                        let changed = state.lock_holder != new_lock;
+                        state.lock_holder = new_lock;
+                        changed
+                    };
+                    if !changed {
+                        continue;
+                    }
+                    let render_state = Arc::clone(&state);
+                    let render_model = Arc::clone(&model);
+                    wxdragon::call_after(Box::new(move || {
+                        with_ui_localizer(|localizer| {
+                            render_self_update_status(
+                                widgets,
+                                &render_model,
+                                localizer,
+                                &render_state,
+                            );
+                        });
+                    }));
+                }
             });
         }
 
@@ -601,10 +733,12 @@ pub fn run() {
                     let result = run_wizard_self_update_apply();
                     wxdragon::call_after(Box::new(move || match result {
                         Ok(report) => {
-                            append_done_status(
-                                &widgets.done_status,
-                                &format_self_update_apply_summary(&report),
-                            );
+                            with_ui_localizer(|localizer| {
+                                append_done_status(
+                                    &widgets.done_status,
+                                    &format_self_update_apply_summary(localizer, &report),
+                                );
+                            });
                             if !report.replaced_files.is_empty() {
                                 match relaunch_rais_after_apply() {
                                     Ok(pid) => append_done_status(

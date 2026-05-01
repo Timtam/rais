@@ -9,6 +9,7 @@ use rais_core::detection::{
 };
 use rais_core::latest::fetch_latest_versions;
 use rais_core::localization::{DEFAULT_LOCALE, Localizer};
+use rais_core::lock::{PackageInstallLockMetadata, package_install_lock_active};
 use rais_core::metadata::file_version;
 use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
 use rais_core::operation::{
@@ -357,7 +358,7 @@ fn selectable_installations(
     installations
 }
 
-fn localizer_from_options(options: &UiBootstrapOptions) -> Result<Localizer> {
+pub fn localizer_from_options(options: &UiBootstrapOptions) -> Result<Localizer> {
     match &options.locales_dir {
         Some(locales_dir) => Localizer::from_locale_dir(locales_dir, &options.locale),
         None => Localizer::embedded(&options.locale),
@@ -1398,6 +1399,20 @@ pub fn run_wizard_self_update_check() -> Result<SelfUpdateCheckReport> {
     check_self_update(platform, DEFAULT_SELF_UPDATE_MANIFEST_URL)
 }
 
+pub fn run_wizard_package_install_lock_check() -> Result<Option<PackageInstallLockMetadata>> {
+    package_install_lock_active()
+}
+
+pub fn format_package_install_lock_blocking_message(
+    localizer: &Localizer,
+    holder: &PackageInstallLockMetadata,
+) -> String {
+    let pid = holder.pid.to_string();
+    localizer
+        .format("self-update-lock-blocking", &[("pid", pid.as_str())])
+        .value
+}
+
 pub fn run_wizard_self_update_apply() -> Result<SelfUpdateApplyReport> {
     let platform = Platform::current().ok_or(RaisError::UnsupportedPlatform)?;
     let staging_dir = default_self_update_staging_dir();
@@ -1415,42 +1430,73 @@ pub fn relaunch_rais_after_apply() -> Result<u32> {
     relaunch_current_executable()
 }
 
-pub fn format_self_update_check_summary(report: &SelfUpdateCheckReport) -> String {
+pub fn format_self_update_check_summary(
+    localizer: &Localizer,
+    report: &SelfUpdateCheckReport,
+) -> String {
+    let current = report.current_version.to_string();
+    let latest = report.latest_version.to_string();
     if report.update_available {
-        format!(
-            "RAIS update available: {} → {} (channel {}). Click 'Apply RAIS update' to install.",
-            report.current_version, report.latest_version, report.channel
-        )
+        localizer
+            .format(
+                "self-update-status-update-available",
+                &[
+                    ("current", current.as_str()),
+                    ("latest", latest.as_str()),
+                    ("channel", report.channel.as_str()),
+                ],
+            )
+            .value
     } else {
-        format!(
-            "RAIS is up to date (current {}, channel {}).",
-            report.current_version, report.channel
-        )
+        localizer
+            .format(
+                "self-update-status-up-to-date",
+                &[
+                    ("current", current.as_str()),
+                    ("channel", report.channel.as_str()),
+                ],
+            )
+            .value
     }
 }
 
-pub fn format_self_update_apply_summary(report: &SelfUpdateApplyReport) -> String {
+pub fn format_self_update_apply_summary(
+    localizer: &Localizer,
+    report: &SelfUpdateApplyReport,
+) -> String {
+    let version = report.stage.check.latest_version.to_string();
     if report.replaced_files.is_empty() {
-        return format!(
-            "Self-update did not replace any files (target version {}).",
-            report.stage.check.latest_version
-        );
+        return localizer
+            .format(
+                "self-update-apply-no-files-replaced",
+                &[("version", version.as_str())],
+            )
+            .value;
     }
 
-    let mut summary = format!(
-        "Replaced {} file(s) under {}; relaunch RAIS to use {}.",
-        report.replaced_files.len(),
-        report.install_root.display(),
-        report.stage.check.latest_version
-    );
-    if let Some(signature_summary) = format_signature_verdict_summary(report) {
+    let count = report.replaced_files.len().to_string();
+    let install_root = report.install_root.display().to_string();
+    let mut summary = localizer
+        .format(
+            "self-update-apply-replaced-summary",
+            &[
+                ("count", count.as_str()),
+                ("root", install_root.as_str()),
+                ("version", version.as_str()),
+            ],
+        )
+        .value;
+    if let Some(signature_summary) = format_signature_verdict_summary(localizer, report) {
         summary.push(' ');
         summary.push_str(&signature_summary);
     }
     summary
 }
 
-fn format_signature_verdict_summary(report: &SelfUpdateApplyReport) -> Option<String> {
+fn format_signature_verdict_summary(
+    localizer: &Localizer,
+    report: &SelfUpdateApplyReport,
+) -> Option<String> {
     use rais_core::signature::SignatureVerdict;
 
     if report.signature_verdicts.is_empty() {
@@ -1465,13 +1511,39 @@ fn format_signature_verdict_summary(report: &SelfUpdateApplyReport) -> Option<St
             SignatureVerdict::Invalid { .. } => {}
         }
     }
-    let parts = match (signed, unsigned) {
+    let signed_str = signed.to_string();
+    let unsigned_str = unsigned.to_string();
+    let value = match (signed, unsigned) {
         (0, 0) => return None,
-        (s, 0) => format!("Signature verification: {s} signed."),
-        (0, u) => format!("Signature verification: {u} unsigned."),
-        (s, u) => format!("Signature verification: {s} signed, {u} unsigned."),
+        (_, 0) => {
+            localizer
+                .format(
+                    "self-update-apply-signature-summary-signed-only",
+                    &[("signed", signed_str.as_str())],
+                )
+                .value
+        }
+        (0, _) => {
+            localizer
+                .format(
+                    "self-update-apply-signature-summary-unsigned-only",
+                    &[("unsigned", unsigned_str.as_str())],
+                )
+                .value
+        }
+        _ => {
+            localizer
+                .format(
+                    "self-update-apply-signature-summary-mixed",
+                    &[
+                        ("signed", signed_str.as_str()),
+                        ("unsigned", unsigned_str.as_str()),
+                    ],
+                )
+                .value
+        }
     };
-    Some(parts)
+    Some(value)
 }
 
 pub fn wizard_outcome_report_from_success(
@@ -2361,8 +2433,9 @@ mod tests {
 
     use super::{
         OsaraKeymapChoice, PackageRow, UiBootstrapOptions, WizardInstallRequest,
-        custom_portable_target_row, format_self_update_apply_summary, localizer_from_options,
-        model_from_plan, refreshed_target_row,
+        custom_portable_target_row, format_package_install_lock_blocking_message,
+        format_self_update_apply_summary, localizer_from_options, model_from_plan,
+        refreshed_target_row,
     };
 
     #[test]
@@ -3737,7 +3810,8 @@ mod tests {
             }],
         );
 
-        let summary = format_self_update_apply_summary(&report);
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let summary = format_self_update_apply_summary(&localizer, &report);
         assert!(summary.contains("Replaced 1 file(s)"));
         assert!(summary.contains("Signature verification: 1 signed."));
     }
@@ -3754,9 +3828,25 @@ mod tests {
             Vec::new(),
         );
 
-        let summary = format_self_update_apply_summary(&report);
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let summary = format_self_update_apply_summary(&localizer, &report);
         assert!(summary.contains("Replaced 1 file(s)"));
         assert!(!summary.contains("Signature verification"));
+    }
+
+    #[test]
+    fn lock_blocking_message_includes_holder_pid() {
+        use rais_core::lock::PackageInstallLockMetadata;
+
+        let holder = PackageInstallLockMetadata {
+            pid: 4242,
+            started_at: "unix-1700000000".to_string(),
+        };
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let message = format_package_install_lock_blocking_message(&localizer, &holder);
+        assert!(message.contains("4242"));
+        assert!(message.to_lowercase().contains("install"));
+        assert!(message.to_lowercase().contains("paused"));
     }
 
     #[test]
@@ -3791,7 +3881,8 @@ mod tests {
             ],
         );
 
-        let summary = format_self_update_apply_summary(&report);
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let summary = format_self_update_apply_summary(&localizer, &report);
         assert!(summary.contains("Signature verification: 1 signed, 1 unsigned."));
     }
 
