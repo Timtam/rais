@@ -624,8 +624,8 @@ fn http_client() -> Result<Client> {
 }
 
 fn http_get_text(client: &Client, url: &str) -> Result<String> {
-    let response = client
-        .get(url)
+    let request = crate::http::maybe_apply_github_auth(client.get(url), url);
+    let response = request
         .send()
         .and_then(|response| response.error_for_status())
         .map_err(|source| RaisError::Http {

@@ -267,31 +267,56 @@ fn skip_directory(name: &str) -> bool {
 
 #[cfg(target_os = "macos")]
 fn run_hdiutil_attach(image_path: &Path) -> Result<PathBuf> {
-    let output = Command::new("hdiutil")
+    use std::io::Write;
+    use std::process::Stdio;
+
+    // Some upstream DMGs (REAPER's, SWS's) embed a software-license-agreement
+    // hdiutil refuses to mount silently. Pipe "Y" to stdin so the SLA prompt
+    // is auto-accepted; on DMGs without an SLA the input is harmless.
+    let mut child = Command::new("hdiutil")
         .arg("attach")
         .arg("-nobrowse")
-        .arg("-quiet")
         .arg("-readonly")
+        .arg("-noautoopen")
         .arg(image_path)
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|source| RaisError::Io {
             path: image_path.to_path_buf(),
             source,
         })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"Y\n");
+    }
+
+    let output = child.wait_with_output().map_err(|source| RaisError::Io {
+        path: image_path.to_path_buf(),
+        source,
+    })?;
+
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         return Err(RaisError::DiskImageMount {
             image: image_path.to_path_buf(),
             message: format!(
-                "hdiutil attach exited with status {:?}: {}",
+                "hdiutil attach exited with status {:?}; stderr: {}; stdout: {}",
                 output.status.code(),
-                String::from_utf8_lossy(&output.stderr).trim()
+                stderr,
+                stdout,
             ),
         });
     }
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     parse_hdiutil_attach_output(&stdout).ok_or_else(|| RaisError::DiskImageMount {
         image: image_path.to_path_buf(),
-        message: "hdiutil attach produced no /Volumes mount point".to_string(),
+        message: format!(
+            "hdiutil attach produced no /Volumes mount point; stdout: {}",
+            stdout.trim()
+        ),
     })
 }
 
