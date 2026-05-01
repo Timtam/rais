@@ -75,6 +75,12 @@ pub enum RaisError {
     #[error("archive {archive} could not be read: {message}")]
     ArchiveRead { archive: PathBuf, message: String },
 
+    #[error("disk image {image} for {package_id} did not contain a {package_id} extension binary")]
+    DiskImageMissingExtensionBinary { image: PathBuf, package_id: String },
+
+    #[error("disk image {image} could not be mounted: {message}")]
+    DiskImageMount { image: PathBuf, message: String },
+
     #[error("preflight failed: {message}")]
     PreflightFailed { message: String },
 

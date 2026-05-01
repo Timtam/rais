@@ -7,6 +7,7 @@ use tempfile::TempDir;
 
 use crate::archive::extract_user_plugin_from_archive;
 use crate::artifact::{ArtifactKind, CachedArtifact};
+use crate::disk_image::extract_user_plugin_from_disk_image;
 use crate::error::{IoPathContext, RaisError, Result};
 use crate::hash::sha256_file;
 use crate::package::{PackageSpec, package_specs_by_id};
@@ -207,6 +208,29 @@ fn prepare_install_source(artifact: &CachedArtifact) -> Result<PreparedInstallSo
             })?;
             let extracted =
                 extract_user_plugin_from_archive(&artifact.path, &spec, extraction_dir.path())?;
+            let source_sha256 = sha256_file(&extracted.extracted_path)?;
+            let source_size = fs::metadata(&extracted.extracted_path)
+                .with_path(&extracted.extracted_path)?
+                .len();
+            Ok(PreparedInstallSource {
+                source_path: extracted.extracted_path,
+                source_sha256,
+                source_size,
+                target_file_name: extracted.file_name,
+                _extraction_dir: Some(extraction_dir),
+            })
+        }
+        ArtifactKind::DiskImage => {
+            let spec = lookup_install_spec(
+                &artifact.descriptor.package_id,
+                artifact.descriptor.platform,
+            )?;
+            let extraction_dir = TempDir::new().map_err(|source| RaisError::Io {
+                path: PathBuf::from("rais-disk-image-extract"),
+                source,
+            })?;
+            let extracted =
+                extract_user_plugin_from_disk_image(&artifact.path, &spec, extraction_dir.path())?;
             let source_sha256 = sha256_file(&extracted.extracted_path)?;
             let source_size = fs::metadata(&extracted.extracted_path)
                 .with_path(&extracted.extracted_path)?

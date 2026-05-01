@@ -93,7 +93,9 @@ background thread, updates the progress page, and writes a completion report to
 the Done page. Current engine support automatically copies direct extension
 binaries such as ReaPack, extracts ReaKontrol's snapshot ZIP and copies the
 contained `reaper_kontrol.dll`/`.dylib` into UserPlugins on both Windows and
-macOS, and includes unattended upstream-installer paths for:
+macOS, mounts SWS's macOS disk image and copies the contained
+`reaper_sws-*.dylib` into UserPlugins, and includes unattended
+upstream-installer paths for:
 - REAPER on Windows
 - OSARA on Windows, including default key map replacement with backup and a
   preserve-current opt-out
@@ -104,7 +106,10 @@ so later detection can verify the installed state through `RAIS/install-state.js
 instead of relying only on best-effort file presence or metadata fallbacks.
 
 Other upstream installers and disk images are still downloaded or reported for
-manual attention until their package-specific execution steps are added.
+manual attention until their package-specific execution steps are added. In
+particular, REAPER's macOS disk image and OSARA's macOS archive both ship the
+vendor's installer rather than a single binary, so they remain manual-attention
+paths until the corresponding installer-execution flows land.
 The target design in [DESIGN.md](./DESIGN.md) is full unattended installation
 and update of REAPER, OSARA, SWS, and ReaPack, including RAIS launching
 executable installers itself during the install run where needed, so those

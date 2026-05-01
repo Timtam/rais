@@ -130,6 +130,11 @@ pub fn package_automation_support(
         (crate::package::PACKAGE_REAKONTROL, Ok(ArtifactKind::Archive)) => {
             PackageAutomationSupport::Direct
         }
+        (crate::package::PACKAGE_SWS, Ok(ArtifactKind::DiskImage))
+            if matches!(platform, Platform::MacOs) =>
+        {
+            PackageAutomationSupport::Direct
+        }
         (crate::package::PACKAGE_REAPER, Ok(ArtifactKind::Installer))
             if matches!(platform, Platform::Windows) =>
         {
@@ -409,6 +414,12 @@ fn automation_support_for_artifact(
     match artifact.kind {
         ArtifactKind::ExtensionBinary => PackageAutomationSupport::Direct,
         ArtifactKind::Archive if artifact.package_id == crate::package::PACKAGE_REAKONTROL => {
+            PackageAutomationSupport::Direct
+        }
+        ArtifactKind::DiskImage
+            if artifact.package_id == crate::package::PACKAGE_SWS
+                && matches!(artifact.platform, Platform::MacOs) =>
+        {
             PackageAutomationSupport::Direct
         }
         ArtifactKind::Installer
@@ -1704,6 +1715,14 @@ mod tests {
                 Platform::MacOs,
                 Architecture::Arm64
             ),
+            PackageAutomationSupport::Direct
+        );
+        assert_eq!(
+            super::package_automation_support(PACKAGE_SWS, Platform::MacOs, Architecture::Arm64),
+            PackageAutomationSupport::Direct
+        );
+        assert_eq!(
+            super::package_automation_support(PACKAGE_SWS, Platform::MacOs, Architecture::X64),
             PackageAutomationSupport::Direct
         );
     }
