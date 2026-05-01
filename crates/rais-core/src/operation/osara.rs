@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::artifact::ArtifactKind;
 use crate::error::{RaisError, Result};
@@ -7,6 +7,42 @@ use crate::package::PACKAGE_OSARA;
 use super::{
     UnattendedPostInstallReport, backup_file_for_unattended_change, replace_file_from_source,
 };
+
+pub(super) const TITLE: &str = "OSARA";
+
+pub(super) fn manual_install_notes(
+    resource_path: &Path,
+    replace_osara_keymap: bool,
+) -> Vec<String> {
+    let mut notes = vec![
+        "OSARA's Windows installer supports standard and portable REAPER targets; preserve an existing key map unless the user explicitly chooses replacement."
+            .to_string(),
+    ];
+    if replace_osara_keymap {
+        notes.push(format!(
+            "The selected workflow replaces the current key map. Back up {} before replacing it with the OSARA key map.",
+            resource_path.join("reaper-kb.ini").display()
+        ));
+    } else {
+        notes.push(format!(
+            "The selected workflow preserves the current key map. Leave {} unchanged.",
+            resource_path.join("reaper-kb.ini").display()
+        ));
+    }
+    notes
+}
+
+pub(super) fn verification_paths(resource_path: &Path, replace_osara_keymap: bool) -> Vec<PathBuf> {
+    let mut paths = vec![
+        resource_path.join("UserPlugins"),
+        resource_path.join("KeyMaps").join("OSARA.ReaperKeyMap"),
+        resource_path.join("osara"),
+    ];
+    if replace_osara_keymap {
+        paths.push(resource_path.join("reaper-kb.ini"));
+    }
+    paths
+}
 
 pub(super) fn osara_windows_installer_arguments(resource_path: &Path) -> Vec<String> {
     vec!["/S".to_string(), format!("/D={}", resource_path.display())]

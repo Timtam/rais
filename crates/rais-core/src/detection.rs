@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -293,9 +292,7 @@ fn discover_portable_installation(platform: Platform, root: &Path) -> Option<Ins
 }
 
 fn standard_windows_installation(require_existing: bool) -> Option<Installation> {
-    let resource_path = env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .map(|path| path.join("REAPER"))?;
+    let resource_path = rais_platform::user_appdata_dir().map(|path| path.join("REAPER"))?;
 
     let app_path = windows_reaper_app_candidates()
         .into_iter()
@@ -351,22 +348,10 @@ fn standard_windows_installation(require_existing: bool) -> Option<Installation>
 }
 
 fn windows_reaper_app_candidates() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(program_files) = env::var_os("ProgramFiles") {
-        candidates.push(
-            PathBuf::from(program_files)
-                .join("REAPER")
-                .join("reaper.exe"),
-        );
-    }
-    if let Some(program_files_x86) = env::var_os("ProgramFiles(x86)") {
-        candidates.push(
-            PathBuf::from(program_files_x86)
-                .join("REAPER")
-                .join("reaper.exe"),
-        );
-    }
-    candidates
+    rais_platform::windows_program_files_dirs()
+        .into_iter()
+        .map(|program_files| program_files.join("REAPER").join("reaper.exe"))
+        .collect()
 }
 
 fn discover_portable_windows(root: &Path) -> Option<Installation> {
@@ -411,7 +396,7 @@ fn discover_portable_windows(root: &Path) -> Option<Installation> {
 }
 
 fn standard_macos_installation(require_existing: bool) -> Option<Installation> {
-    let home = env::var_os("HOME").map(PathBuf::from)?;
+    let home = rais_platform::user_home_dir()?;
     let resource_path = home
         .join("Library")
         .join("Application Support")

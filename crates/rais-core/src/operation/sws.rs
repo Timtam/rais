@@ -3,6 +3,26 @@ use std::path::{Path, PathBuf};
 use crate::artifact::{ArtifactDescriptor, ArtifactKind};
 use crate::model::{Architecture, Platform};
 
+pub(super) const TITLE: &str = "SWS";
+
+pub(super) fn manual_install_notes(resource_path: &Path) -> Vec<String> {
+    vec![format!(
+        "The SWS installer should target the REAPER installation that uses this resource folder: {}.",
+        resource_path.display()
+    )]
+}
+
+pub(super) fn verification_paths(
+    resource_path: &Path,
+    artifact: &ArtifactDescriptor,
+) -> Vec<PathBuf> {
+    let mut paths = vec![resource_path.join("UserPlugins")];
+    if let Some(plugin_path) = sws_primary_plugin_path(resource_path, artifact) {
+        paths.push(plugin_path);
+    }
+    paths
+}
+
 pub(super) fn sws_windows_installer_arguments(resource_path: &Path) -> Vec<String> {
     vec!["/S".to_string(), format!("/D={}", resource_path.display())]
 }

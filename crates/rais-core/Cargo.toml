@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 fluent-bundle.workspace = true
+rais-platform = { path = "../rais-platform" }
 reqwest.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde.workspace = true
@@ -16,6 +17,3 @@ tempfile.workspace = true
 thiserror.workspace = true
 unic-langid.workspace = true
 zip.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

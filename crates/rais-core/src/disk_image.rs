@@ -1,8 +1,16 @@
+//! `PackageSpec`-aware disk-image helpers.
+//!
+//! The OS-API mount/copy/find-bundle layer lives in `rais-platform`. This
+//! module wraps those calls with `rais-core` types: it converts
+//! [`rais_platform::DiskImageError`] into [`RaisError`] and adds the
+//! `PackageSpec`-driven user-plugin search that needs to know each package's
+//! prefix/suffix patterns.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "macos")]
-use std::process::Command;
+use rais_platform::DiskImageError;
+pub use rais_platform::{MountedDiskImage, mount_disk_image as platform_mount_disk_image};
 
 use crate::archive::ExtractedUserPlugin;
 use crate::error::{IoPathContext, RaisError, Result};
@@ -10,182 +18,17 @@ use crate::package::PackageSpec;
 
 const DIRECTORY_SEARCH_MAX_DEPTH: usize = 6;
 
-pub struct MountedDiskImage {
-    image_path: PathBuf,
-    mount_point: PathBuf,
-    detached: bool,
-}
-
-impl MountedDiskImage {
-    pub fn mount_point(&self) -> &Path {
-        &self.mount_point
-    }
-
-    pub fn detach(mut self) -> Result<()> {
-        self.detach_inner()
-    }
-
-    fn detach_inner(&mut self) -> Result<()> {
-        if self.detached {
-            return Ok(());
-        }
-        self.detached = true;
-        run_hdiutil_detach(&self.mount_point, &self.image_path)
-    }
-}
-
-impl Drop for MountedDiskImage {
-    fn drop(&mut self) {
-        if !self.detached {
-            let _ = self.detach_inner();
-        }
-    }
-}
-
-pub fn mount_disk_image(image_path: &Path) -> Result<MountedDiskImage> {
-    let mount_point = run_hdiutil_attach(image_path)?;
-    Ok(MountedDiskImage {
-        image_path: image_path.to_path_buf(),
-        mount_point,
-        detached: false,
-    })
-}
-
 pub fn install_app_bundle_from_disk_image(
     image_path: &Path,
     install_destination_dir: &Path,
     bundle_basename: &str,
 ) -> Result<PathBuf> {
-    let mount = mount_disk_image(image_path)?;
-    let source =
-        find_app_bundle_in_directory(mount.mount_point(), bundle_basename)?.ok_or_else(|| {
-            RaisError::DiskImageMissingAppBundle {
-                image: image_path.to_path_buf(),
-                bundle: bundle_basename.to_string(),
-            }
-        })?;
-
-    fs::create_dir_all(install_destination_dir).with_path(install_destination_dir)?;
-    let target = install_destination_dir.join(bundle_basename);
-    if target.exists() {
-        remove_path_recursive(&target)?;
-    }
-    copy_directory_recursive(&source, &target)?;
-
-    mount.detach()?;
-    Ok(target)
-}
-
-pub(crate) fn find_app_bundle_in_directory(root: &Path, basename: &str) -> Result<Option<PathBuf>> {
-    let target = basename.to_ascii_lowercase();
-    if let Some(exact) = find_app_bundle_matching(root, |name| name.to_ascii_lowercase() == target)?
-    {
-        return Ok(Some(exact));
-    }
-
-    let prefix = target.strip_suffix(".app").unwrap_or(&target);
-    if prefix.is_empty() {
-        return Ok(None);
-    }
-
-    find_app_bundle_matching(root, |name| {
-        let lower = name.to_ascii_lowercase();
-        let stem = match lower.strip_suffix(".app") {
-            Some(stem) => stem,
-            None => return false,
-        };
-        if stem == prefix {
-            return true;
-        }
-        let Some(rest) = stem.strip_prefix(prefix) else {
-            return false;
-        };
-        rest.bytes()
-            .next()
-            .is_some_and(|byte| matches!(byte, b'-' | b'_' | b' ' | b'0'..=b'9'))
-    })
-}
-
-fn find_app_bundle_matching<F>(root: &Path, predicate: F) -> Result<Option<PathBuf>>
-where
-    F: Fn(&str) -> bool,
-{
-    let mut stack = vec![(root.to_path_buf(), 0usize)];
-    while let Some((dir, depth)) = stack.pop() {
-        if depth > DIRECTORY_SEARCH_MAX_DEPTH {
-            continue;
-        }
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        let mut child_dirs = Vec::new();
-        for entry in entries {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(_) => continue,
-            };
-            let path = entry.path();
-            let file_type = match entry.file_type() {
-                Ok(file_type) => file_type,
-                Err(_) => continue,
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("");
-            if predicate(name) {
-                return Ok(Some(path));
-            }
-            if !skip_directory(name) {
-                child_dirs.push(path);
-            }
-        }
-        for child in child_dirs {
-            stack.push((child, depth + 1));
-        }
-    }
-    Ok(None)
-}
-
-pub(crate) fn copy_directory_recursive(source: &Path, dest: &Path) -> Result<()> {
-    fs::create_dir_all(dest).with_path(dest)?;
-    for entry in fs::read_dir(source).with_path(source)? {
-        let entry = entry.with_path(source)?;
-        let entry_path = entry.path();
-        let entry_name = entry.file_name();
-        let target_path = dest.join(&entry_name);
-        let file_type = entry.file_type().with_path(&entry_path)?;
-        if file_type.is_dir() {
-            copy_directory_recursive(&entry_path, &target_path)?;
-        } else if file_type.is_symlink() {
-            #[cfg(unix)]
-            {
-                let link_target = fs::read_link(&entry_path).with_path(&entry_path)?;
-                std::os::unix::fs::symlink(&link_target, &target_path).with_path(&target_path)?;
-            }
-            #[cfg(not(unix))]
-            {
-                fs::copy(&entry_path, &target_path).with_path(&target_path)?;
-            }
-        } else {
-            fs::copy(&entry_path, &target_path).with_path(&target_path)?;
-        }
-    }
-    Ok(())
-}
-
-fn remove_path_recursive(path: &Path) -> Result<()> {
-    if path.is_dir() {
-        fs::remove_dir_all(path).with_path(path)
-    } else if path.exists() {
-        fs::remove_file(path).with_path(path)
-    } else {
-        Ok(())
-    }
+    rais_platform::install_app_bundle_from_disk_image(
+        image_path,
+        install_destination_dir,
+        bundle_basename,
+    )
+    .map_err(rais_error_from_disk_image_error)
 }
 
 pub fn extract_user_plugin_from_disk_image(
@@ -193,7 +36,7 @@ pub fn extract_user_plugin_from_disk_image(
     spec: &PackageSpec,
     extract_dir: &Path,
 ) -> Result<ExtractedUserPlugin> {
-    let mount = mount_disk_image(image_path)?;
+    let mount = platform_mount_disk_image(image_path).map_err(rais_error_from_disk_image_error)?;
     let source = find_user_plugin_in_directory(mount.mount_point(), spec)?.ok_or_else(|| {
         RaisError::DiskImageMissingExtensionBinary {
             image: image_path.to_path_buf(),
@@ -222,7 +65,7 @@ pub fn extract_user_plugin_from_disk_image(
         .map(|relative| relative.display().to_string())
         .unwrap_or_else(|_| source.display().to_string());
 
-    mount.detach()?;
+    mount.detach().map_err(rais_error_from_disk_image_error)?;
 
     Ok(ExtractedUserPlugin {
         source_archive: image_path.to_path_buf(),
@@ -297,109 +140,32 @@ fn skip_directory(name: &str) -> bool {
     )
 }
 
-#[cfg(target_os = "macos")]
-fn run_hdiutil_attach(image_path: &Path) -> Result<PathBuf> {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    // Some upstream DMGs (REAPER's, SWS's) embed a software-license-agreement
-    // hdiutil refuses to mount silently. Pipe "Y" to stdin so the SLA prompt
-    // is auto-accepted; on DMGs without an SLA the input is harmless.
-    let mut child = Command::new("hdiutil")
-        .arg("attach")
-        .arg("-nobrowse")
-        .arg("-readonly")
-        .arg("-noautoopen")
-        .arg(image_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| RaisError::Io {
-            path: image_path.to_path_buf(),
-            source,
-        })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(b"Y\n");
-    }
-
-    let output = child.wait_with_output().map_err(|source| RaisError::Io {
-        path: image_path.to_path_buf(),
-        source,
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return Err(RaisError::DiskImageMount {
-            image: image_path.to_path_buf(),
+fn rais_error_from_disk_image_error(error: DiskImageError) -> RaisError {
+    match error {
+        DiskImageError::Io { path, source } => RaisError::Io { path, source },
+        DiskImageError::HdiutilFailed {
+            phase,
+            image,
+            code,
+            stderr,
+            stdout,
+        } => RaisError::DiskImageMount {
+            image,
             message: format!(
-                "hdiutil attach exited with status {:?}; stderr: {}; stdout: {}",
-                output.status.code(),
-                stderr,
-                stdout,
+                "hdiutil {phase} exited with status {code:?}; stderr: {stderr}; stdout: {stdout}"
             ),
-        });
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    parse_hdiutil_attach_output(&stdout).ok_or_else(|| RaisError::DiskImageMount {
-        image: image_path.to_path_buf(),
-        message: format!(
-            "hdiutil attach produced no /Volumes mount point; stdout: {}",
-            stdout.trim()
-        ),
-    })
-}
-
-#[cfg(not(target_os = "macos"))]
-fn run_hdiutil_attach(image_path: &Path) -> Result<PathBuf> {
-    Err(RaisError::DiskImageMount {
-        image: image_path.to_path_buf(),
-        message: "disk image mounting is only supported on macOS".to_string(),
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn run_hdiutil_detach(mount_point: &Path, image_path: &Path) -> Result<()> {
-    let output = Command::new("hdiutil")
-        .arg("detach")
-        .arg("-force")
-        .arg(mount_point)
-        .output()
-        .map_err(|source| RaisError::Io {
-            path: image_path.to_path_buf(),
-            source,
-        })?;
-    if !output.status.success() {
-        return Err(RaisError::DiskImageMount {
-            image: image_path.to_path_buf(),
-            message: format!(
-                "hdiutil detach exited with status {:?}: {}",
-                output.status.code(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-        });
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn run_hdiutil_detach(_mount_point: &Path, _image_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
-pub(crate) fn parse_hdiutil_attach_output(stdout: &str) -> Option<PathBuf> {
-    for line in stdout.lines() {
-        if let Some(start) = line.find("/Volumes/") {
-            let candidate = line[start..].trim_end();
-            if !candidate.is_empty() {
-                return Some(PathBuf::from(candidate));
-            }
+        },
+        DiskImageError::NoMountPoint { image, stdout } => RaisError::DiskImageMount {
+            image,
+            message: format!("hdiutil attach produced no /Volumes mount point; stdout: {stdout}"),
+        },
+        DiskImageError::AppBundleNotFound { image, bundle } => {
+            RaisError::DiskImageMissingAppBundle { image, bundle }
+        }
+        DiskImageError::Unsupported { image, message } => {
+            RaisError::DiskImageMount { image, message }
         }
     }
-    None
 }
 
 #[cfg(test)]
@@ -408,10 +174,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{
-        copy_directory_recursive, find_app_bundle_in_directory, find_user_plugin_in_directory,
-        parse_hdiutil_attach_output,
-    };
+    use super::find_user_plugin_in_directory;
     use crate::model::Platform;
     use crate::package::{PACKAGE_SWS, package_specs_by_id};
 
@@ -453,115 +216,5 @@ mod tests {
             .unwrap();
         let found = find_user_plugin_in_directory(dir.path(), &spec).unwrap();
         assert!(found.is_none());
-    }
-
-    #[test]
-    fn parses_volumes_line_from_hdiutil_attach_output() {
-        let output = "/dev/disk5          \tApple_partition_scheme\t\n\
-                      /dev/disk5s1        \tApple_partition_map   \t\n\
-                      /dev/disk5s2        \tApple_HFS             \t/Volumes/SWS Extension\n";
-        let mount = parse_hdiutil_attach_output(output).unwrap();
-        assert_eq!(mount.to_str().unwrap(), "/Volumes/SWS Extension");
-    }
-
-    #[test]
-    fn returns_no_mount_point_for_unrelated_output() {
-        assert!(parse_hdiutil_attach_output("hdiutil: attach: error\n").is_none());
-    }
-
-    #[test]
-    fn finds_app_bundle_at_root_of_directory_tree() {
-        let dir = tempdir().unwrap();
-        let bundle = dir.path().join("REAPER.app");
-        fs::create_dir_all(bundle.join("Contents")).unwrap();
-        fs::write(bundle.join("Contents").join("Info.plist"), b"<plist/>").unwrap();
-
-        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
-        assert_eq!(found.as_deref(), Some(bundle.as_path()));
-    }
-
-    #[test]
-    fn matches_app_bundle_basename_case_insensitively() {
-        let dir = tempdir().unwrap();
-        let bundle = dir.path().join("Reaper.app");
-        fs::create_dir_all(&bundle).unwrap();
-
-        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
-        assert_eq!(found.as_deref(), Some(bundle.as_path()));
-    }
-
-    #[test]
-    fn returns_none_for_missing_app_bundle() {
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("README")).unwrap();
-        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
-        assert!(found.is_none());
-    }
-
-    #[test]
-    fn finds_arch_specific_reaper_bundle_when_canonical_name_is_missing() {
-        let dir = tempdir().unwrap();
-        let bundle = dir.path().join("REAPER-ARM.app");
-        fs::create_dir_all(&bundle).unwrap();
-
-        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
-        assert_eq!(found.as_deref(), Some(bundle.as_path()));
-    }
-
-    #[test]
-    fn finds_numeric_suffixed_reaper_bundle_when_canonical_name_is_missing() {
-        let dir = tempdir().unwrap();
-        let bundle = dir.path().join("REAPER64.app");
-        fs::create_dir_all(&bundle).unwrap();
-
-        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
-        assert_eq!(found.as_deref(), Some(bundle.as_path()));
-    }
-
-    #[test]
-    fn prefers_exact_bundle_match_over_variant() {
-        let dir = tempdir().unwrap();
-        let exact = dir.path().join("REAPER.app");
-        fs::create_dir_all(&exact).unwrap();
-        fs::create_dir_all(dir.path().join("REAPER-ARM.app")).unwrap();
-
-        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
-        assert_eq!(found.as_deref(), Some(exact.as_path()));
-    }
-
-    #[test]
-    fn does_not_match_unrelated_app_bundles_as_reaper_variants() {
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("REAPERemote.app")).unwrap();
-        fs::create_dir_all(dir.path().join("Notepad.app")).unwrap();
-
-        let found = find_app_bundle_in_directory(dir.path(), "REAPER.app").unwrap();
-        assert!(found.is_none());
-    }
-
-    #[test]
-    fn copies_directory_tree_with_nested_files() {
-        let source_root = tempdir().unwrap();
-        let source = source_root.path().join("REAPER.app");
-        fs::create_dir_all(source.join("Contents").join("MacOS")).unwrap();
-        fs::write(source.join("Contents").join("Info.plist"), b"<plist/>").unwrap();
-        fs::write(
-            source.join("Contents").join("MacOS").join("REAPER"),
-            b"binary",
-        )
-        .unwrap();
-
-        let dest_root = tempdir().unwrap();
-        let dest = dest_root.path().join("REAPER.app");
-        copy_directory_recursive(&source, &dest).unwrap();
-
-        assert_eq!(
-            fs::read(dest.join("Contents").join("MacOS").join("REAPER")).unwrap(),
-            b"binary"
-        );
-        assert_eq!(
-            fs::read(dest.join("Contents").join("Info.plist")).unwrap(),
-            b"<plist/>"
-        );
     }
 }

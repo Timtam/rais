@@ -41,8 +41,8 @@ impl Drop for PackageInstallLock {
 
 pub fn default_package_install_lock_path() -> PathBuf {
     if cfg!(target_os = "windows") {
-        if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local_app_data)
+        if let Some(local_app_data) = rais_platform::user_local_appdata_dir() {
+            return local_app_data
                 .join("RAIS")
                 .join("locks")
                 .join(LOCK_FILE_NAME);
@@ -50,8 +50,8 @@ pub fn default_package_install_lock_path() -> PathBuf {
     }
 
     if cfg!(target_os = "macos") {
-        if let Some(home) = env::var_os("HOME") {
-            return PathBuf::from(home)
+        if let Some(home) = rais_platform::user_home_dir() {
+            return home
                 .join("Library")
                 .join("Caches")
                 .join("RAIS")

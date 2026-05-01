@@ -150,16 +150,14 @@ pub fn current_rais_version() -> Result<Version> {
 
 pub fn default_self_update_staging_dir() -> PathBuf {
     if cfg!(target_os = "windows") {
-        if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local_app_data)
-                .join("RAIS")
-                .join("self-update");
+        if let Some(local_app_data) = rais_platform::user_local_appdata_dir() {
+            return local_app_data.join("RAIS").join("self-update");
         }
     }
 
     if cfg!(target_os = "macos") {
-        if let Some(home) = env::var_os("HOME") {
-            return PathBuf::from(home)
+        if let Some(home) = rais_platform::user_home_dir() {
+            return home
                 .join("Library")
                 .join("Caches")
                 .join("RAIS")

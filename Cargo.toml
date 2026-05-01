@@ -2,6 +2,7 @@
 members = [
     "crates/rais-cli",
     "crates/rais-core",
+    "crates/rais-platform",
     "crates/rais-ui-wxdragon",
 ]
 resolver = "3"

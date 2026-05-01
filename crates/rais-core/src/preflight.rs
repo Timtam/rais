@@ -239,10 +239,10 @@ fn is_distinct_portable_like_resource_path(resource_path: &Path) -> bool {
 
 fn standard_resource_path(platform: Option<Platform>) -> Option<PathBuf> {
     match platform {
-        Some(Platform::Windows) => std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .map(|path| path.join("REAPER")),
-        Some(Platform::MacOs) => std::env::var_os("HOME").map(PathBuf::from).map(|path| {
+        Some(Platform::Windows) => {
+            rais_platform::user_appdata_dir().map(|path| path.join("REAPER"))
+        }
+        Some(Platform::MacOs) => rais_platform::user_home_dir().map(|path| {
             path.join("Library")
                 .join("Application Support")
                 .join("REAPER")

@@ -1294,6 +1294,7 @@ name = "rais-core"
 version = "0.1.0"
 dependencies = [
  "fluent-bundle",
+ "rais-platform",
  "reqwest",
  "rusqlite",
  "serde",
@@ -1303,8 +1304,16 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "unic-langid",
- "windows-sys 0.61.2",
  "zip",
+]
+
+[[package]]
+name = "rais-platform"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

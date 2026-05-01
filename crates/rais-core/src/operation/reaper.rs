@@ -4,6 +4,46 @@ use crate::artifact::ArtifactKind;
 
 use super::target_likely_portable;
 
+pub(super) const TITLE: &str = "REAPER";
+
+pub(super) fn manual_install_notes(
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+) -> Vec<String> {
+    let mut notes = vec![
+        "REAPER application installers should be launched and completed by RAIS itself in supported builds, but this engine slice does not execute them yet."
+            .to_string(),
+    ];
+    if target_likely_portable(resource_path, target_app_path) {
+        notes.push(format!(
+            "This looks like a portable target. REAPER application files and reaper.ini should end up under {}.",
+            resource_path.display()
+        ));
+    } else if let Some(target_app_path) = target_app_path {
+        notes.push(format!(
+            "This target may require administrator approval if REAPER is installed to {}.",
+            reaper_install_destination(target_app_path).display()
+        ));
+    }
+    notes
+}
+
+pub(super) fn verification_paths(
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(target_app_path) = target_app_path {
+        paths.push(target_app_path.to_path_buf());
+        if target_likely_portable(resource_path, Some(target_app_path)) {
+            paths.push(resource_path.join("reaper.ini"));
+        }
+    } else {
+        paths.push(resource_path.to_path_buf());
+    }
+    paths
+}
+
 pub(super) fn reaper_windows_installer_arguments(
     resource_path: &Path,
     target_app_path: Option<&Path>,

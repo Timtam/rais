@@ -32,10 +32,9 @@ use self::osara::{
     apply_osara_keymap_replacement, osara_manual_steps, osara_windows_installer_arguments,
 };
 use self::reaper::{
-    reaper_install_destination, reaper_macos_app_bundle_install_target, reaper_manual_steps,
-    reaper_windows_installer_arguments,
+    reaper_macos_app_bundle_install_target, reaper_manual_steps, reaper_windows_installer_arguments,
 };
-use self::sws::{sws_manual_steps, sws_primary_plugin_path, sws_windows_installer_arguments};
+use self::sws::{sws_manual_steps, sws_windows_installer_arguments};
 use crate::upstream::{execute_planned_execution, verify_planned_execution_paths};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1180,52 +1179,18 @@ fn build_manual_instruction(
                 resource_path,
                 replace_osara_keymap,
             ));
-            notes.push(
-                "OSARA's Windows installer supports standard and portable REAPER targets; preserve an existing key map unless the user explicitly chooses replacement."
-                    .to_string(),
-            );
-            if replace_osara_keymap {
-                notes.push(
-                    format!(
-                        "The selected workflow replaces the current key map. Back up {} before replacing it with the OSARA key map.",
-                        resource_path.join("reaper-kb.ini").display()
-                    )
-                );
-            } else {
-                notes.push(format!(
-                    "The selected workflow preserves the current key map. Leave {} unchanged.",
-                    resource_path.join("reaper-kb.ini").display()
-                ));
-            }
+            notes.extend(osara::manual_install_notes(
+                resource_path,
+                replace_osara_keymap,
+            ));
         }
         crate::package::PACKAGE_SWS => {
             steps.extend(sws_manual_steps(kind, resource_path));
-            notes.push(
-                format!(
-                    "The SWS installer should target the REAPER installation that uses this resource folder: {}.",
-                    resource_path.display()
-                )
-            );
+            notes.extend(sws::manual_install_notes(resource_path));
         }
         crate::package::PACKAGE_REAPER => {
             steps.extend(reaper_manual_steps(kind, resource_path, target_app_path));
-            notes.push(
-                "REAPER application installers should be launched and completed by RAIS itself in supported builds, but this engine slice does not execute them yet."
-                    .to_string(),
-            );
-            if target_likely_portable(resource_path, target_app_path) {
-                notes.push(
-                    format!(
-                        "This looks like a portable target. REAPER application files and reaper.ini should end up under {}.",
-                        resource_path.display()
-                    )
-                );
-            } else if let Some(target_app_path) = target_app_path {
-                notes.push(format!(
-                    "This target may require administrator approval if REAPER is installed to {}.",
-                    reaper_install_destination(target_app_path).display()
-                ));
-            }
+            notes.extend(reaper::manual_install_notes(resource_path, target_app_path));
         }
         _ => {
             steps.push(format!(
@@ -1275,39 +1240,13 @@ fn planned_verification_paths(
 ) -> Vec<PathBuf> {
     let mut paths = match artifact.package_id.as_str() {
         crate::package::PACKAGE_REAPER => {
-            let mut paths = Vec::new();
-            if let Some(target_app_path) = target_app_path {
-                paths.push(target_app_path.to_path_buf());
-                if target_likely_portable(resource_path, Some(target_app_path)) {
-                    paths.push(resource_path.join("reaper.ini"));
-                }
-            } else {
-                paths.push(resource_path.to_path_buf());
-            }
-            paths
+            reaper::verification_paths(resource_path, target_app_path)
         }
         crate::package::PACKAGE_OSARA => {
-            let mut paths = vec![
-                resource_path.join("UserPlugins"),
-                resource_path.join("KeyMaps").join("OSARA.ReaperKeyMap"),
-                resource_path.join("osara"),
-            ];
-            if replace_osara_keymap {
-                paths.push(resource_path.join("reaper-kb.ini"));
-            }
-            paths
+            osara::verification_paths(resource_path, replace_osara_keymap)
         }
-        crate::package::PACKAGE_SWS => {
-            let mut paths = vec![resource_path.join("UserPlugins")];
-            if let Some(plugin_path) = sws_primary_plugin_path(resource_path, artifact) {
-                paths.push(plugin_path);
-            }
-            paths
-        }
-        crate::package::PACKAGE_REAPACK => {
-            vec![resource_path.join("UserPlugins")]
-        }
-        crate::package::PACKAGE_REAKONTROL => {
+        crate::package::PACKAGE_SWS => sws::verification_paths(resource_path, artifact),
+        crate::package::PACKAGE_REAPACK | crate::package::PACKAGE_REAKONTROL => {
             vec![resource_path.join("UserPlugins")]
         }
         _ => vec![resource_path.to_path_buf()],
@@ -1340,9 +1279,9 @@ pub(super) fn target_likely_portable(resource_path: &Path, target_app_path: Opti
 
 fn package_title_name(package_id: &str) -> &'static str {
     match package_id {
-        crate::package::PACKAGE_REAPER => "REAPER",
-        crate::package::PACKAGE_OSARA => "OSARA",
-        crate::package::PACKAGE_SWS => "SWS",
+        crate::package::PACKAGE_REAPER => reaper::TITLE,
+        crate::package::PACKAGE_OSARA => osara::TITLE,
+        crate::package::PACKAGE_SWS => sws::TITLE,
         crate::package::PACKAGE_REAPACK => "ReaPack",
         crate::package::PACKAGE_REAKONTROL => "ReaKontrol",
         _ => "package",

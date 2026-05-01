@@ -101,17 +101,14 @@ pub fn expected_artifact_kind(
 
 pub fn default_cache_dir() -> PathBuf {
     if cfg!(target_os = "windows") {
-        if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local_app_data).join("RAIS").join("cache");
+        if let Some(local_app_data) = rais_platform::user_local_appdata_dir() {
+            return local_app_data.join("RAIS").join("cache");
         }
     }
 
     if cfg!(target_os = "macos") {
-        if let Some(home) = env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join("Library")
-                .join("Caches")
-                .join("RAIS");
+        if let Some(home) = rais_platform::user_home_dir() {
+            return home.join("Library").join("Caches").join("RAIS");
         }
     }
 
