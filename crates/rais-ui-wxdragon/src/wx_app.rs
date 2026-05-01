@@ -47,7 +47,7 @@ struct WizardWidgets {
     done_rescan: Button,
     done_save_report: Button,
     done_self_update_apply: Button,
-    self_update_status: StaticText,
+    self_update_status: StatusBar,
 }
 
 pub fn run() {
@@ -76,16 +76,13 @@ pub fn run() {
         step_label.set_name("rais-step-status");
         root.add(&step_label, 0, SizerFlag::All | SizerFlag::Expand, 12);
 
-        let self_update_status = StaticText::builder(&root_panel)
-            .with_label(&model.text.self_update_status_checking)
-            .build();
-        self_update_status.set_name("rais-self-update-status");
-        root.add(
-            &self_update_status,
-            0,
-            SizerFlag::Left | SizerFlag::Right | SizerFlag::Bottom | SizerFlag::Expand,
-            12,
-        );
+        // Use the frame's wxStatusBar for self-update status. NVDA's "Report
+        // status bar" command (NVDA+End) reads exactly this control, JAWS
+        // exposes it via its status-bar review keys, and Narrator/UIA expose
+        // the StatusBar role natively. Updating via SetStatusText fires the
+        // platform notifications that screen readers auto-announce.
+        let self_update_status = frame.create_status_bar(1, 0, 0, "rais-self-update-status");
+        self_update_status.set_status_text(&model.text.self_update_status_checking, 0);
 
         let book = SimpleBook::builder(&root_panel).build();
         book.set_name("rais-wizard-pages");
@@ -576,16 +573,16 @@ pub fn run() {
                     Ok(report) => {
                         widgets
                             .self_update_status
-                            .set_label(&format_self_update_check_summary(&report));
+                            .set_status_text(&format_self_update_check_summary(&report), 0);
                         widgets
                             .done_self_update_apply
                             .enable(report.update_available);
                     }
                     Err(error) => {
-                        widgets.self_update_status.set_label(&format!(
-                            "{}: {}",
-                            model.text.done_self_update_error_prefix, error
-                        ));
+                        widgets.self_update_status.set_status_text(
+                            &format!("{}: {}", model.text.done_self_update_error_prefix, error),
+                            0,
+                        );
                     }
                 }));
             });
@@ -717,7 +714,7 @@ fn add_pages(
     book: &SimpleBook,
     model: &WizardModel,
     package_rows: Rc<RefCell<Vec<rais_ui_wxdragon::PackageRow>>>,
-    self_update_status: StaticText,
+    self_update_status: StatusBar,
 ) -> WizardWidgets {
     let target_page = Panel::builder(book).build();
     let (target_choice, portable_folder, target_details) = build_target_page(&target_page, model);

@@ -109,6 +109,27 @@ another RAIS process is in the middle of a non-dry-run install. Stale locks
 left behind by a crashed process are recognised and cleaned up automatically
 on the next install.
 
+Before any file swap, `self-update apply` also verifies the platform signature
+of every extracted binary that would replace an install target. macOS uses
+`/usr/bin/codesign --verify --strict`; Windows tries `signtool.exe verify /pa`
+from the latest Windows 10 SDK. The verifier reports one of three verdicts per
+binary:
+
+- `Signed` — the signature checks out; proceed.
+- `Unsigned` — no signature is present or the host lacks the verification
+  tooling (e.g. signtool on a typical end-user Windows install). Per
+  DESIGN.md's "where available" rule, this is acceptable: the SHA-256 + HTTPS
+  chain already binds the artifact to the release manifest, and the OS
+  loaders (SmartScreen on Windows, Gatekeeper on macOS) enforce platform
+  signature trust at exec time anyway.
+- `Invalid` — the binary claims to be signed but verification surfaced a
+  clear tampering signal (bad digest, untrusted chain, sealed-resource
+  mismatch, etc). Apply rejects with `SelfUpdateSignatureInvalid` *before*
+  touching any install file.
+
+Verdicts for every replaced binary are recorded in the apply report
+(`signature_verdicts`) so the JSON output captures what was checked.
+
 `rais-ui-wxdragon` is the native UI crate. Its default build exercises the Rust
 wizard model without requiring wxWidgets native libraries. Build it with
 `--features gui` to run the wxDragon window. The UI defaults to embedded

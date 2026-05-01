@@ -90,6 +90,9 @@ pub enum RaisError {
     #[error("a package installation is already in progress (lock {lock_path}, PID {pid})")]
     PackageInstallInProgress { lock_path: PathBuf, pid: u32 },
 
+    #[error("self-update artifact {path} failed signature verification: {reason}")]
+    SelfUpdateSignatureInvalid { path: PathBuf, reason: String },
+
     #[error("preflight failed: {message}")]
     PreflightFailed { message: String },
 

@@ -12,6 +12,7 @@ use crate::error::{IoPathContext, RaisError};
 use crate::hash::sha256_file;
 use crate::lock::{default_package_install_lock_path, package_install_lock_active_at};
 use crate::model::Platform;
+use crate::signature::{SignatureVerdict, verify_executable_signature};
 use crate::version::Version;
 
 const ROLLBACK_SUFFIX: &str = "rais-old";
@@ -93,7 +94,15 @@ pub struct SelfUpdateApplyReport {
     pub extraction_dir: PathBuf,
     pub replaced_files: Vec<ReplacedFile>,
     pub skipped_files: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signature_verdicts: Vec<SignatureVerdictRecord>,
     pub status_message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignatureVerdictRecord {
+    pub source_path: PathBuf,
+    pub verdict: SignatureVerdict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -323,6 +332,14 @@ pub fn apply_self_update(
 
     let extracted_files = extract_all_files_flat(staged_asset, &extraction_dir)?;
 
+    let signature_verdicts = match verify_replacement_signatures(&extracted_files, &install_root) {
+        Ok(verdicts) => verdicts,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&extraction_dir);
+            return Err(error);
+        }
+    };
+
     let mut replaced = Vec::new();
     let mut skipped = Vec::new();
     if let Err(error) =
@@ -333,8 +350,20 @@ pub fn apply_self_update(
         return Err(error);
     }
 
+    let signed_count = signature_verdicts
+        .iter()
+        .filter(|record| matches!(record.verdict, SignatureVerdict::Signed { .. }))
+        .count();
     let status_message = if replaced.is_empty() {
         "Self-update did not match any binary in the install directory.".to_string()
+    } else if signed_count > 0 {
+        format!(
+            "Replaced {} file(s) with RAIS {} ({} signed); rollback copies retained as .{}.",
+            replaced.len(),
+            stage.check.latest_version,
+            signed_count,
+            ROLLBACK_SUFFIX
+        )
     } else {
         format!(
             "Replaced {} file(s) with RAIS {}; rollback copies retained as .{}.",
@@ -350,8 +379,37 @@ pub fn apply_self_update(
         extraction_dir,
         replaced_files: replaced,
         skipped_files: skipped,
+        signature_verdicts,
         status_message,
     })
+}
+
+fn verify_replacement_signatures(
+    extracted_files: &[PathBuf],
+    install_root: &Path,
+) -> Result<Vec<SignatureVerdictRecord>> {
+    let mut verdicts = Vec::new();
+    for source in extracted_files {
+        let Some(basename) = source.file_name() else {
+            continue;
+        };
+        let install_path = install_root.join(basename);
+        if !install_path.is_file() {
+            continue;
+        }
+        let verdict = verify_executable_signature(source)?;
+        if let SignatureVerdict::Invalid { reason } = &verdict {
+            return Err(RaisError::SelfUpdateSignatureInvalid {
+                path: source.clone(),
+                reason: reason.clone(),
+            });
+        }
+        verdicts.push(SignatureVerdictRecord {
+            source_path: source.clone(),
+            verdict,
+        });
+    }
+    Ok(verdicts)
 }
 
 fn swap_install_files(

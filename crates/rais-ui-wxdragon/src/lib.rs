@@ -1431,18 +1431,47 @@ pub fn format_self_update_check_summary(report: &SelfUpdateCheckReport) -> Strin
 
 pub fn format_self_update_apply_summary(report: &SelfUpdateApplyReport) -> String {
     if report.replaced_files.is_empty() {
-        format!(
+        return format!(
             "Self-update did not replace any files (target version {}).",
             report.stage.check.latest_version
-        )
-    } else {
-        format!(
-            "Replaced {} file(s) under {}; relaunch RAIS to use {}.",
-            report.replaced_files.len(),
-            report.install_root.display(),
-            report.stage.check.latest_version
-        )
+        );
     }
+
+    let mut summary = format!(
+        "Replaced {} file(s) under {}; relaunch RAIS to use {}.",
+        report.replaced_files.len(),
+        report.install_root.display(),
+        report.stage.check.latest_version
+    );
+    if let Some(signature_summary) = format_signature_verdict_summary(report) {
+        summary.push(' ');
+        summary.push_str(&signature_summary);
+    }
+    summary
+}
+
+fn format_signature_verdict_summary(report: &SelfUpdateApplyReport) -> Option<String> {
+    use rais_core::signature::SignatureVerdict;
+
+    if report.signature_verdicts.is_empty() {
+        return None;
+    }
+    let mut signed = 0usize;
+    let mut unsigned = 0usize;
+    for record in &report.signature_verdicts {
+        match record.verdict {
+            SignatureVerdict::Signed { .. } => signed += 1,
+            SignatureVerdict::Unsigned { .. } => unsigned += 1,
+            SignatureVerdict::Invalid { .. } => {}
+        }
+    }
+    let parts = match (signed, unsigned) {
+        (0, 0) => return None,
+        (s, 0) => format!("Signature verification: {s} signed."),
+        (0, u) => format!("Signature verification: {u} unsigned."),
+        (s, u) => format!("Signature verification: {s} signed, {u} unsigned."),
+    };
+    Some(parts)
 }
 
 pub fn wizard_outcome_report_from_success(
@@ -2332,7 +2361,8 @@ mod tests {
 
     use super::{
         OsaraKeymapChoice, PackageRow, UiBootstrapOptions, WizardInstallRequest,
-        custom_portable_target_row, localizer_from_options, model_from_plan, refreshed_target_row,
+        custom_portable_target_row, format_self_update_apply_summary, localizer_from_options,
+        model_from_plan, refreshed_target_row,
     };
 
     #[test]
@@ -3687,6 +3717,129 @@ mod tests {
         let content = std::fs::read_to_string(path).unwrap();
         assert!(content.contains("RAIS Report"));
         assert!(content.contains("resource_path:"));
+    }
+
+    #[test]
+    fn apply_summary_appends_signed_count_when_signatures_were_verified() {
+        use rais_core::self_update::{ReplacedFile, SignatureVerdictRecord};
+        use rais_core::signature::SignatureVerdict;
+
+        let report = sample_apply_report(
+            vec![ReplacedFile {
+                install_path: PathBuf::from("/install/RAIS"),
+                backup_path: PathBuf::from("/install/RAIS.rais-old"),
+            }],
+            vec![SignatureVerdictRecord {
+                source_path: PathBuf::from("/staging/RAIS"),
+                verdict: SignatureVerdict::Signed {
+                    details: "valid on disk".to_string(),
+                },
+            }],
+        );
+
+        let summary = format_self_update_apply_summary(&report);
+        assert!(summary.contains("Replaced 1 file(s)"));
+        assert!(summary.contains("Signature verification: 1 signed."));
+    }
+
+    #[test]
+    fn apply_summary_omits_signature_clause_when_no_verdicts_recorded() {
+        use rais_core::self_update::ReplacedFile;
+
+        let report = sample_apply_report(
+            vec![ReplacedFile {
+                install_path: PathBuf::from("/install/RAIS"),
+                backup_path: PathBuf::from("/install/RAIS.rais-old"),
+            }],
+            Vec::new(),
+        );
+
+        let summary = format_self_update_apply_summary(&report);
+        assert!(summary.contains("Replaced 1 file(s)"));
+        assert!(!summary.contains("Signature verification"));
+    }
+
+    #[test]
+    fn apply_summary_reports_signed_and_unsigned_split() {
+        use rais_core::self_update::{ReplacedFile, SignatureVerdictRecord};
+        use rais_core::signature::SignatureVerdict;
+
+        let report = sample_apply_report(
+            vec![
+                ReplacedFile {
+                    install_path: PathBuf::from("/install/RAIS"),
+                    backup_path: PathBuf::from("/install/RAIS.rais-old"),
+                },
+                ReplacedFile {
+                    install_path: PathBuf::from("/install/rais-cli"),
+                    backup_path: PathBuf::from("/install/rais-cli.rais-old"),
+                },
+            ],
+            vec![
+                SignatureVerdictRecord {
+                    source_path: PathBuf::from("/staging/RAIS"),
+                    verdict: SignatureVerdict::Signed {
+                        details: "ok".to_string(),
+                    },
+                },
+                SignatureVerdictRecord {
+                    source_path: PathBuf::from("/staging/rais-cli"),
+                    verdict: SignatureVerdict::Unsigned {
+                        reason: "no signtool".to_string(),
+                    },
+                },
+            ],
+        );
+
+        let summary = format_self_update_apply_summary(&report);
+        assert!(summary.contains("Signature verification: 1 signed, 1 unsigned."));
+    }
+
+    fn sample_apply_report(
+        replaced_files: Vec<rais_core::self_update::ReplacedFile>,
+        signature_verdicts: Vec<rais_core::self_update::SignatureVerdictRecord>,
+    ) -> rais_core::self_update::SelfUpdateApplyReport {
+        use rais_core::model::Platform;
+        use rais_core::self_update::{
+            SelfUpdateApplyReport, SelfUpdateAssetSelection, SelfUpdateCheckReport,
+            SelfUpdateStageReport,
+        };
+
+        let check = SelfUpdateCheckReport {
+            manifest_url: "https://example.test/rais-update-stable.json".to_string(),
+            current_version: Version::parse("0.1.0").unwrap(),
+            latest_version: Version::parse("0.2.0").unwrap(),
+            channel: "stable".to_string(),
+            published_at: "2026-04-25T00:00:00Z".to_string(),
+            release_notes_url: None,
+            minimum_supported_previous_version: None,
+            update_available: true,
+            requires_manual_transition: false,
+            asset: SelfUpdateAssetSelection {
+                platform: Platform::Windows,
+                url: "https://example.test/RAIS-windows.zip".to_string(),
+                sha256: "0".repeat(64),
+            },
+        };
+        let stage = SelfUpdateStageReport {
+            check,
+            staging_dir: PathBuf::from("/staging"),
+            staged_asset_path: Some(PathBuf::from("/staging/0.2.0/RAIS-windows.zip")),
+            downloaded: true,
+            reused_existing_file: false,
+            verified_sha256: Some("0".repeat(64)),
+            ready_to_apply: true,
+            status_message: "ready".to_string(),
+        };
+        SelfUpdateApplyReport {
+            stage,
+            install_root: PathBuf::from("/install"),
+            extraction_dir: PathBuf::from("/staging/0.2.0/extracted"),
+            replaced_files,
+            skipped_files: Vec::new(),
+            signature_verdicts,
+            status_message: "applied".to_string(),
+        }
     }
 
     fn fake_installation() -> Installation {

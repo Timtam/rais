@@ -23,6 +23,7 @@ pub mod resource;
 pub mod rollback;
 pub mod self_update;
 pub mod setup;
+pub mod signature;
 pub mod upstream;
 pub mod version;
 
