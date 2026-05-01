@@ -61,6 +61,9 @@ cargo run -p rais-cli -- self-update check
 cargo run -p rais-cli -- self-update check --manifest-url https://example.test/rais-update-stable.json
 cargo run -p rais-cli -- self-update stage
 cargo run -p rais-cli -- self-update stage --staging-dir C:\Temp\RAIS-Update
+cargo run -p rais-cli -- self-update apply
+cargo run -p rais-cli -- self-update apply --install-root C:\Tools\RAIS
+cargo run -p rais-cli -- self-update apply --restart
 cargo run -p rais-ui-wxdragon
 cargo run -p rais-ui-wxdragon --features gui
 .\scripts\build-wxdragon-test.ps1
@@ -83,6 +86,20 @@ platform. Use `--manifest-url` to point the check at a staging or test feed.
 `self-update stage` downloads the selected platform update artifact into a local
 staging directory and verifies its SHA-256 so a later replace/restart step can
 apply it. Use `--staging-dir` to override the default staging location.
+`self-update apply` chains check + stage + apply: it re-verifies the staged
+ZIP's SHA-256, flat-extracts it next to the staged archive, and for each
+extracted file whose basename also exists in the running RAIS install
+directory, renames the existing copy to `<name>.rais-old` (the rollback) and
+copies the new file in place. Use `--install-root` to override the install
+directory derived from the running executable. Pass `--restart` to spawn the
+newly installed RAIS binary detached and exit the current process so the swap
+takes effect immediately. The wxDragon wizard runs a self-update check
+automatically when the window opens; the result fills a status line near the
+top of the window ("Checking for RAIS updates…", then "RAIS is up to date" or
+"RAIS update available: 0.1.0 → 0.2.0…"). When the check reports an available
+update, the `Apply RAIS update` button on the Done page becomes enabled; on
+click it runs the full apply pipeline and auto-relaunches RAIS with the new
+binary.
 
 `rais-ui-wxdragon` is the native UI crate. Its default build exercises the Rust
 wizard model without requiring wxWidgets native libraries. Build it with

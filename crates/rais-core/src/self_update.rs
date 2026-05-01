@@ -7,19 +7,22 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
+use crate::archive::extract_all_files_flat;
 use crate::error::{IoPathContext, RaisError};
 use crate::hash::sha256_file;
 use crate::model::Platform;
 use crate::version::Version;
 
+const ROLLBACK_SUFFIX: &str = "rais-old";
+
 const USER_AGENT: &str = concat!(
     "RAIS/",
     env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/reaper-accessibility/rais)"
+    " (+https://github.com/Timtam/rais)"
 );
 
 pub const DEFAULT_SELF_UPDATE_MANIFEST_URL: &str =
-    "https://github.com/reaper-accessibility/rais/releases/latest/download/rais-update-stable.json";
+    "https://github.com/Timtam/rais/releases/latest/download/rais-update-stable.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelfUpdateManifest {
@@ -74,6 +77,27 @@ pub struct SelfUpdateStageReport {
     pub verified_sha256: Option<String>,
     pub ready_to_apply: bool,
     pub status_message: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ApplySelfUpdateOptions {
+    pub install_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelfUpdateApplyReport {
+    pub stage: SelfUpdateStageReport,
+    pub install_root: PathBuf,
+    pub extraction_dir: PathBuf,
+    pub replaced_files: Vec<ReplacedFile>,
+    pub skipped_files: Vec<PathBuf>,
+    pub status_message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplacedFile {
+    pub install_path: PathBuf,
+    pub backup_path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -213,6 +237,158 @@ pub fn stage_self_update(
 ) -> Result<SelfUpdateStageReport> {
     let report = check_self_update(platform, manifest_url)?;
     stage_self_update_from_report(&report, staging_dir)
+}
+
+pub fn relaunch_current_executable() -> Result<u32> {
+    let exe = env::current_exe().map_err(|source| RaisError::Io {
+        path: PathBuf::from("current_exe"),
+        source,
+    })?;
+    let child = std::process::Command::new(&exe)
+        .spawn()
+        .map_err(|source| RaisError::Io { path: exe, source })?;
+    Ok(child.id())
+}
+
+pub fn current_install_root() -> Result<PathBuf> {
+    let exe = env::current_exe().map_err(|source| RaisError::Io {
+        path: PathBuf::from("current_exe"),
+        source,
+    })?;
+    exe.parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| RaisError::InvalidPlannedExecution {
+            message: format!(
+                "current executable {} has no parent directory",
+                exe.display()
+            ),
+        })
+}
+
+pub fn apply_self_update(
+    stage: &SelfUpdateStageReport,
+    options: &ApplySelfUpdateOptions,
+) -> Result<SelfUpdateApplyReport> {
+    if !stage.ready_to_apply {
+        return Err(RaisError::InvalidPlannedExecution {
+            message: format!(
+                "self-update is not ready to apply: {}",
+                stage.status_message
+            ),
+        });
+    }
+    let staged_asset =
+        stage
+            .staged_asset_path
+            .as_ref()
+            .ok_or_else(|| RaisError::InvalidPlannedExecution {
+                message: "self-update apply requires a staged asset path".to_string(),
+            })?;
+
+    let observed_sha256 = sha256_file(staged_asset)?;
+    if observed_sha256 != stage.check.asset.sha256 {
+        return Err(RaisError::HashMismatch {
+            path: staged_asset.clone(),
+            expected: stage.check.asset.sha256.clone(),
+            actual: observed_sha256,
+        });
+    }
+
+    let install_root = match options.install_root.clone() {
+        Some(root) => root,
+        None => current_install_root()?,
+    };
+    let extraction_dir = staged_asset
+        .parent()
+        .map(|parent| parent.join("extracted"))
+        .unwrap_or_else(|| stage.staging_dir.join("extracted"));
+    if extraction_dir.exists() {
+        fs::remove_dir_all(&extraction_dir).with_path(&extraction_dir)?;
+    }
+    fs::create_dir_all(&extraction_dir).with_path(&extraction_dir)?;
+
+    let extracted_files = extract_all_files_flat(staged_asset, &extraction_dir)?;
+
+    let mut replaced = Vec::new();
+    let mut skipped = Vec::new();
+    if let Err(error) =
+        swap_install_files(&extracted_files, &install_root, &mut replaced, &mut skipped)
+    {
+        rollback_replaced_files(&replaced);
+        let _ = fs::remove_dir_all(&extraction_dir);
+        return Err(error);
+    }
+
+    let status_message = if replaced.is_empty() {
+        "Self-update did not match any binary in the install directory.".to_string()
+    } else {
+        format!(
+            "Replaced {} file(s) with RAIS {}; rollback copies retained as .{}.",
+            replaced.len(),
+            stage.check.latest_version,
+            ROLLBACK_SUFFIX
+        )
+    };
+
+    Ok(SelfUpdateApplyReport {
+        stage: stage.clone(),
+        install_root,
+        extraction_dir,
+        replaced_files: replaced,
+        skipped_files: skipped,
+        status_message,
+    })
+}
+
+fn swap_install_files(
+    extracted_files: &[PathBuf],
+    install_root: &Path,
+    replaced: &mut Vec<ReplacedFile>,
+    skipped: &mut Vec<PathBuf>,
+) -> Result<()> {
+    for source in extracted_files {
+        let Some(basename) = source.file_name() else {
+            continue;
+        };
+        let install_path = install_root.join(basename);
+        if !install_path.is_file() {
+            skipped.push(install_path);
+            continue;
+        }
+
+        let backup_path = backup_path_for(&install_path);
+        if backup_path.exists() {
+            fs::remove_file(&backup_path).with_path(&backup_path)?;
+        }
+        fs::rename(&install_path, &backup_path).with_path(&install_path)?;
+        if let Err(error) = fs::copy(source, &install_path) {
+            let _ = fs::rename(&backup_path, &install_path);
+            return Err(RaisError::Io {
+                path: install_path,
+                source: error,
+            });
+        }
+        replaced.push(ReplacedFile {
+            install_path,
+            backup_path,
+        });
+    }
+    Ok(())
+}
+
+fn rollback_replaced_files(replaced: &[ReplacedFile]) {
+    for entry in replaced.iter().rev() {
+        let _ = fs::remove_file(&entry.install_path);
+        let _ = fs::rename(&entry.backup_path, &entry.install_path);
+    }
+}
+
+fn backup_path_for(install_path: &Path) -> PathBuf {
+    let file_name = install_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("rais-target");
+    install_path.with_file_name(format!("{file_name}.{ROLLBACK_SUFFIX}"))
 }
 
 fn evaluate_self_update_report(
@@ -533,14 +709,18 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use std::io::Write;
+
     use super::{
-        SelfUpdateAssetSelection, SelfUpdateCheckReport, SelfUpdateManifest, current_rais_version,
+        ApplySelfUpdateOptions, SelfUpdateAssetSelection, SelfUpdateCheckReport,
+        SelfUpdateManifest, SelfUpdateStageReport, apply_self_update, current_rais_version,
         evaluate_self_update_report, parse_self_update_manifest, stage_self_update_from_report,
     };
     use crate::RaisError;
     use crate::hash::sha256_file;
     use crate::model::Platform;
     use crate::version::Version;
+    use zip::write::SimpleFileOptions;
 
     const MANIFEST_URL: &str = "https://example.test/rais-update-stable.json";
 
@@ -787,5 +967,193 @@ mod tests {
                 sha256: sha256.to_string(),
             },
         }
+    }
+
+    fn write_test_release_zip(path: &std::path::Path, entries: &[(&str, &[u8])]) {
+        let file = fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, contents) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(contents).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn staged_report_for_zip(
+        archive_path: &std::path::Path,
+        staging_dir: &std::path::Path,
+    ) -> SelfUpdateStageReport {
+        let archive_sha = sha256_file(archive_path).unwrap();
+        let mut check = sample_check_report(archive_path.display().to_string(), &archive_sha);
+        check.asset.url = archive_path.display().to_string();
+        SelfUpdateStageReport {
+            check,
+            staging_dir: staging_dir.to_path_buf(),
+            staged_asset_path: Some(archive_path.to_path_buf()),
+            downloaded: true,
+            reused_existing_file: false,
+            verified_sha256: Some(archive_sha),
+            ready_to_apply: true,
+            status_message: "ready".to_string(),
+        }
+    }
+
+    #[test]
+    fn apply_self_update_replaces_matching_install_files_and_keeps_rollback() {
+        let staging_root = tempdir().unwrap();
+        let install_root = tempdir().unwrap();
+        let archive_path = staging_root.path().join("0.2.0").join("RAIS-windows.zip");
+        fs::create_dir_all(archive_path.parent().unwrap()).unwrap();
+        write_test_release_zip(
+            &archive_path,
+            &[
+                ("RAIS.exe", b"new-rais-binary"),
+                ("rais-cli.exe", b"new-cli-binary"),
+                ("README.txt", b"release notes"),
+            ],
+        );
+
+        fs::write(install_root.path().join("RAIS.exe"), b"old-rais-binary").unwrap();
+        fs::write(install_root.path().join("rais-cli.exe"), b"old-cli-binary").unwrap();
+
+        let stage = staged_report_for_zip(&archive_path, staging_root.path());
+        let report = apply_self_update(
+            &stage,
+            &ApplySelfUpdateOptions {
+                install_root: Some(install_root.path().to_path_buf()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.replaced_files.len(), 2);
+        assert_eq!(
+            fs::read(install_root.path().join("RAIS.exe")).unwrap(),
+            b"new-rais-binary"
+        );
+        assert_eq!(
+            fs::read(install_root.path().join("rais-cli.exe")).unwrap(),
+            b"new-cli-binary"
+        );
+        assert_eq!(
+            fs::read(install_root.path().join("RAIS.exe.rais-old")).unwrap(),
+            b"old-rais-binary"
+        );
+        assert_eq!(
+            fs::read(install_root.path().join("rais-cli.exe.rais-old")).unwrap(),
+            b"old-cli-binary"
+        );
+        assert!(
+            report
+                .skipped_files
+                .iter()
+                .any(|path| path.ends_with("README.txt"))
+        );
+        assert!(report.extraction_dir.is_dir());
+    }
+
+    #[test]
+    fn apply_self_update_flattens_macos_zip_layout() {
+        let staging_root = tempdir().unwrap();
+        let install_root = tempdir().unwrap();
+        let archive_path = staging_root.path().join("0.2.0").join("RAIS-macos.zip");
+        fs::create_dir_all(archive_path.parent().unwrap()).unwrap();
+        write_test_release_zip(
+            &archive_path,
+            &[
+                ("macos/RAIS", b"new-mac-binary"),
+                ("macos/rais-cli", b"new-mac-cli"),
+            ],
+        );
+
+        fs::write(install_root.path().join("RAIS"), b"old-mac-binary").unwrap();
+
+        let stage = staged_report_for_zip(&archive_path, staging_root.path());
+        let report = apply_self_update(
+            &stage,
+            &ApplySelfUpdateOptions {
+                install_root: Some(install_root.path().to_path_buf()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.replaced_files.len(), 1);
+        assert_eq!(
+            fs::read(install_root.path().join("RAIS")).unwrap(),
+            b"new-mac-binary"
+        );
+        assert_eq!(
+            fs::read(install_root.path().join("RAIS.rais-old")).unwrap(),
+            b"old-mac-binary"
+        );
+        assert!(
+            report
+                .skipped_files
+                .iter()
+                .any(|path| path.ends_with("rais-cli"))
+        );
+    }
+
+    #[test]
+    fn apply_self_update_rejects_hash_mismatch_without_touching_install() {
+        let staging_root = tempdir().unwrap();
+        let install_root = tempdir().unwrap();
+        let archive_path = staging_root.path().join("0.2.0").join("RAIS-windows.zip");
+        fs::create_dir_all(archive_path.parent().unwrap()).unwrap();
+        write_test_release_zip(&archive_path, &[("RAIS.exe", b"new-rais-binary")]);
+
+        fs::write(install_root.path().join("RAIS.exe"), b"old-rais-binary").unwrap();
+
+        let mut stage = staged_report_for_zip(&archive_path, staging_root.path());
+        stage.check.asset.sha256 =
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
+
+        let error = apply_self_update(
+            &stage,
+            &ApplySelfUpdateOptions {
+                install_root: Some(install_root.path().to_path_buf()),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, RaisError::HashMismatch { .. }));
+        assert_eq!(
+            fs::read(install_root.path().join("RAIS.exe")).unwrap(),
+            b"old-rais-binary"
+        );
+        assert!(!install_root.path().join("RAIS.exe.rais-old").exists());
+    }
+
+    #[test]
+    fn apply_self_update_rejects_when_stage_is_not_ready() {
+        let staging_root = tempdir().unwrap();
+        let install_root = tempdir().unwrap();
+        let mut stage = sample_check_report(
+            "https://example.test/RAIS-windows.zip".to_string(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        stage.update_available = false;
+
+        let stage_report = SelfUpdateStageReport {
+            check: stage,
+            staging_dir: staging_root.path().to_path_buf(),
+            staged_asset_path: None,
+            downloaded: false,
+            reused_existing_file: false,
+            verified_sha256: None,
+            ready_to_apply: false,
+            status_message: "Current RAIS version is already up to date.".to_string(),
+        };
+
+        let error = apply_self_update(
+            &stage_report,
+            &ApplySelfUpdateOptions {
+                install_root: Some(install_root.path().to_path_buf()),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, RaisError::InvalidPlannedExecution { .. }));
     }
 }

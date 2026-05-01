@@ -8,7 +8,7 @@ use crate::package::{
 use crate::plan::AvailablePackage;
 use crate::version::Version;
 
-const USER_AGENT: &str = "RAIS/0.1 (+https://github.com/reaper-accessibility/rais)";
+const USER_AGENT: &str = "RAIS/0.1 (+https://github.com/Timtam/rais)";
 
 pub const REAPER_DOWNLOAD_URL: &str = "https://www.reaper.fm/download.php";
 pub const OSARA_UPDATE_URL: &str = "https://osara.reaperaccessibility.com/snapshots/update.json";

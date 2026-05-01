@@ -151,6 +151,12 @@ wizard-done-report-save-error-prefix = Report could not be saved
 wizard-done-launch-reaper-error-prefix = REAPER could not be launched
 wizard-done-open-resource-error-prefix = Resource folder could not be opened
 wizard-done-rescan-error-prefix = Target could not be rescanned
+wizard-done-self-update-apply = Apply RAIS update
+wizard-done-self-update-apply-mnemonic = A
+wizard-done-self-update-apply-running = Applying RAIS update…
+wizard-done-self-update-error-prefix = RAIS self-update failed
+wizard-done-self-update-relaunch-prefix = Relaunched RAIS
+wizard-self-update-status-checking = Checking for RAIS updates…
 
 # Summary and report lines shown in the wizard progress/done views and saved outcome reports.
 wizard-summary-target = Target: { $path }

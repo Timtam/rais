@@ -11,11 +11,13 @@ use std::sync::{
 use rais_ui_wxdragon::{
     OsaraKeymapChoice, TargetRow, UiBootstrapOptions, WizardInstallOptions, WizardModel,
     WizardOutcomeReport, build_review_preview_for_package_rows, custom_portable_target_row,
-    execute_wizard_install, install_request_from_target_and_rows, load_wizard_model,
-    manual_attention_handling_summary, osara_keymap_note, osara_selected_for_rows,
-    package_requires_manual_attention, preview_manual_instruction_lines, refreshed_target_row,
-    save_wizard_outcome_report, wizard_outcome_report_from_error,
-    wizard_outcome_report_from_success, wizard_package_plan_for_target,
+    execute_wizard_install, format_self_update_apply_summary, format_self_update_check_summary,
+    install_request_from_target_and_rows, load_wizard_model, manual_attention_handling_summary,
+    osara_keymap_note, osara_selected_for_rows, package_requires_manual_attention,
+    preview_manual_instruction_lines, refreshed_target_row, relaunch_rais_after_apply,
+    run_wizard_self_update_apply, run_wizard_self_update_check, save_wizard_outcome_report,
+    wizard_outcome_report_from_error, wizard_outcome_report_from_success,
+    wizard_package_plan_for_target,
 };
 use wxdragon::prelude::*;
 use wxdragon::widgets::SimpleBook;
@@ -44,6 +46,8 @@ struct WizardWidgets {
     done_open_resource: Button,
     done_rescan: Button,
     done_save_report: Button,
+    done_self_update_apply: Button,
+    self_update_status: StaticText,
 }
 
 pub fn run() {
@@ -72,6 +76,17 @@ pub fn run() {
         step_label.set_name("rais-step-status");
         root.add(&step_label, 0, SizerFlag::All | SizerFlag::Expand, 12);
 
+        let self_update_status = StaticText::builder(&root_panel)
+            .with_label(&model.text.self_update_status_checking)
+            .build();
+        self_update_status.set_name("rais-self-update-status");
+        root.add(
+            &self_update_status,
+            0,
+            SizerFlag::Left | SizerFlag::Right | SizerFlag::Bottom | SizerFlag::Expand,
+            12,
+        );
+
         let book = SimpleBook::builder(&root_panel).build();
         book.set_name("rais-wizard-pages");
         let package_rows = Rc::new(RefCell::new(model.package_rows.clone()));
@@ -81,7 +96,7 @@ pub fn run() {
         let last_report = Arc::new(Mutex::new(None::<WizardOutcomeReport>));
         let last_reaper_app_path = Arc::new(Mutex::new(None::<PathBuf>));
         let last_resource_path = Arc::new(Mutex::new(None::<PathBuf>));
-        let wizard_widgets = add_pages(&book, &model, Rc::clone(&package_rows));
+        let wizard_widgets = add_pages(&book, &model, Rc::clone(&package_rows), self_update_status);
         root.add(&book, 1, SizerFlag::All | SizerFlag::Expand, 12);
 
         let buttons = BoxSizer::builder(Orientation::Horizontal).build();
@@ -553,6 +568,75 @@ pub fn run() {
         }
 
         {
+            let model = Arc::clone(&model);
+            let widgets = wizard_widgets;
+            std::thread::spawn(move || {
+                let result = run_wizard_self_update_check();
+                wxdragon::call_after(Box::new(move || match result {
+                    Ok(report) => {
+                        widgets
+                            .self_update_status
+                            .set_label(&format_self_update_check_summary(&report));
+                        widgets
+                            .done_self_update_apply
+                            .enable(report.update_available);
+                    }
+                    Err(error) => {
+                        widgets.self_update_status.set_label(&format!(
+                            "{}: {}",
+                            model.text.done_self_update_error_prefix, error
+                        ));
+                    }
+                }));
+            });
+        }
+
+        {
+            let model = Arc::clone(&model);
+            let widgets = wizard_widgets;
+            widgets.done_self_update_apply.on_click(move |_| {
+                append_done_status(
+                    &widgets.done_status,
+                    &model.text.done_self_update_apply_running,
+                );
+                let model = Arc::clone(&model);
+                std::thread::spawn(move || {
+                    let result = run_wizard_self_update_apply();
+                    wxdragon::call_after(Box::new(move || match result {
+                        Ok(report) => {
+                            append_done_status(
+                                &widgets.done_status,
+                                &format_self_update_apply_summary(&report),
+                            );
+                            if !report.replaced_files.is_empty() {
+                                match relaunch_rais_after_apply() {
+                                    Ok(pid) => append_done_status(
+                                        &widgets.done_status,
+                                        &format!(
+                                            "{}: PID {}",
+                                            model.text.done_self_update_relaunch_prefix, pid
+                                        ),
+                                    ),
+                                    Err(error) => append_done_status(
+                                        &widgets.done_status,
+                                        &format!(
+                                            "{}: {}",
+                                            model.text.done_self_update_error_prefix, error
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        Err(error) => append_done_status(
+                            &widgets.done_status,
+                            &format!("{}: {}", model.text.done_self_update_error_prefix, error),
+                        ),
+                    }));
+                });
+            });
+        }
+
+        {
             let book = book;
             let step_label = step_label;
             let back = back;
@@ -633,6 +717,7 @@ fn add_pages(
     book: &SimpleBook,
     model: &WizardModel,
     package_rows: Rc<RefCell<Vec<rais_ui_wxdragon::PackageRow>>>,
+    self_update_status: StaticText,
 ) -> WizardWidgets {
     let target_page = Panel::builder(book).build();
     let (target_choice, portable_folder, target_details) = build_target_page(&target_page, model);
@@ -663,8 +748,14 @@ fn add_pages(
     );
 
     let done_page = Panel::builder(book).build();
-    let (done_status, done_launch_reaper, done_open_resource, done_rescan, done_save_report) =
-        build_done_page(&done_page, model);
+    let (
+        done_status,
+        done_launch_reaper,
+        done_open_resource,
+        done_rescan,
+        done_save_report,
+        done_self_update_apply,
+    ) = build_done_page(&done_page, model);
     book.add_page(&done_page, &model.steps[DONE_STEP].label, false, None);
 
     WizardWidgets {
@@ -684,6 +775,8 @@ fn add_pages(
         done_open_resource,
         done_rescan,
         done_save_report,
+        done_self_update_apply,
+        self_update_status,
     }
 }
 
@@ -1002,7 +1095,7 @@ fn build_progress_page(page: &Panel, model: &WizardModel) -> (StaticText, Gauge,
 fn build_done_page(
     page: &Panel,
     model: &WizardModel,
-) -> (TextCtrl, Button, Button, Button, Button) {
+) -> (TextCtrl, Button, Button, Button, Button, Button) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(page, &sizer, &model.text.done_heading, "rais-done-heading");
     let status = TextCtrl::builder(page)
@@ -1050,9 +1143,25 @@ fn build_done_page(
     save_report.enable(false);
     actions.add(&save_report, 0, SizerFlag::All, 6);
 
+    let self_update_apply = Button::builder(page)
+        .with_label(&model.text.done_self_update_apply_label)
+        .build();
+    self_update_apply.set_name("rais-done-self-update-apply");
+    self_update_apply.add_style(WindowStyle::TabStop);
+    self_update_apply.set_can_focus(true);
+    self_update_apply.enable(false);
+    actions.add(&self_update_apply, 0, SizerFlag::All, 6);
+
     sizer.add_sizer(&actions, 0, SizerFlag::All | SizerFlag::Expand, 0);
     page.set_sizer(sizer, true);
-    (status, launch_reaper, open_resource, rescan, save_report)
+    (
+        status,
+        launch_reaper,
+        open_resource,
+        rescan,
+        save_report,
+        self_update_apply,
+    )
 }
 
 fn add_heading(page: &Panel, sizer: &BoxSizer, label: &str, name: &str) {

@@ -93,6 +93,48 @@ fn matches_user_plugin_file(file_name: &str, spec: &PackageSpec) -> bool {
     prefix_match && suffix_match
 }
 
+pub fn extract_all_files_flat(archive_path: &Path, extract_dir: &Path) -> Result<Vec<PathBuf>> {
+    let file = fs::File::open(archive_path).with_path(archive_path)?;
+    let mut archive =
+        zip::ZipArchive::new(BufReader::new(file)).map_err(|source| RaisError::ArchiveRead {
+            archive: archive_path.to_path_buf(),
+            message: source.to_string(),
+        })?;
+
+    fs::create_dir_all(extract_dir).with_path(extract_dir)?;
+    let mut extracted = Vec::new();
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|source| RaisError::ArchiveRead {
+                archive: archive_path.to_path_buf(),
+                message: source.to_string(),
+            })?;
+        if !entry.is_file() {
+            continue;
+        }
+        let name = entry.name().to_string();
+        let Some(basename) = Path::new(&name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let target = extract_dir.join(&basename);
+        if target.exists() {
+            fs::remove_file(&target).with_path(&target)?;
+        }
+        let mut output = fs::File::create(&target).with_path(&target)?;
+        std::io::copy(&mut entry, &mut output).with_path(&target)?;
+        output.flush().with_path(&target)?;
+        extracted.push(target);
+    }
+    extracted.sort();
+    Ok(extracted)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedOsaraAssets {
     pub source_archive: PathBuf,

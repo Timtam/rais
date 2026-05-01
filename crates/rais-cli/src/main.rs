@@ -26,8 +26,9 @@ use rais_core::rollback::{
     list_backup_sets, restore_backup_set,
 };
 use rais_core::self_update::{
-    DEFAULT_SELF_UPDATE_MANIFEST_URL, SelfUpdateCheckReport, SelfUpdateStageReport,
-    check_self_update, default_self_update_staging_dir, stage_self_update,
+    ApplySelfUpdateOptions, DEFAULT_SELF_UPDATE_MANIFEST_URL, SelfUpdateApplyReport,
+    SelfUpdateCheckReport, SelfUpdateStageReport, apply_self_update, check_self_update,
+    default_self_update_staging_dir, relaunch_current_executable, stage_self_update,
 };
 use rais_core::setup::{SetupOptions, SetupReport, execute_setup_operation};
 use serde::Serialize;
@@ -277,6 +278,18 @@ enum SelfUpdateCommand {
         manifest_url: String,
         #[arg(long)]
         staging_dir: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    Apply {
+        #[arg(long, default_value = DEFAULT_SELF_UPDATE_MANIFEST_URL)]
+        manifest_url: String,
+        #[arg(long)]
+        staging_dir: Option<PathBuf>,
+        #[arg(long)]
+        install_root: Option<PathBuf>,
+        #[arg(long)]
+        restart: bool,
         #[arg(long)]
         json: bool,
     },
@@ -725,6 +738,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
                     print_self_update_stage_report(&report);
+                }
+            }
+            SelfUpdateCommand::Apply {
+                manifest_url,
+                staging_dir,
+                install_root,
+                restart,
+                json,
+            } => {
+                let platform =
+                    Platform::current().ok_or(rais_core::RaisError::UnsupportedPlatform)?;
+                let staging_dir = staging_dir.unwrap_or_else(default_self_update_staging_dir);
+                let stage = stage_self_update(platform, &manifest_url, &staging_dir)?;
+                let report = apply_self_update(&stage, &ApplySelfUpdateOptions { install_root })?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print_self_update_apply_report(&report);
+                }
+                if restart && !report.replaced_files.is_empty() {
+                    let pid = relaunch_current_executable()?;
+                    if !json {
+                        println!("Relaunched RAIS with PID {pid}; exiting current process.");
+                    }
+                    return Ok(());
                 }
             }
         },
@@ -1328,6 +1366,27 @@ fn print_self_update_stage_report(report: &SelfUpdateStageReport) {
     println!("Ready to apply: {}", yes_no(report.ready_to_apply));
     if let Some(sha256) = report.verified_sha256.as_ref() {
         println!("Verified SHA-256: {sha256}");
+    }
+    println!("Status: {}", report.status_message);
+}
+
+fn print_self_update_apply_report(report: &SelfUpdateApplyReport) {
+    print_self_update_stage_report(&report.stage);
+    println!("Install root: {}", report.install_root.display());
+    println!("Extraction directory: {}", report.extraction_dir.display());
+    println!("Replaced files: {}", report.replaced_files.len());
+    for replaced in &report.replaced_files {
+        println!(
+            "  {} (rollback: {})",
+            replaced.install_path.display(),
+            replaced.backup_path.display()
+        );
+    }
+    if !report.skipped_files.is_empty() {
+        println!("Skipped files (no matching install target):");
+        for path in &report.skipped_files {
+            println!("  {}", path.display());
+        }
     }
     println!("Status: {}", report.status_message);
 }

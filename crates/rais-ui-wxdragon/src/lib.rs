@@ -26,6 +26,11 @@ use rais_core::resource::{
     ResourceInitActionKind, ResourceInitItemKind, ResourceInitOptions, ResourceInitReport,
     initialize_resource_path,
 };
+use rais_core::self_update::{
+    ApplySelfUpdateOptions, DEFAULT_SELF_UPDATE_MANIFEST_URL, SelfUpdateApplyReport,
+    SelfUpdateCheckReport, apply_self_update, check_self_update, default_self_update_staging_dir,
+    relaunch_current_executable, stage_self_update,
+};
 use rais_core::setup::{
     SetupOptions, SetupReport, execute_setup_operation, setup_requires_extension_support,
 };
@@ -149,6 +154,11 @@ pub struct WizardText {
     pub done_launch_reaper_error_prefix: String,
     pub done_open_resource_error_prefix: String,
     pub done_rescan_error_prefix: String,
+    pub done_self_update_apply_label: String,
+    pub done_self_update_apply_running: String,
+    pub done_self_update_error_prefix: String,
+    pub done_self_update_relaunch_prefix: String,
+    pub self_update_status_checking: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -569,6 +579,19 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
             .text("wizard-done-open-resource-error-prefix")
             .value,
         done_rescan_error_prefix: localizer.text("wizard-done-rescan-error-prefix").value,
+        done_self_update_apply_label: localized_wx_mnemonic_label(
+            localizer,
+            "wizard-done-self-update-apply",
+            "wizard-done-self-update-apply-mnemonic",
+        ),
+        done_self_update_apply_running: localizer
+            .text("wizard-done-self-update-apply-running")
+            .value,
+        done_self_update_error_prefix: localizer.text("wizard-done-self-update-error-prefix").value,
+        done_self_update_relaunch_prefix: localizer
+            .text("wizard-done-self-update-relaunch-prefix")
+            .value,
+        self_update_status_checking: localizer.text("wizard-self-update-status-checking").value,
     }
 }
 
@@ -1367,6 +1390,52 @@ pub fn execute_wizard_install(request: WizardInstallRequest) -> Result<SetupRepo
             target_app_path: request.target_app_path.clone(),
         },
     )
+}
+
+pub fn run_wizard_self_update_check() -> Result<SelfUpdateCheckReport> {
+    let platform = Platform::current().ok_or(RaisError::UnsupportedPlatform)?;
+    check_self_update(platform, DEFAULT_SELF_UPDATE_MANIFEST_URL)
+}
+
+pub fn run_wizard_self_update_apply() -> Result<SelfUpdateApplyReport> {
+    let platform = Platform::current().ok_or(RaisError::UnsupportedPlatform)?;
+    let staging_dir = default_self_update_staging_dir();
+    let stage = stage_self_update(platform, DEFAULT_SELF_UPDATE_MANIFEST_URL, &staging_dir)?;
+    apply_self_update(&stage, &ApplySelfUpdateOptions { install_root: None })
+}
+
+pub fn relaunch_rais_after_apply() -> Result<u32> {
+    relaunch_current_executable()
+}
+
+pub fn format_self_update_check_summary(report: &SelfUpdateCheckReport) -> String {
+    if report.update_available {
+        format!(
+            "RAIS update available: {} → {} (channel {}). Click 'Apply RAIS update' to install.",
+            report.current_version, report.latest_version, report.channel
+        )
+    } else {
+        format!(
+            "RAIS is up to date (current {}, channel {}).",
+            report.current_version, report.channel
+        )
+    }
+}
+
+pub fn format_self_update_apply_summary(report: &SelfUpdateApplyReport) -> String {
+    if report.replaced_files.is_empty() {
+        format!(
+            "Self-update did not replace any files (target version {}).",
+            report.stage.check.latest_version
+        )
+    } else {
+        format!(
+            "Replaced {} file(s) under {}; relaunch RAIS to use {}.",
+            report.replaced_files.len(),
+            report.install_root.display(),
+            report.stage.check.latest_version
+        )
+    }
 }
 
 pub fn wizard_outcome_report_from_success(

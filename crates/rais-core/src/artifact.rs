@@ -20,7 +20,7 @@ use crate::package::{
 };
 use crate::version::Version;
 
-const USER_AGENT: &str = "RAIS/0.1 (+https://github.com/reaper-accessibility/rais)";
+const USER_AGENT: &str = "RAIS/0.1 (+https://github.com/Timtam/rais)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
