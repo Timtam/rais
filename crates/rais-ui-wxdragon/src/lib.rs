@@ -2782,6 +2782,7 @@ mod tests {
         assert!(reaper.selected);
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn selectable_installations_appends_standard_target_when_missing() {
         let installations =
@@ -3083,6 +3084,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn review_preview_lists_admin_prompt_for_standard_reaper_target() {
         let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
