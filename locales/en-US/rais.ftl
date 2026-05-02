@@ -137,6 +137,7 @@ wizard-done-status-idle = No installation has been run from this window yet.
 wizard-done-status-success = Installation finished. Review the details below.
 wizard-done-status-error = Installation failed. Review the error below.
 wizard-done-status-no-packages = No package was selected for installation or update.
+wizard-done-show-details = Show details
 # Mnemonic messages are single-character native access keys. Choose a character
 # from the translated label when possible.
 wizard-done-launch-reaper = Launch REAPER

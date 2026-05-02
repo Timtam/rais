@@ -150,6 +150,7 @@ pub struct WizardText {
     pub done_status_success: String,
     pub done_status_error: String,
     pub done_status_no_packages: String,
+    pub done_show_details_label: String,
     pub done_launch_reaper_label: String,
     pub done_open_resource_label: String,
     pub done_rescan_label: String,
@@ -572,6 +573,7 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         done_status_success: localizer.text("wizard-done-status-success").value,
         done_status_error: localizer.text("wizard-done-status-error").value,
         done_status_no_packages: localizer.text("wizard-done-status-no-packages").value,
+        done_show_details_label: localizer.text("wizard-done-show-details").value,
         done_launch_reaper_label: localized_wx_mnemonic_label(
             localizer,
             "wizard-done-launch-reaper",

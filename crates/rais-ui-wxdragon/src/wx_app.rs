@@ -171,6 +171,7 @@ struct WizardWidgets {
     progress_gauge: Gauge,
     progress_details: TextCtrl,
     done_status: TextCtrl,
+    done_details: TextCtrl,
     done_launch_reaper: Button,
     done_open_resource: Button,
     done_rescan: Button,
@@ -530,9 +531,11 @@ pub fn run() {
                         widgets
                             .progress_status
                             .set_label(&model.text.done_status_error);
-                        widgets
-                            .done_status
-                            .set_value(&format!("{}\n\n{}", model.text.done_status_error, error));
+                        // Done page: short reason on the always-visible
+                        // status TextCtrl; full error text in the
+                        // collapsible details below.
+                        widgets.done_status.set_value(&model.text.done_status_error);
+                        widgets.done_details.set_value(&error.to_string());
                         widgets
                             .progress_details
                             .set_value(&format!("{}\n\n{}", model.text.done_status_error, error));
@@ -603,12 +606,17 @@ pub fn run() {
                                 widgets
                                     .progress_status
                                     .set_label(&ui_model.text.done_status_success);
+                                // Done page: show the success summary
+                                // sentence on the status TextCtrl and the
+                                // full setup-report detail block in the
+                                // collapsible TextCtrl.
                                 widgets.done_status.set_value(&format!(
-                                    "{}\n\n{}\n\n{}",
-                                    ui_model.text.done_status_success,
-                                    outcome_report.status_line,
-                                    outcome_report.detail_lines.join("\n")
+                                    "{}\n\n{}",
+                                    ui_model.text.done_status_success, outcome_report.status_line,
                                 ));
+                                widgets
+                                    .done_details
+                                    .set_value(&outcome_report.detail_lines.join("\n"));
                                 set_last_path(
                                     &ui_last_reaper_app_path,
                                     request_for_report
@@ -639,11 +647,10 @@ pub fn run() {
                                 widgets
                                     .progress_status
                                     .set_label(&ui_model.text.done_status_error);
-                                widgets.done_status.set_value(&format!(
-                                    "{}\n\n{}",
-                                    outcome_report.status_line,
-                                    outcome_report.detail_lines.join("\n")
-                                ));
+                                widgets.done_status.set_value(&outcome_report.status_line);
+                                widgets
+                                    .done_details
+                                    .set_value(&outcome_report.detail_lines.join("\n"));
                                 widgets
                                     .done_launch_reaper
                                     .enable(can_launch_last_reaper_path(&ui_last_reaper_app_path));
@@ -983,6 +990,7 @@ fn add_pages(
     let done_page = Panel::builder(book).build();
     let (
         done_status,
+        done_details,
         done_launch_reaper,
         done_open_resource,
         done_rescan,
@@ -1008,6 +1016,7 @@ fn add_pages(
         progress_gauge,
         progress_details,
         done_status,
+        done_details,
         done_launch_reaper,
         done_open_resource,
         done_rescan,
@@ -1706,15 +1715,45 @@ fn build_progress_page(page: &Panel, model: &WizardModel) -> (StaticText, Gauge,
 fn build_done_page(
     page: &Panel,
     model: &WizardModel,
-) -> (TextCtrl, Button, Button, Button, Button, Button) {
+) -> (TextCtrl, TextCtrl, Button, Button, Button, Button, Button) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(page, &sizer, &model.text.done_heading, "rais-done-heading");
+    // One short status TextCtrl (always visible) carries the success /
+    // failure sentence + any follow-up status updates ("Report saved at …",
+    // "REAPER could not be launched: …"). Power-user details live in the
+    // collapsible TextCtrl below — kept hidden by default per the
+    // streamlined wizard design.
     let status = TextCtrl::builder(page)
         .with_value(&model.text.done_status)
         .with_style(TextCtrlStyle::MultiLine | TextCtrlStyle::ReadOnly | TextCtrlStyle::WordWrap)
+        .with_size(Size::new(-1, 80))
         .build();
     status.set_name("rais-done-status");
-    sizer.add(&status, 1, SizerFlag::All | SizerFlag::Expand, 6);
+    sizer.add(&status, 0, SizerFlag::All | SizerFlag::Expand, 6);
+
+    let show_details = CheckBox::builder(page)
+        .with_label(&model.text.done_show_details_label)
+        .build();
+    show_details.set_name("rais-done-show-details");
+    show_details.add_style(WindowStyle::TabStop);
+    show_details.set_value(false);
+    sizer.add(&show_details, 0, SizerFlag::All, 6);
+
+    let details = TextCtrl::builder(page)
+        .with_value("")
+        .with_style(TextCtrlStyle::MultiLine | TextCtrlStyle::ReadOnly | TextCtrlStyle::WordWrap)
+        .build();
+    details.set_name("rais-done-details");
+    details.hide();
+    sizer.add(&details, 1, SizerFlag::All | SizerFlag::Expand, 6);
+
+    let toggle_details = details;
+    let toggle_page = page.clone();
+    show_details.on_toggled(move |event| {
+        let visible = event.is_checked();
+        toggle_details.show(visible);
+        toggle_page.layout();
+    });
 
     let actions = BoxSizer::builder(Orientation::Horizontal).build();
     actions.add_stretch_spacer(1);
@@ -1767,6 +1806,7 @@ fn build_done_page(
     page.set_sizer(sizer, true);
     (
         status,
+        details,
         launch_reaper,
         open_resource,
         rescan,
