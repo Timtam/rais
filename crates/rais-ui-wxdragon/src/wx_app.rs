@@ -7,10 +7,8 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
-use std::time::Duration;
 
 use rais_core::localization::{Localizer, resolve_runtime_locale};
-use rais_core::lock::PackageInstallLockMetadata;
 use rais_core::self_update::SelfUpdateCheckReport;
 
 // FluentBundle is !Send, so we keep one Localizer instance per UI thread and
@@ -99,14 +97,14 @@ use crate::{
     OsaraKeymapChoice, PackageRow, TargetRow, UiBootstrapOptions, WizardInstallOptions,
     WizardModel, WizardOutcomeReport, apply_checkbox_state_to_package_row,
     build_review_preview_for_package_rows, custom_portable_target_row, execute_wizard_install,
-    format_package_install_lock_blocking_message, format_self_update_apply_summary,
-    format_self_update_check_summary, install_request_from_target_and_rows, load_wizard_model,
-    localized_package_display_name, localizer_from_options, osara_keymap_note,
-    osara_selected_for_rows, reapack_selected_for_install_or_update, refreshed_target_row,
-    relaunch_rais_after_apply, run_wizard_package_install_lock_check, run_wizard_self_update_apply,
-    run_wizard_self_update_check, save_wizard_outcome_report, wizard_desired_package_ids,
-    wizard_outcome_report_from_error, wizard_outcome_report_from_success,
-    wizard_package_plan_for_target, wizard_package_plan_for_target_with_available,
+    format_self_update_apply_summary, format_self_update_check_summary,
+    install_request_from_target_and_rows, load_wizard_model, localized_package_display_name,
+    localizer_from_options, osara_keymap_note, osara_selected_for_rows,
+    reapack_selected_for_install_or_update, refreshed_target_row, relaunch_rais_after_apply,
+    run_wizard_self_update_apply, run_wizard_self_update_check, save_wizard_outcome_report,
+    wizard_desired_package_ids, wizard_outcome_report_from_error,
+    wizard_outcome_report_from_success, wizard_package_plan_for_target,
+    wizard_package_plan_for_target_with_available,
 };
 use rais_core::latest::fetch_latest_for_package;
 use rais_core::plan::{AvailablePackage, PlanActionKind};
@@ -127,8 +125,6 @@ struct SelfUpdateUiState {
     /// startup probe is still running; `Some(Ok)` on success; `Some(Err)`
     /// carries the formatted error message (RaisError isn't Clone).
     check: Option<std::result::Result<SelfUpdateCheckReport, String>>,
-    /// Most recent lock-state observation, refreshed by the polling thread.
-    lock_holder: Option<PackageInstallLockMetadata>,
     /// Last status string written to the status bar — used to suppress
     /// screen-reader re-announcements when nothing has changed.
     last_status: String,
@@ -149,20 +145,18 @@ fn render_self_update_status(
         return;
     };
 
-    let mut status = match check {
+    // (The package-install lock used to be a single LocalAppData path so
+    // RAIS could warn that another install was in progress before
+    // applying a self-update. With locks now scoped per-target we don't
+    // have a single global lock to consult here, so the cross-target
+    // status line is gone. Concurrent self-update + install on the same
+    // target still races at the file rename and surfaces a normal IO
+    // error.)
+    let status = match check {
         Ok(report) => format_self_update_check_summary(localizer, report),
         Err(error) => format!("{}: {}", model.text.done_self_update_error_prefix, error),
     };
-    let mut apply_enabled = matches!(check, Ok(report) if report.update_available);
-    if let Some(holder) = &state.lock_holder {
-        if !status.is_empty() {
-            status.push(' ');
-        }
-        status.push_str(&format_package_install_lock_blocking_message(
-            localizer, holder,
-        ));
-        apply_enabled = false;
-    }
+    let apply_enabled = matches!(check, Ok(report) if report.update_available);
 
     let status_changed = status != state.last_status;
     let enable_changed = apply_enabled != state.last_apply_enabled;
@@ -932,22 +926,22 @@ pub fn run() {
 
         let self_update_state = Arc::new(Mutex::new(SelfUpdateUiState::default()));
 
-        // One-shot startup probe: runs the manifest check and the lock probe,
-        // stores both into the shared state, then renders.
+        // One-shot startup probe: runs the self-update manifest check
+        // and stores the result into the shared state, then renders.
+        // (Used to also poll a global package-install lock — that lock
+        // is now per-target, so the cross-target probe is gone.)
         {
             let model = Arc::clone(&model);
             let widgets = wizard_widgets;
             let state = Arc::clone(&self_update_state);
             std::thread::spawn(move || {
                 let check = run_wizard_self_update_check();
-                let lock = run_wizard_package_install_lock_check().ok().flatten();
                 {
                     let mut state = state.lock().unwrap();
                     state.check = Some(match check {
                         Ok(report) => Ok(report),
                         Err(error) => Err(error.to_string()),
                     });
-                    state.lock_holder = lock;
                 }
                 let render_state = Arc::clone(&state);
                 let render_model = Arc::clone(&model);
@@ -959,42 +953,11 @@ pub fn run() {
             });
         }
 
-        // Polling thread: re-checks the install lock every few seconds and
-        // re-renders only when the holder changes (so screen readers do not
-        // re-announce an unchanged status). This catches the case where another
-        // RAIS process starts an install after our startup probe ran.
-        {
-            let model = Arc::clone(&model);
-            let widgets = wizard_widgets;
-            let state = Arc::clone(&self_update_state);
-            std::thread::spawn(move || {
-                loop {
-                    std::thread::sleep(Duration::from_secs(3));
-                    let new_lock = run_wizard_package_install_lock_check().ok().flatten();
-                    let changed = {
-                        let mut state = state.lock().unwrap();
-                        let changed = state.lock_holder != new_lock;
-                        state.lock_holder = new_lock;
-                        changed
-                    };
-                    if !changed {
-                        continue;
-                    }
-                    let render_state = Arc::clone(&state);
-                    let render_model = Arc::clone(&model);
-                    wxdragon::call_after(Box::new(move || {
-                        with_ui_localizer(|localizer| {
-                            render_self_update_status(
-                                widgets,
-                                &render_model,
-                                localizer,
-                                &render_state,
-                            );
-                        });
-                    }));
-                }
-            });
-        }
+        // (Used to also spawn a polling thread that re-checked a global
+        // install lock and re-rendered when another RAIS process started
+        // an install. With per-target locks there's no global lock to
+        // poll; if a same-target race happens, the install path surfaces
+        // it as a `PackageInstallInProgress` error at acquire time.)
 
         {
             let model = Arc::clone(&model);

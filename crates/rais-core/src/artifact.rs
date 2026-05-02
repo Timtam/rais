@@ -104,19 +104,16 @@ pub fn expected_artifact_kind(
     }
 }
 
+/// Ephemeral artifact-download cache directory. Defaults to a stable path
+/// under the OS temp directory (`%TEMP%\rais-cache` on Windows,
+/// `$TMPDIR/rais-cache` on macOS). Reusing the same temp path across runs
+/// keeps `download_artifacts` cheap when the user retries the wizard
+/// within the same session, but the OS temp dir is cleaned periodically
+/// — RAIS no longer leaves persistent caches under
+/// `%LOCALAPPDATA%\RAIS\cache\` or `~/Library/Caches/RAIS/`. Callers who
+/// want stricter ephemeral semantics (e.g. a single-process lifetime)
+/// can pass their own `tempfile::TempDir::path()` instead.
 pub fn default_cache_dir() -> PathBuf {
-    if cfg!(target_os = "windows") {
-        if let Some(local_app_data) = rais_platform::user_local_appdata_dir() {
-            return local_app_data.join("RAIS").join("cache");
-        }
-    }
-
-    if cfg!(target_os = "macos") {
-        if let Some(home) = rais_platform::user_home_dir() {
-            return home.join("Library").join("Caches").join("RAIS");
-        }
-    }
-
     env::temp_dir().join("rais-cache")
 }
 

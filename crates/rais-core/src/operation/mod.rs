@@ -267,7 +267,7 @@ pub fn execute_resolved_package_operation_with_detections(
         let lock_path = options
             .lock_path
             .clone()
-            .unwrap_or_else(crate::lock::default_package_install_lock_path);
+            .unwrap_or_else(|| crate::lock::default_package_install_lock_path(resource_path));
         Some(crate::lock::acquire_package_install_lock_at(&lock_path)?)
     };
 

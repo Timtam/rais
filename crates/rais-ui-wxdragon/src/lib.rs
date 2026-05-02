@@ -20,7 +20,6 @@ use rais_core::detection::{
 };
 use rais_core::latest::fetch_latest_versions;
 use rais_core::localization::{DEFAULT_LOCALE, Localizer, embedded_locales};
-use rais_core::lock::{PackageInstallLockMetadata, package_install_lock_active};
 use rais_core::metadata::file_version;
 use rais_core::model::{Architecture, Confidence, Installation, InstallationKind, Platform};
 use rais_core::operation::{
@@ -1449,20 +1448,6 @@ pub fn run_wizard_self_update_check() -> Result<SelfUpdateCheckReport> {
     check_self_update(platform, DEFAULT_SELF_UPDATE_MANIFEST_URL)
 }
 
-pub fn run_wizard_package_install_lock_check() -> Result<Option<PackageInstallLockMetadata>> {
-    package_install_lock_active()
-}
-
-pub fn format_package_install_lock_blocking_message(
-    localizer: &Localizer,
-    holder: &PackageInstallLockMetadata,
-) -> String {
-    let pid = holder.pid.to_string();
-    localizer
-        .format("self-update-lock-blocking", &[("pid", pid.as_str())])
-        .value
-}
-
 pub fn run_wizard_self_update_apply() -> Result<SelfUpdateApplyReport> {
     let platform = Platform::current().ok_or(RaisError::UnsupportedPlatform)?;
     let staging_dir = default_self_update_staging_dir();
@@ -1472,7 +1457,6 @@ pub fn run_wizard_self_update_apply() -> Result<SelfUpdateApplyReport> {
         &ApplySelfUpdateOptions {
             install_root: None,
             install_target_basename: None,
-            package_install_lock_path: None,
         },
     )
 }
@@ -2427,9 +2411,8 @@ mod tests {
 
     use super::{
         HostCapabilities, OsaraKeymapChoice, PackageRow, UiBootstrapOptions, WizardInstallRequest,
-        custom_portable_target_row, format_package_install_lock_blocking_message,
-        format_self_update_apply_summary, localizer_from_options, model_from_plan,
-        refreshed_target_row, wizard_desired_package_ids_for_host,
+        custom_portable_target_row, format_self_update_apply_summary, localizer_from_options,
+        model_from_plan, refreshed_target_row, wizard_desired_package_ids_for_host,
     };
 
     #[test]
@@ -3613,21 +3596,6 @@ mod tests {
         let summary = format_self_update_apply_summary(&localizer, &report);
         assert!(summary.contains("Replaced 1 file(s)"));
         assert!(!summary.contains("Signature verification"));
-    }
-
-    #[test]
-    fn lock_blocking_message_includes_holder_pid() {
-        use rais_core::lock::PackageInstallLockMetadata;
-
-        let holder = PackageInstallLockMetadata {
-            pid: 4242,
-            started_at: "unix-1700000000".to_string(),
-        };
-        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
-        let message = format_package_install_lock_blocking_message(&localizer, &holder);
-        assert!(message.contains("4242"));
-        assert!(message.to_lowercase().contains("install"));
-        assert!(message.to_lowercase().contains("paused"));
     }
 
     #[test]

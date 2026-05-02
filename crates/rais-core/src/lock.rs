@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -39,32 +38,29 @@ impl Drop for PackageInstallLock {
     }
 }
 
-pub fn default_package_install_lock_path() -> PathBuf {
-    if cfg!(target_os = "windows") {
-        if let Some(local_app_data) = rais_platform::user_local_appdata_dir() {
-            return local_app_data
-                .join("RAIS")
-                .join("locks")
-                .join(LOCK_FILE_NAME);
-        }
-    }
-
-    if cfg!(target_os = "macos") {
-        if let Some(home) = rais_platform::user_home_dir() {
-            return home
-                .join("Library")
-                .join("Caches")
-                .join("RAIS")
-                .join("locks")
-                .join(LOCK_FILE_NAME);
-        }
-    }
-
-    env::temp_dir().join("rais-locks").join(LOCK_FILE_NAME)
+/// Per-target lock path: `<resource_path>/RAIS/locks/package-install.lock`.
+///
+/// RAIS used to drop this under `%LOCALAPPDATA%\RAIS\locks\` (and
+/// `~/Library/Caches/RAIS/locks/` on macOS) which made the otherwise
+/// portable RAIS workflow leave persistent files behind in the host's
+/// per-user app-data folders. Routing the lock under the resource path
+/// keeps the lock file alongside the receipt + backups + logs folder
+/// that already lives there, so RAIS writes nothing outside the install
+/// target the user picked.
+///
+/// Two RAIS processes installing into *different* resource paths can now
+/// run concurrently (their locks don't collide); two processes against
+/// the *same* resource path still serialize, which is the actual race
+/// the lock guards against.
+pub fn default_package_install_lock_path(resource_path: &Path) -> PathBuf {
+    resource_path
+        .join("RAIS")
+        .join("locks")
+        .join(LOCK_FILE_NAME)
 }
 
-pub fn acquire_package_install_lock() -> Result<PackageInstallLock> {
-    acquire_package_install_lock_at(&default_package_install_lock_path())
+pub fn acquire_package_install_lock(resource_path: &Path) -> Result<PackageInstallLock> {
+    acquire_package_install_lock_at(&default_package_install_lock_path(resource_path))
 }
 
 pub fn acquire_package_install_lock_at(path: &Path) -> Result<PackageInstallLock> {
@@ -108,8 +104,10 @@ pub fn acquire_package_install_lock_at(path: &Path) -> Result<PackageInstallLock
     })
 }
 
-pub fn package_install_lock_active() -> Result<Option<PackageInstallLockMetadata>> {
-    package_install_lock_active_at(&default_package_install_lock_path())
+pub fn package_install_lock_active(
+    resource_path: &Path,
+) -> Result<Option<PackageInstallLockMetadata>> {
+    package_install_lock_active_at(&default_package_install_lock_path(resource_path))
 }
 
 pub fn package_install_lock_active_at(path: &Path) -> Result<Option<PackageInstallLockMetadata>> {

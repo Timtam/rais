@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use crate::Result;
 use crate::error::{IoPathContext, RaisError};
 use crate::hash::sha256_file;
-use crate::lock::{default_package_install_lock_path, package_install_lock_active_at};
 use crate::model::Platform;
 use crate::signature::{SignatureVerdict, verify_executable_signature};
 use crate::version::Version;
@@ -91,7 +90,6 @@ pub struct ApplySelfUpdateOptions {
     /// install target — RAIS swaps in place under the user's existing
     /// filename regardless of what the download was called.
     pub install_target_basename: Option<String>,
-    pub package_install_lock_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,23 +152,13 @@ pub fn current_rais_version() -> Result<Version> {
     )
 }
 
+/// Ephemeral staging directory for the self-update download. Lives under
+/// the OS temp dir (cleaned periodically by the OS) so RAIS doesn't leave
+/// persistent files in `%LOCALAPPDATA%` / `~/Library/Caches/`. Callers
+/// generally don't need to keep this around between runs — the download is
+/// validated, swapped in place, and the staging dir is removed at the end
+/// of `apply_self_update`.
 pub fn default_self_update_staging_dir() -> PathBuf {
-    if cfg!(target_os = "windows") {
-        if let Some(local_app_data) = rais_platform::user_local_appdata_dir() {
-            return local_app_data.join("RAIS").join("self-update");
-        }
-    }
-
-    if cfg!(target_os = "macos") {
-        if let Some(home) = rais_platform::user_home_dir() {
-            return home
-                .join("Library")
-                .join("Caches")
-                .join("RAIS")
-                .join("self-update");
-        }
-    }
-
     env::temp_dir().join("rais-self-update")
 }
 
@@ -293,16 +281,13 @@ pub fn apply_self_update(
         });
     }
 
-    let lock_path = options
-        .package_install_lock_path
-        .clone()
-        .unwrap_or_else(default_package_install_lock_path);
-    if let Some(holder) = package_install_lock_active_at(&lock_path)? {
-        return Err(RaisError::PackageInstallInProgress {
-            lock_path,
-            pid: holder.pid,
-        });
-    }
+    // (Old behavior: refuse to apply while *any* package install was
+    // running, via a global LocalAppData lock. The lock is now per-target
+    // — RAIS doesn't have a single resource path to ask about during
+    // self-update — so the cross-target check is gone. Two concurrent
+    // self-updates would race the file rename below, which is rare
+    // enough that we let it surface as a normal IO error rather than
+    // adding a separate global mutex.)
 
     let staged_asset =
         stage
@@ -1098,7 +1083,6 @@ mod tests {
             &ApplySelfUpdateOptions {
                 install_root: Some(install_root.path().to_path_buf()),
                 install_target_basename: Some("RAIS.exe".to_string()),
-                package_install_lock_path: None,
             },
         )
         .unwrap();
@@ -1134,7 +1118,6 @@ mod tests {
             &ApplySelfUpdateOptions {
                 install_root: Some(install_root.path().to_path_buf()),
                 install_target_basename: Some("RAIS".to_string()),
-                package_install_lock_path: None,
             },
         )
         .unwrap();
@@ -1171,7 +1154,6 @@ mod tests {
             &ApplySelfUpdateOptions {
                 install_root: Some(install_root.path().to_path_buf()),
                 install_target_basename: Some("RAIS.exe".to_string()),
-                package_install_lock_path: None,
             },
         )
         .unwrap_err();
@@ -1210,7 +1192,6 @@ mod tests {
             &ApplySelfUpdateOptions {
                 install_root: Some(install_root.path().to_path_buf()),
                 install_target_basename: Some("RAIS.exe".to_string()),
-                package_install_lock_path: None,
             },
         )
         .unwrap_err();
@@ -1218,40 +1199,9 @@ mod tests {
         assert!(matches!(error, RaisError::InvalidPlannedExecution { .. }));
     }
 
-    #[test]
-    fn apply_self_update_refuses_when_package_install_lock_is_held() {
-        let staging_root = tempdir().unwrap();
-        let install_root = tempdir().unwrap();
-        let lock_dir = tempdir().unwrap();
-        let lock_path = lock_dir.path().join("install.lock");
-
-        let staged_binary_path = staging_root
-            .path()
-            .join("0.2.0")
-            .join("rais-0.2.0-windows-x86_64.exe");
-        fs::create_dir_all(staged_binary_path.parent().unwrap()).unwrap();
-        write_test_release_binary(&staged_binary_path, b"new");
-
-        fs::write(install_root.path().join("RAIS.exe"), b"old").unwrap();
-        let stage = staged_report_for_binary(&staged_binary_path, staging_root.path());
-
-        let _install_lock = crate::lock::acquire_package_install_lock_at(&lock_path).unwrap();
-
-        let error = apply_self_update(
-            &stage,
-            &ApplySelfUpdateOptions {
-                install_root: Some(install_root.path().to_path_buf()),
-                install_target_basename: Some("RAIS.exe".to_string()),
-                package_install_lock_path: Some(lock_path.clone()),
-            },
-        )
-        .unwrap_err();
-
-        assert!(matches!(error, RaisError::PackageInstallInProgress { .. }));
-        assert_eq!(
-            fs::read(install_root.path().join("RAIS.exe")).unwrap(),
-            b"old"
-        );
-        assert!(!install_root.path().join("RAIS.exe.rais-old").exists());
-    }
+    // (`apply_self_update_refuses_when_package_install_lock_is_held`
+    // used to assert that a global package-install lock blocked the
+    // self-update apply path. The lock is now per-target so the cross-
+    // target check is gone — see `apply_self_update`'s comment for the
+    // rationale.)
 }

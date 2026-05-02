@@ -776,7 +776,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &ApplySelfUpdateOptions {
                         install_root,
                         install_target_basename: None,
-                        package_install_lock_path: None,
                     },
                 )?;
                 if json {
