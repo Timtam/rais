@@ -8,8 +8,8 @@ use crate::model::{
     Platform,
 };
 use crate::package::{
-    PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_SWS, PackageSpec,
-    builtin_package_specs,
+    PACKAGE_JAWS_SCRIPTS, PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_SWS,
+    PackageSpec, builtin_package_specs,
 };
 use crate::reapack::package_owner_for_file;
 use crate::receipt::{ReceiptVerification, load_install_state, verify_package_receipt};
@@ -153,6 +153,17 @@ pub(crate) fn detect_component_with_probes(
 
     let files = matching_user_plugin_files(resource_path, platform, spec)?;
     if files.is_empty() {
+        // JAWS-for-REAPER scripts don't drop anything under
+        // `<resource>/UserPlugins` that we can match on prefix/suffix (the
+        // ComAccess DLL is the only UserPlugins file and its name does not
+        // share a stable prefix with the package id). So when the receipt
+        // and per-file probes don't apply, fall through to the dedicated
+        // registry/Uninstall.exe probe before giving up.
+        if spec.id == PACKAGE_JAWS_SCRIPTS {
+            if let Some(detection) = detect_jaws_scripts_via_uninstall_exe(spec) {
+                return Ok(detection);
+            }
+        }
         return Ok(ComponentDetection::not_installed(
             spec.id.clone(),
             spec.display_name.clone(),
@@ -764,6 +775,45 @@ fn is_probably_writable(path: &Path) -> bool {
     fs::metadata(existing_path)
         .map(|metadata| !metadata.permissions().readonly())
         .unwrap_or(false)
+}
+
+/// Detect a JAWS-for-REAPER scripts install by reading the version that the
+/// vendor NSIS installer left on disk. The flow is:
+///
+///   1. Read the `Reaper_JawsScripts` Programs-and-Features uninstall key's
+///      `UninstallDirectory` REG_SZ value (HKLM\SOFTWARE\WoW6432Node\… on
+///      64-bit Windows). The NSIS installer writes this value during install.
+///   2. Read the StringFileInfo "FileVersion" resource off
+///      `<dir>\Uninstall.exe`. The script author bumps it per release, so
+///      it's the most reliable on-disk version stamp for users who haven't
+///      let RAIS install the package yet (the receipt detector handles the
+///      RAIS-managed case earlier).
+///
+/// Returns `None` when the registry key is missing, the uninstaller is
+/// missing, or the FileVersion resource cannot be parsed as a RAIS `Version`.
+/// Always `None` on non-Windows hosts.
+fn detect_jaws_scripts_via_uninstall_exe(spec: &PackageSpec) -> Option<ComponentDetection> {
+    let install_dir =
+        rais_platform::read_uninstall_value("Reaper_JawsScripts", "UninstallDirectory")?;
+    let uninstall_exe = PathBuf::from(install_dir).join("Uninstall.exe");
+    if !uninstall_exe.is_file() {
+        return None;
+    }
+    let raw = rais_platform::read_file_version_string(&uninstall_exe)?;
+    let version = crate::version::Version::parse(&raw).ok()?;
+    Some(ComponentDetection {
+        package_id: spec.id.clone(),
+        display_name: spec.display_name.clone(),
+        installed: true,
+        version: Some(version),
+        detector: "jaws-scripts-uninstall-exe".to_string(),
+        confidence: Confidence::High,
+        files: vec![uninstall_exe],
+        notes: vec![
+            "Version came from the JAWS-for-REAPER scripts vendor uninstaller's FileVersion resource."
+                .to_string(),
+        ],
+    })
 }
 
 #[cfg(test)]

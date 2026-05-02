@@ -13,12 +13,20 @@ package-osara = OSARA
 package-sws = SWS Extension
 package-reapack = ReaPack
 package-reakontrol = ReaKontrol
+package-jaws-scripts = JAWS-for-REAPER scripts
 
 package-reaper-description = REAPER is the digital audio workstation that everything else here builds on. RAIS can install or update REAPER itself for you.
 package-osara-description = OSARA makes REAPER usable with screen readers — NVDA, JAWS, Narrator on Windows and VoiceOver on macOS. Install it if you rely on a screen reader to use REAPER.
 package-sws-description = The SWS Extension is a long-running community pack of extra actions, scripts, and helpers that polish REAPER's editing experience. Most accessible REAPER setups assume it is installed.
 package-reapack-description = ReaPack is REAPER's package manager: it installs, updates, and tracks third-party scripts and extensions from inside REAPER itself. Install it if you plan to use scripts shared by the REAPER community.
 package-reakontrol-description = ReaKontrol adds Native Instruments Komplete Kontrol keyboard support to REAPER. Install it if you have a Komplete Kontrol keyboard and want hardware control surface integration.
+package-jaws-scripts-description = The JAWS-for-REAPER scripts add script-level support for REAPER to the JAWS screen reader on Windows. RAIS only offers them when JAWS is detected on this PC.
+
+# $reason is one of the localized "wizard-package-row-unavailable-*" strings
+# explaining *why* the row is unavailable. Appended to the row's main summary
+# in the package CheckListBox.
+wizard-package-row-unavailable-suffix = (not available: { $reason })
+wizard-package-row-unavailable-portable = portable REAPER target
 
 detect-installed = Installed
 detect-not-installed = Not installed
@@ -210,6 +218,8 @@ wizard-summary-package-message = { $package }: { $message }
 wizard-summary-package-plan-action =   Plan action: { $action }
 # $status is one of the localized "status-*" labels.
 wizard-summary-package-status =   Status: { $status }
+# $version is the version RAIS just installed (or confirmed already current).
+wizard-summary-package-installed-version =   Installed version: { $version }
 # $architecture is the detected REAPER architecture (x64, arm64, …).
 wizard-summary-architecture = Architecture: { $architecture }
 status-installed-or-checked = Installed or checked

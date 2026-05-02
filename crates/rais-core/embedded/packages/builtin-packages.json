@@ -121,6 +121,28 @@
         "windows": [".dll"],
         "macos": [".dylib"]
       }
+    },
+    {
+      "id": "jaws-scripts",
+      "display_name": "JAWS-for-REAPER scripts",
+      "display_name_key": "package-jaws-scripts",
+      "display_description_key": "package-jaws-scripts-description",
+      "package_kind": "screen_reader_scripts",
+      "required": false,
+      "recommended": true,
+      "supported_platforms": ["windows"],
+      "supported_architectures": ["x86", "x64", "arm64", "arm64-ec"],
+      "latest_version_provider": "jaws_for_reaper_scripts_hoard",
+      "artifact_provider": "jaws_for_reaper_scripts_hoard",
+      "detectors": ["rais_receipt", "jaws_scripts_uninstall_exe"],
+      "install_steps": ["run_upstream_installer"],
+      "uninstall_steps": [],
+      "backup_policy": "backup_overwritten_files",
+      "user_plugin_prefixes": [],
+      "user_plugin_suffixes": {
+        "windows": [],
+        "macos": []
+      }
     }
   ]
 }

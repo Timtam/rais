@@ -2,8 +2,10 @@ use reqwest::blocking::Client;
 use serde_json::Value;
 
 use crate::error::{RaisError, Result};
+use crate::hfs::{HfsListEntry, fetch_file_list, parse_get_file_list_response};
 use crate::package::{
-    PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS,
+    PACKAGE_JAWS_SCRIPTS, PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER,
+    PACKAGE_SWS,
 };
 use crate::plan::AvailablePackage;
 use crate::version::Version;
@@ -18,6 +20,24 @@ pub const REAPACK_GITHUB_LATEST_URL: &str =
 pub const REAKONTROL_GITHUB_LATEST_URL: &str =
     "https://api.github.com/repos/jcsteh/reaKontrol/releases/latest";
 
+/// HFS root that hosts the JAWS-for-REAPER scripts archive (rejetto HFS).
+pub const JAWS_FOR_REAPER_HFS_BASE: &str = "https://hoard.reaperaccessibility.com";
+/// Folder under that root where the versioned `*.zip` lives. The exact folder
+/// name is the only piece that needs to track upstream changes; the parser
+/// itself works with any HFS listing.
+pub const JAWS_FOR_REAPER_HFS_FOLDER: &str =
+    "/Custom%20actions,%20Scripts%20and%20jsfx/Windows%20Scripts/JAWS%20Scripts%20by%20Snowman/";
+
+/// Synthesize the URL we report in `RemoteData` errors so messages stay
+/// stable regardless of which HTTP verb the caller used.
+fn jaws_for_reaper_listing_url() -> String {
+    format!(
+        "{}/~/api/get_file_list?path={}",
+        JAWS_FOR_REAPER_HFS_BASE.trim_end_matches('/'),
+        JAWS_FOR_REAPER_HFS_FOLDER
+    )
+}
+
 pub fn fetch_latest_versions() -> Result<Vec<AvailablePackage>> {
     let client = build_http_client()?;
     let mut packages = Vec::new();
@@ -29,6 +49,10 @@ pub fn fetch_latest_versions() -> Result<Vec<AvailablePackage>> {
             version: Some(version),
         });
     }
+    packages.push(AvailablePackage {
+        package_id: PACKAGE_JAWS_SCRIPTS.to_string(),
+        version: Some(fetch_jaws_for_reaper_latest(&client)?),
+    });
     Ok(packages)
 }
 
@@ -36,6 +60,10 @@ pub fn fetch_latest_versions() -> Result<Vec<AvailablePackage>> {
 /// stream per-package results as they arrive instead of blocking on the full
 /// batch.
 pub fn fetch_latest_for_package(package_id: &str) -> Result<Version> {
+    if package_id == PACKAGE_JAWS_SCRIPTS {
+        let client = build_http_client()?;
+        return fetch_jaws_for_reaper_latest(&client);
+    }
     let (_, url, parser) = providers()
         .into_iter()
         .find(|(id, _, _)| *id == package_id)
@@ -46,6 +74,100 @@ pub fn fetch_latest_for_package(package_id: &str) -> Result<Version> {
     let client = build_http_client()?;
     let body = http_get_text(&client, url)?;
     parser(&body, url)
+}
+
+/// POSTs the HFS listing for the JAWS-for-REAPER scripts folder and returns
+/// the highest-version `*.zip` it advertises.
+pub fn fetch_jaws_for_reaper_latest(client: &Client) -> Result<Version> {
+    let entries = fetch_file_list(client, JAWS_FOR_REAPER_HFS_BASE, JAWS_FOR_REAPER_HFS_FOLDER)?;
+    pick_jaws_for_reaper_version(&entries)
+        .map(|(version, _)| version)
+        .ok_or_else(|| RaisError::RemoteData {
+            url: jaws_for_reaper_listing_url(),
+            message: "no versioned JAWS-for-REAPER installer in folder listing".to_string(),
+        })
+}
+
+/// Pure-data twin of [`fetch_jaws_for_reaper_latest`] for unit tests: parses
+/// an HFS listing body and extracts the highest version. Lives next to the
+/// extractor so the parser can be exercised without a network call.
+pub fn parse_jaws_for_reaper_listing(body: &str, url: &str) -> Result<Version> {
+    let entries = parse_get_file_list_response(body, url)?;
+    pick_jaws_for_reaper_version(&entries)
+        .map(|(version, _)| version)
+        .ok_or_else(|| RaisError::RemoteData {
+            url: url.to_string(),
+            message: "no versioned JAWS-for-REAPER installer in folder listing".to_string(),
+        })
+}
+
+/// Walk an HFS listing and return the highest-version `*.exe`, along with
+/// the file name so the artifact resolver can build a download URL. The
+/// JAWS-for-REAPER scripts are distributed as a single-file Windows
+/// installer executable, so we filter on `.exe` rather than archive
+/// extensions.
+pub(crate) fn pick_jaws_for_reaper_version(entries: &[HfsListEntry]) -> Option<(Version, String)> {
+    let mut best: Option<(Version, String)> = None;
+    for entry in entries {
+        if entry.is_directory {
+            continue;
+        }
+        if !entry.name.to_ascii_lowercase().ends_with(".exe") {
+            continue;
+        }
+        let Some(version) = jaws_for_reaper_version_from_filename(&entry.name) else {
+            continue;
+        };
+        best = Some(match best {
+            Some((current_version, current_name))
+                if current_version.cmp_lenient(&version).is_ge() =>
+            {
+                (current_version, current_name)
+            }
+            _ => (version, entry.name.clone()),
+        });
+    }
+    best
+}
+
+/// Extract a version from a JAWS-for-REAPER installer filename. Accepts
+/// either a dotted version (`JFRSCRIPTS_v3.18.exe` → `3.18`) or a plain
+/// integer build number (`Reaper_JawsScripts_89.exe` → `89`), since the
+/// upstream naming is the latter today and the dotted form has been used
+/// historically. We pick the **last** digit-or-dot run in the stem so
+/// prefixes/suffixes don't confuse the picker.
+pub(crate) fn jaws_for_reaper_version_from_filename(name: &str) -> Option<Version> {
+    let lower = name.to_ascii_lowercase();
+    if !lower.ends_with(".exe") {
+        return None;
+    }
+    let stem = &name[..name.len() - 4];
+
+    let bytes = stem.as_bytes();
+    let mut last: Option<&str> = None;
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        if !bytes[cursor].is_ascii_digit() {
+            cursor += 1;
+            continue;
+        }
+        let start = cursor;
+        let mut end = cursor;
+        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
+            end += 1;
+        }
+        let mut candidate = &stem[start..end];
+        // Trim a trailing dot so something like `3.18.` parses as `3.18`.
+        while candidate.ends_with('.') {
+            candidate = &candidate[..candidate.len() - 1];
+        }
+        if !candidate.is_empty() {
+            last = Some(candidate);
+        }
+        cursor = end.max(start + 1);
+    }
+
+    last.and_then(|candidate| Version::parse(candidate).ok())
 }
 
 fn build_http_client() -> Result<Client> {
@@ -270,9 +392,10 @@ fn collect_digits(text: &str) -> String {
 mod tests {
     use super::{
         OSARA_UPDATE_URL, REAKONTROL_GITHUB_LATEST_URL, REAPACK_GITHUB_LATEST_URL,
-        REAPER_DOWNLOAD_URL, SWS_HOME_URL, parse_github_latest_release_json,
-        parse_osara_update_json, parse_reakontrol_snapshot_version, parse_reaper_latest_version,
-        parse_sws_latest_version, reakontrol_version_from_asset_name,
+        REAPER_DOWNLOAD_URL, SWS_HOME_URL, jaws_for_reaper_listing_url,
+        jaws_for_reaper_version_from_filename, parse_github_latest_release_json,
+        parse_jaws_for_reaper_listing, parse_osara_update_json, parse_reakontrol_snapshot_version,
+        parse_reaper_latest_version, parse_sws_latest_version, reakontrol_version_from_asset_name,
     };
 
     #[test]
@@ -346,5 +469,50 @@ mod tests {
         let error =
             parse_reakontrol_snapshot_version(body, REAKONTROL_GITHUB_LATEST_URL).unwrap_err();
         assert!(error.to_string().contains("ReaKontrol"));
+    }
+
+    #[test]
+    fn extracts_jaws_for_reaper_version_from_common_filenames() {
+        let cases = [
+            // Current upstream naming (single-integer build number).
+            ("Reaper_JawsScripts_89.exe", "89"),
+            // Historic / hypothetical dotted forms — kept covered so a
+            // future rename to a semver-shaped scheme keeps working.
+            ("JFRSCRIPTS_v3.18.exe", "3.18"),
+            ("JFR_v3.18.0.exe", "3.18.0"),
+            ("jaws-for-reaper-3.18.exe", "3.18"),
+            ("JAWS_FOR_REAPER_3.18.0_release.exe", "3.18.0"),
+        ];
+        for (file_name, expected) in cases {
+            let version = jaws_for_reaper_version_from_filename(file_name).unwrap();
+            assert_eq!(version.raw(), expected, "filename: {file_name}");
+        }
+        assert!(jaws_for_reaper_version_from_filename("README.txt").is_none());
+        assert!(jaws_for_reaper_version_from_filename("NoVersionHere.exe").is_none());
+        // Non-.exe artifacts (e.g. a zip sibling) are ignored.
+        assert!(jaws_for_reaper_version_from_filename("JFR_v3.18.zip").is_none());
+    }
+
+    #[test]
+    fn picks_highest_jaws_for_reaper_version_from_hfs_listing() {
+        let body = r#"{
+            "list": [
+                {"n": "Reaper_JawsScripts_88.exe", "s": 100},
+                {"n": "Reaper_JawsScripts_89.exe", "s": 110},
+                {"n": "Reaper_JawsScripts_85.exe", "s": 90},
+                {"n": "old/", "s": null},
+                {"n": "README.txt", "s": 5}
+            ]
+        }"#;
+        let version = parse_jaws_for_reaper_listing(body, &jaws_for_reaper_listing_url()).unwrap();
+        assert_eq!(version.raw(), "89");
+    }
+
+    #[test]
+    fn rejects_jaws_for_reaper_listing_without_versioned_installer() {
+        let body = r#"{"list": [{"n": "README.txt", "s": 1}]}"#;
+        let error =
+            parse_jaws_for_reaper_listing(body, &jaws_for_reaper_listing_url()).unwrap_err();
+        assert!(error.to_string().contains("no versioned JAWS-for-REAPER"));
     }
 }

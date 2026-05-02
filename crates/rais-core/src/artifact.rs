@@ -9,14 +9,17 @@ use serde_json::Value;
 
 use crate::error::{IoPathContext, RaisError, Result};
 use crate::hash::sha256_file;
+use crate::hfs::{fetch_file_list, file_url as hfs_file_url};
 use crate::latest::{
-    OSARA_UPDATE_URL, REAKONTROL_GITHUB_LATEST_URL, REAPACK_GITHUB_LATEST_URL, REAPER_DOWNLOAD_URL,
-    SWS_HOME_URL, parse_github_latest_release_json, parse_osara_update_json,
-    parse_reaper_latest_version, parse_sws_latest_version, reakontrol_version_from_asset_name,
+    JAWS_FOR_REAPER_HFS_BASE, JAWS_FOR_REAPER_HFS_FOLDER, OSARA_UPDATE_URL,
+    REAKONTROL_GITHUB_LATEST_URL, REAPACK_GITHUB_LATEST_URL, REAPER_DOWNLOAD_URL, SWS_HOME_URL,
+    parse_github_latest_release_json, parse_osara_update_json, parse_reaper_latest_version,
+    parse_sws_latest_version, pick_jaws_for_reaper_version, reakontrol_version_from_asset_name,
 };
 use crate::model::{Architecture, Platform};
 use crate::package::{
-    PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS,
+    PACKAGE_JAWS_SCRIPTS, PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER,
+    PACKAGE_SWS,
 };
 use crate::version::Version;
 
@@ -66,6 +69,7 @@ pub fn resolve_latest_artifacts(
             PACKAGE_SWS => resolve_sws_artifact(&client, platform, architecture)?,
             PACKAGE_REAPACK => resolve_reapack_artifact(&client, platform, architecture)?,
             PACKAGE_REAKONTROL => resolve_reakontrol_artifact(&client, platform, architecture)?,
+            PACKAGE_JAWS_SCRIPTS => resolve_jaws_scripts_artifact(&client, platform, architecture)?,
             _ => {
                 return Err(RaisError::NoArtifactFound {
                     package_id: package_id.clone(),
@@ -91,6 +95,7 @@ pub fn expected_artifact_kind(
         PACKAGE_SWS => expected_sws_artifact_kind(platform, architecture),
         PACKAGE_REAPACK => expected_reapack_artifact_kind(platform, architecture),
         PACKAGE_REAKONTROL => expected_reakontrol_artifact_kind(platform),
+        PACKAGE_JAWS_SCRIPTS => Ok(ArtifactKind::Installer),
         _ => Err(RaisError::NoArtifactFound {
             package_id: package_id.to_string(),
             platform,
@@ -582,6 +587,34 @@ fn resolve_reakontrol_artifact_from_release_body(
 
 fn expected_reakontrol_artifact_kind(_platform: Platform) -> Result<ArtifactKind> {
     Ok(ArtifactKind::Archive)
+}
+
+fn resolve_jaws_scripts_artifact(
+    client: &Client,
+    platform: Platform,
+    architecture: Architecture,
+) -> Result<ArtifactDescriptor> {
+    let entries = fetch_file_list(client, JAWS_FOR_REAPER_HFS_BASE, JAWS_FOR_REAPER_HFS_FOLDER)?;
+    let (version, file_name) =
+        pick_jaws_for_reaper_version(&entries).ok_or_else(|| RaisError::NoArtifactFound {
+            package_id: PACKAGE_JAWS_SCRIPTS.to_string(),
+            platform,
+            architecture,
+        })?;
+    let url = hfs_file_url(
+        JAWS_FOR_REAPER_HFS_BASE,
+        JAWS_FOR_REAPER_HFS_FOLDER,
+        &file_name,
+    );
+    Ok(ArtifactDescriptor {
+        package_id: PACKAGE_JAWS_SCRIPTS.to_string(),
+        version,
+        platform,
+        architecture: Architecture::Universal,
+        kind: ArtifactKind::Installer,
+        url,
+        file_name,
+    })
 }
 
 fn artifact_from_href(

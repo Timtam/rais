@@ -9,6 +9,7 @@ pub const PACKAGE_OSARA: &str = "osara";
 pub const PACKAGE_SWS: &str = "sws";
 pub const PACKAGE_REAPACK: &str = "reapack";
 pub const PACKAGE_REAKONTROL: &str = "reakontrol";
+pub const PACKAGE_JAWS_SCRIPTS: &str = "jaws-scripts";
 
 pub const BUILTIN_PACKAGE_MANIFEST_ID: &str = "builtin-packages.json";
 const BUILTIN_PACKAGE_MANIFEST: &str = include_str!("../embedded/packages/builtin-packages.json");
@@ -84,6 +85,11 @@ pub enum PackageKind {
     UserPluginBinary,
     Keymap,
     ReapackPackage,
+    /// Drop-in script files (e.g. `.jss`/`.jsb`) that a screen reader loads
+    /// from a known per-user directory. Platform-gated: a package of this
+    /// kind only appears in the wizard when the relevant screen reader is
+    /// detected on the host (e.g. JAWS-for-REAPER scripts on Windows).
+    ScreenReaderScripts,
 }
 
 impl Default for PackageKind {
@@ -107,6 +113,10 @@ pub enum LatestVersionProvider {
     SwsHomePage,
     ReapackGithubRelease,
     ReakontrolGithubSnapshots,
+    /// rejetto HFS file listing at `hoard.reaperaccessibility.com` for the
+    /// JAWS-for-REAPER scripts; the highest-version `*.zip` in the folder
+    /// wins.
+    JawsForReaperScriptsHoard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +127,10 @@ pub enum ArtifactProvider {
     SwsDownloadPage,
     ReapackGithubReleaseAssets,
     ReakontrolGithubSnapshots,
+    /// HFS folder listing on `hoard.reaperaccessibility.com`: same listing
+    /// the latest-version provider hits, but the artifact resolver also
+    /// captures the file URL for download.
+    JawsForReaperScriptsHoard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +141,12 @@ pub enum PackageDetector {
     FileVersionMetadata,
     ReapackRegistry,
     OsaraBinaryVersionString,
+    /// Detect a JAWS-for-REAPER scripts install by following the
+    /// `Reaper_JawsScripts` Programs-and-Features uninstall key to the
+    /// vendor-installed `Uninstall.exe` and reading its StringFileInfo
+    /// "FileVersion" resource. Lets RAIS report a version even for users
+    /// who installed the scripts before RAIS existed (no receipt yet).
+    JawsScriptsUninstallExe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +203,36 @@ pub fn default_desired_package_ids() -> Vec<String> {
         .filter(|package| package.recommended)
         .map(|package| package.id.clone())
         .collect()
+}
+
+/// Host-side facts the wizard consults before showing platform-conditional
+/// packages — currently just "is JAWS installed?", which gates the
+/// JAWS-for-REAPER scripts package. Lives in `rais-core` so callers (CLI,
+/// GUI) can share one detection path. Probed via [`detect_host_capabilities`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostCapabilities {
+    pub jaws_installed: bool,
+}
+
+/// Snapshot the runtime host facts that gate optional packages.
+pub fn detect_host_capabilities() -> HostCapabilities {
+    HostCapabilities {
+        jaws_installed: rais_platform::is_jaws_installed(),
+    }
+}
+
+/// `true` when the host can meaningfully receive `spec`. Returns `false` for
+/// packages whose `package_kind` requires a host facility that isn't present
+/// — today only [`PackageKind::ScreenReaderScripts`] needs this filter, and
+/// it's a JAWS-presence check.
+pub fn host_supports_package(spec: &PackageSpec, host: &HostCapabilities) -> bool {
+    match spec.package_kind {
+        PackageKind::ScreenReaderScripts => host.jaws_installed,
+        PackageKind::ReaperApp
+        | PackageKind::UserPluginBinary
+        | PackageKind::Keymap
+        | PackageKind::ReapackPackage => true,
+    }
 }
 
 pub fn embedded_package_manifest() -> PackageManifest {
@@ -287,11 +337,11 @@ fn all_supported_architectures() -> Vec<Architecture> {
 mod tests {
     use crate::model::{Architecture, Platform};
     use crate::package::{
-        ArtifactProvider, BackupPolicy, InstallStep, LatestVersionProvider, PACKAGE_OSARA,
-        PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS, PackageDetector,
-        PackageKind, SupportedPlatform, builtin_package_specs, default_desired_package_ids,
-        embedded_package_manifest, embedded_package_manifest_source, package_specs_by_id,
-        parse_package_manifest,
+        ArtifactProvider, BackupPolicy, InstallStep, LatestVersionProvider, PACKAGE_JAWS_SCRIPTS,
+        PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS,
+        PackageDetector, PackageKind, SupportedPlatform, builtin_package_specs,
+        default_desired_package_ids, embedded_package_manifest, embedded_package_manifest_source,
+        package_specs_by_id, parse_package_manifest,
     };
 
     #[test]
@@ -299,7 +349,7 @@ mod tests {
         let manifest = embedded_package_manifest();
 
         assert_eq!(manifest.schema_version, 1);
-        assert_eq!(manifest.packages.len(), 5);
+        assert_eq!(manifest.packages.len(), 6);
         assert!(
             manifest
                 .packages
@@ -385,6 +435,22 @@ mod tests {
                 .contains(&InstallStep::CopyUserPluginBinary)
         );
         assert!(embedded_package_manifest_source().contains("\"packages\""));
+        let jaws = manifest
+            .packages
+            .iter()
+            .find(|package| package.id == PACKAGE_JAWS_SCRIPTS)
+            .unwrap();
+        assert_eq!(jaws.package_kind, PackageKind::ScreenReaderScripts);
+        assert_eq!(jaws.supported_platforms, vec![SupportedPlatform::Windows]);
+        assert!(jaws.recommended);
+        assert_eq!(
+            jaws.latest_version_provider,
+            Some(LatestVersionProvider::JawsForReaperScriptsHoard)
+        );
+        assert_eq!(
+            jaws.artifact_provider,
+            Some(ArtifactProvider::JawsForReaperScriptsHoard)
+        );
     }
 
     #[test]
@@ -418,6 +484,7 @@ mod tests {
                 PACKAGE_SWS.to_string(),
                 PACKAGE_REAPACK.to_string(),
                 PACKAGE_REAKONTROL.to_string(),
+                PACKAGE_JAWS_SCRIPTS.to_string(),
             ]
         );
     }

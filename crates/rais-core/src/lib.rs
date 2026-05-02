@@ -4,6 +4,7 @@ pub mod detection;
 pub mod disk_image;
 pub mod error;
 pub mod hash;
+pub mod hfs;
 pub mod http;
 pub mod install;
 pub mod latest;

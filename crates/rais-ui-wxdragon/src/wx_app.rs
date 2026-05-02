@@ -19,6 +19,15 @@ use rais_core::self_update::SelfUpdateCheckReport;
 // body on the same thread that initialised UI_LOCALIZER (the main thread).
 thread_local! {
     static UI_LOCALIZER: RefCell<Option<Rc<Localizer>>> = const { RefCell::new(None) };
+    /// Post-install rescan hook. The install click handler arms this with a
+    /// closure that captures the UI-thread `Rc<RefCell>` shared state for
+    /// `package_rows`/`package_notes`/`can_install`. The wizard install
+    /// runs on a worker thread; its `call_after` success branch fires the
+    /// hook so the cached package state reflects what the just-completed
+    /// install left on disk. Lives in a thread-local because the
+    /// `Rc<RefCell>` it captures is `!Send` and can't ride inside the
+    /// `call_after` `Box<dyn FnOnce + Send>`.
+    static POST_INSTALL_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
 }
 
 fn install_ui_localizer(localizer: Localizer) {
@@ -33,6 +42,19 @@ fn with_ui_localizer<F: FnOnce(&Localizer)>(f: F) {
             f(localizer);
         }
     });
+}
+
+fn arm_post_install_hook(callback: impl FnOnce() + 'static) {
+    POST_INSTALL_HOOK.with(|cell| {
+        *cell.borrow_mut() = Some(Box::new(callback));
+    });
+}
+
+fn fire_post_install_hook() {
+    let callback = POST_INSTALL_HOOK.with(|cell| cell.borrow_mut().take());
+    if let Some(callback) = callback {
+        callback();
+    }
 }
 
 /// Stages of the deferred latest-version fetch the wizard runs once the user
@@ -487,6 +509,7 @@ pub fn run() {
             let model = Arc::clone(&model);
             let widgets = wizard_widgets;
             let package_rows = Rc::clone(&package_rows);
+            let package_notes = Rc::clone(&package_notes);
             let can_install = Rc::clone(&can_install);
             let review_can_install = Rc::clone(&review_can_install);
             let last_report = Arc::clone(&last_report);
@@ -611,6 +634,66 @@ pub fn run() {
                     ));
                 drop(rows);
 
+                // Arm the post-install rescan hook. The hook captures the
+                // UI-thread `Rc<RefCell>` shared state so the call_after
+                // success arm can refresh it without smuggling non-Send
+                // references across threads. The hook closure runs on the
+                // UI thread; it re-detects the selected target, runs the
+                // offline package plan against the now-fresh receipts, and
+                // updates both the cached state and the on-screen package
+                // list — so navigating Back from the Done page (or
+                // re-opening the Packages step via Rescan) shows the
+                // post-install version without the user having to click
+                // anything.
+                {
+                    let model = Arc::clone(&model);
+                    let widgets = widgets;
+                    let package_rows = Rc::clone(&package_rows);
+                    let package_notes = Rc::clone(&package_notes);
+                    let can_install = Rc::clone(&can_install);
+                    let review_can_install = Rc::clone(&review_can_install);
+                    let last_reaper_app_path = Arc::clone(&last_reaper_app_path);
+                    let last_resource_path = Arc::clone(&last_resource_path);
+                    arm_post_install_hook(move || {
+                        let Some(target) = selected_target_row(&model, &widgets) else {
+                            return;
+                        };
+                        let refreshed_target = refreshed_target_row(&model, &target);
+                        let Ok(plan) =
+                            wizard_package_plan_for_target(&model, Some(&refreshed_target))
+                        else {
+                            return;
+                        };
+                        *package_rows.borrow_mut() = plan.package_rows;
+                        *package_notes.borrow_mut() = plan.notes;
+                        can_install.set(plan.can_install);
+                        review_can_install.set(false);
+                        refresh_package_checklist(
+                            &widgets.package_checklist,
+                            &widgets.package_details,
+                            &widgets.osara_keymap_replace,
+                            &widgets.osara_keymap_note,
+                            &model,
+                            &package_rows.borrow(),
+                        );
+                        refresh_target_choice(
+                            &model,
+                            &widgets.target_choice,
+                            refreshed_target_index(&model, &widgets),
+                            &refreshed_target,
+                        );
+                        widgets.target_details.set_value(&refreshed_target.details);
+                        set_last_path(
+                            &last_reaper_app_path,
+                            Some(planned_reaper_launch_path_for_target(&refreshed_target)),
+                        );
+                        set_last_resource_path(
+                            &last_resource_path,
+                            Some(refreshed_target.path.clone()),
+                        );
+                    });
+                }
+
                 let ui_model = Arc::clone(&model);
                 let ui_current_step = Arc::clone(&current_step);
                 let ui_labels = Arc::clone(&labels);
@@ -677,6 +760,16 @@ pub fn run() {
                                 widgets.done_open_resource.enable(true);
                                 widgets.done_rescan.enable(true);
                                 widgets.done_save_report.enable(true);
+                                // Auto-rescan: the install pipeline just
+                                // wrote a fresh receipt for whatever
+                                // landed, and the cached package_rows
+                                // still reflect pre-install state. Fire
+                                // the post-install hook the click handler
+                                // armed earlier so navigating back from
+                                // the Done page (or via Rescan) reflects
+                                // the new on-disk state without the user
+                                // having to click anything.
+                                fire_post_install_hook();
                             }
                             Err(error) => {
                                 let outcome_report = wizard_outcome_report_from_error(
@@ -1629,11 +1722,26 @@ fn build_packages_page(
     checklist.on_toggled(move |event| {
         if let Some(index) = event.get_selection() {
             let checked = toggled_checklist.is_checked(index);
-            // Recompute the row's action/label/summary so the visible
-            // "Install / Update / Keep" text follows the new checkbox
-            // state, then refresh both the CheckListBox label and the
-            // details pane.
-            if let Some(row) = toggled_package_rows.borrow_mut().get_mut(index as usize) {
+            // Reject toggles on rows the wizard has marked unavailable
+            // for the current target (e.g. JAWS-for-REAPER scripts when
+            // the target is portable). The CheckListBox doesn't expose
+            // a per-item disable, so we bounce the check state back to
+            // unchecked so the user can't enqueue an install we can't
+            // honor. The label already carries an "(not available: …)"
+            // indicator from `mark_row_unavailable`.
+            let unavailable = toggled_package_rows
+                .borrow()
+                .get(index as usize)
+                .is_some_and(|row| !row.available_for_target);
+            if unavailable {
+                if checked {
+                    toggled_checklist.check(index, false);
+                }
+            } else if let Some(row) = toggled_package_rows.borrow_mut().get_mut(index as usize) {
+                // Recompute the row's action/label/summary so the visible
+                // "Install / Update / Keep" text follows the new checkbox
+                // state, then refresh both the CheckListBox label and the
+                // details pane.
                 let _ = apply_checkbox_state_to_package_row(&toggled_model, row, checked);
             }
             refresh_checklist_summaries(&toggled_checklist, &toggled_package_rows.borrow());

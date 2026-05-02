@@ -27,7 +27,10 @@ use rais_core::operation::{
     PackageAutomationSupport, PackageOperationStatus, PlannedExecutionKind,
     package_automation_support, preview_manual_instruction,
 };
-use rais_core::package::{PACKAGE_OSARA, PackageSpec, builtin_package_specs};
+use rais_core::package::{
+    HostCapabilities, PACKAGE_JAWS_SCRIPTS, PACKAGE_OSARA, PackageSpec, builtin_package_specs,
+    detect_host_capabilities, host_supports_package,
+};
 use rais_core::plan::{
     AvailablePackage, InstallPlan, PlanAction, PlanActionKind, build_install_plan,
 };
@@ -224,6 +227,16 @@ pub struct PackageRow {
     pub reason: String,
     pub handling_summary: String,
     pub manual_attention_expected: bool,
+    /// `false` when this package can't be installed against the currently
+    /// selected target — the row is shown but its checkbox is disabled and
+    /// the row label carries a localized indicator. Today only true → false
+    /// flip is "JAWS-for-REAPER scripts on a portable REAPER target", since
+    /// the NSIS installer hard-codes `%APPDATA%\REAPER\UserPlugins\` and
+    /// can't honor the portable destination.
+    pub available_for_target: bool,
+    /// Localized reason matching `available_for_target == false`. `None`
+    /// when the row is available.
+    pub unavailability_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -348,7 +361,7 @@ pub fn load_wizard_model(options: UiBootstrapOptions) -> Result<WizardModel> {
     } else {
         Vec::new()
     };
-    let desired = wizard_package_ids(platform);
+    let desired = wizard_desired_package_ids(platform);
     let plan = build_install_plan(target, &detections, &desired, &available);
 
     Ok(model_from_plan_with_options(
@@ -1116,7 +1129,7 @@ pub fn wizard_package_plan_for_target_with_available(
         Some(target) => detect_components(&target.path, model.platform)?,
         None => Vec::new(),
     };
-    let desired = wizard_package_ids(model.platform);
+    let desired = wizard_desired_package_ids(model.platform);
     let plan = build_install_plan(
         target.map(|target| installation_from_target_row(model, target)),
         &detections,
@@ -1124,7 +1137,7 @@ pub fn wizard_package_plan_for_target_with_available(
         available_packages,
     );
     let package_specs = builtin_package_specs(model.platform);
-    let package_rows = package_rows(
+    let mut package_rows = package_rows(
         &localizer,
         &model.text,
         model.platform,
@@ -1132,15 +1145,50 @@ pub fn wizard_package_plan_for_target_with_available(
         &package_specs,
         &plan.actions,
     );
-    let can_install = package_rows
-        .iter()
-        .any(|row| matches!(row.action, PlanActionKind::Install | PlanActionKind::Update));
+
+    // Portable + JAWS-for-REAPER scripts: the NSIS package's
+    // `RequestExecutionLevel admin` path hard-codes
+    // `%APPDATA%\REAPER\UserPlugins\` for the COM bridge DLL, so the
+    // REAPER-side helper always lands in the *standard* REAPER folder
+    // regardless of the portable target the user picked. Mark the row
+    // as unavailable so the checklist disables its checkbox and the
+    // row label carries a localized indicator — more discoverable than
+    // a separate wizard-notes paragraph.
+    if target.is_some_and(|target| target.portable) {
+        for row in &mut package_rows {
+            if row.package_id == PACKAGE_JAWS_SCRIPTS {
+                mark_row_unavailable(&localizer, row, "wizard-package-row-unavailable-portable");
+            }
+        }
+    }
+
+    let can_install = package_rows.iter().any(|row| {
+        row.available_for_target
+            && matches!(row.action, PlanActionKind::Install | PlanActionKind::Update)
+    });
 
     Ok(WizardPackagePlan {
         package_rows,
         notes: plan.notes,
         can_install,
     })
+}
+
+/// Mark `row` as unavailable: force-uncheck it, record the localized reason,
+/// and append a localized "(not available: <reason>)" indicator to the row
+/// summary so the indicator shows up in the package CheckListBox label.
+fn mark_row_unavailable(localizer: &Localizer, row: &mut PackageRow, reason_key: &str) {
+    let reason = localizer.text(reason_key).value;
+    row.available_for_target = false;
+    row.selected = false;
+    let indicator = localizer
+        .format(
+            "wizard-package-row-unavailable-suffix",
+            &[("reason", reason.as_str())],
+        )
+        .value;
+    row.summary = format!("{} {}", row.summary, indicator);
+    row.unavailability_reason = Some(reason);
 }
 
 /// Recompute a `PackageRow`'s `action`, `action_label`, `summary`, and
@@ -1198,13 +1246,22 @@ pub fn localized_package_display_name(localizer: &Localizer, package_id: &str) -
 
 /// List of package ids the wizard cares about for a given platform — exposed
 /// so the GUI can iterate them without duplicating builtin_package_specs.
+/// Host-conditional packages (e.g. JAWS-for-REAPER scripts) are filtered out
+/// when the corresponding host facility isn't available.
 pub fn wizard_desired_package_ids(platform: Platform) -> Vec<String> {
-    wizard_package_ids(platform)
+    wizard_desired_package_ids_for_host(platform, &detect_host_capabilities())
 }
 
-fn wizard_package_ids(platform: Platform) -> Vec<String> {
+/// Same as [`wizard_desired_package_ids`] but with an explicit host snapshot,
+/// so tests can pin "JAWS detected"/"JAWS missing" without touching the real
+/// filesystem.
+pub fn wizard_desired_package_ids_for_host(
+    platform: Platform,
+    host: &HostCapabilities,
+) -> Vec<String> {
     builtin_package_specs(platform)
         .into_iter()
+        .filter(|spec| host_supports_package(spec, host))
         .map(|spec| spec.id)
         .collect()
 }
@@ -1914,6 +1971,23 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
             &[("status", status_label.clone())],
             format!("  Status: {status_label}"),
         ));
+        // Surface the installed version so users can confirm the install
+        // landed without having to scroll through the install report. The
+        // artifact descriptor's version is what RAIS chose to install (and,
+        // for an InstalledOrChecked status, what now lives on disk per the
+        // receipt the operation pipeline just wrote).
+        if matches!(
+            item.status,
+            PackageOperationStatus::InstalledOrChecked | PackageOperationStatus::SkippedCurrent
+        ) {
+            let installed_version = item.artifact.version.to_string();
+            detail_lines.push(format_localized_message(
+                localizer.as_ref(),
+                "wizard-summary-package-installed-version",
+                &[("version", installed_version.clone())],
+                format!("  Installed version: {installed_version}"),
+            ));
+        }
         if let Some(plan) = &item.planned_execution {
             detail_lines.push(format_localized_message(
                 localizer.as_ref(),
@@ -2182,6 +2256,8 @@ fn package_rows(
                 reason: action.reason.clone(),
                 handling_summary,
                 manual_attention_expected,
+                available_for_target: true,
+                unavailability_reason: None,
             }
         })
         .collect()
@@ -2324,11 +2400,40 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        OsaraKeymapChoice, PackageRow, UiBootstrapOptions, WizardInstallRequest,
+        HostCapabilities, OsaraKeymapChoice, PackageRow, UiBootstrapOptions, WizardInstallRequest,
         custom_portable_target_row, format_package_install_lock_blocking_message,
         format_self_update_apply_summary, localizer_from_options, model_from_plan,
-        refreshed_target_row,
+        refreshed_target_row, wizard_desired_package_ids_for_host,
     };
+
+    #[test]
+    fn jaws_scripts_only_appear_when_jaws_is_detected() {
+        let with_jaws = wizard_desired_package_ids_for_host(
+            Platform::Windows,
+            &HostCapabilities {
+                jaws_installed: true,
+            },
+        );
+        assert!(with_jaws.iter().any(|id| id == "jaws-scripts"));
+
+        let without_jaws = wizard_desired_package_ids_for_host(
+            Platform::Windows,
+            &HostCapabilities {
+                jaws_installed: false,
+            },
+        );
+        assert!(!without_jaws.iter().any(|id| id == "jaws-scripts"));
+
+        // macOS never sees the JAWS row regardless of the host flag — the
+        // package itself is platform-gated to Windows.
+        let macos_with_jaws = wizard_desired_package_ids_for_host(
+            Platform::MacOs,
+            &HostCapabilities {
+                jaws_installed: true,
+            },
+        );
+        assert!(!macos_with_jaws.iter().any(|id| id == "jaws-scripts"));
+    }
 
     #[test]
     fn default_options_use_embedded_localization() {
@@ -3103,6 +3208,8 @@ mod tests {
                             PathBuf::from("C:/PortableREAPER/UserPlugins"),
                             PathBuf::from("C:/PortableREAPER/osara"),
                         ],
+                        requires_elevation: false,
+                        freshness_paths: Vec::new(),
                     }),
                     manual_instruction: Some(ManualInstallInstruction {
                         title: "Manual install required for osara".to_string(),

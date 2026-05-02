@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 
 use crate::Result;
 use crate::archive::extract_osara_macos_assets;
@@ -68,12 +69,44 @@ pub fn verify_planned_execution_paths(plan: &PlannedExecutionPlan) -> Result<()>
     verify_paths(&plan.verification_paths)
 }
 
+/// Reject the run when any `freshness_paths` entry's mtime is older than
+/// `install_started_at`. Catches "silent install no-op" cases where the
+/// installer returned success but actually didn't write anything — the
+/// regular existence-only [`verify_planned_execution_paths`] would still
+/// pass because a previous install left the file on disk.
+pub fn verify_planned_execution_freshness(
+    plan: &PlannedExecutionPlan,
+    install_started_at: SystemTime,
+) -> Result<()> {
+    let mut stale = Vec::new();
+    for path in &plan.freshness_paths {
+        match std::fs::metadata(path) {
+            Ok(metadata) => match metadata.modified() {
+                Ok(mtime) if mtime >= install_started_at => {}
+                _ => stale.push(path.clone()),
+            },
+            Err(_) => stale.push(path.clone()),
+        }
+    }
+    if stale.is_empty() {
+        Ok(())
+    } else {
+        Err(RaisError::PostInstallVerificationFailed {
+            missing_paths: stale,
+        })
+    }
+}
+
 fn execute_program_plan(plan: &PlannedExecutionPlan) -> Result<()> {
     let Some(program) = &plan.program else {
         return Err(RaisError::InvalidPlannedExecution {
             message: "launch plan did not provide a program path".to_string(),
         });
     };
+
+    if plan.requires_elevation {
+        return execute_program_plan_elevated(plan, program);
+    }
 
     let mut command = Command::new(program);
     command.args(&plan.arguments);
@@ -105,6 +138,36 @@ fn execute_program_plan(plan: &PlannedExecutionPlan) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn execute_program_plan_elevated(plan: &PlannedExecutionPlan, program: &str) -> Result<()> {
+    use rais_platform::ElevationError;
+
+    let exit_code = rais_platform::run_elevated_and_wait(
+        Path::new(program),
+        &plan.arguments,
+        plan.working_directory.as_deref(),
+    )
+    .map_err(|error| match error {
+        ElevationError::UserCancelledElevation { .. } => RaisError::UserCancelledElevation {
+            program: program.to_string(),
+        },
+        other => RaisError::InvalidPlannedExecution {
+            message: other.to_string(),
+        },
+    })?;
+
+    match exit_code {
+        Some(0) => Ok(()),
+        Some(code) => Err(RaisError::ProcessFailed {
+            program: program.to_string(),
+            exit_code: Some(code),
+        }),
+        None => Err(RaisError::ProcessFailed {
+            program: program.to_string(),
+            exit_code: None,
+        }),
+    }
 }
 
 fn verify_paths(paths: &[PathBuf]) -> Result<()> {
@@ -172,6 +235,8 @@ mod tests {
             arguments: Vec::new(),
             working_directory: None,
             verification_paths: vec![marker_path],
+            requires_elevation: false,
+            freshness_paths: Vec::new(),
         };
 
         let error = verify_planned_execution_paths(&plan).unwrap_err();
@@ -200,6 +265,8 @@ mod tests {
             ],
             working_directory: None,
             verification_paths: vec![marker_path.to_path_buf()],
+            requires_elevation: false,
+            freshness_paths: Vec::new(),
         }
     }
 
@@ -215,6 +282,8 @@ mod tests {
             ],
             working_directory: None,
             verification_paths: vec![marker_path.to_path_buf()],
+            requires_elevation: false,
+            freshness_paths: Vec::new(),
         }
     }
 
@@ -235,6 +304,8 @@ mod tests {
             ],
             working_directory: None,
             verification_paths: vec![marker_path.to_path_buf()],
+            requires_elevation: false,
+            freshness_paths: Vec::new(),
         }
     }
 
@@ -250,6 +321,8 @@ mod tests {
             ],
             working_directory: None,
             verification_paths: vec![marker_path.to_path_buf()],
+            requires_elevation: false,
+            freshness_paths: Vec::new(),
         }
     }
 

@@ -1,3 +1,4 @@
+mod jaws_scripts;
 mod osara;
 mod reaper;
 mod sws;
@@ -31,7 +32,9 @@ use crate::rollback::{BackupManifest, BackupManifestFile, save_backup_manifest};
 use self::osara::osara_manual_steps;
 use self::reaper::reaper_manual_steps;
 use self::sws::sws_manual_steps;
-use crate::upstream::{execute_planned_execution, verify_planned_execution_paths};
+use crate::upstream::{
+    execute_planned_execution, verify_planned_execution_freshness, verify_planned_execution_paths,
+};
 
 const DEFAULT_UNATTENDED_INSTALL_MESSAGE: &str = "RAIS ran the upstream installer unattended, verified the expected target paths, and updated the RAIS receipt.";
 
@@ -104,6 +107,24 @@ pub struct PlannedExecutionPlan {
     pub arguments: Vec<String>,
     pub working_directory: Option<PathBuf>,
     pub verification_paths: Vec<PathBuf>,
+    /// When `true`, the runner launches `program` through Windows UAC
+    /// elevation (`ShellExecuteEx` with the `runas` verb) instead of plain
+    /// `CreateProcess`. Required for vendor installers that declare
+    /// `RequestExecutionLevel admin` — their `/S` silent path otherwise
+    /// no-ops without ever popping a UAC prompt. Defaulted via serde so
+    /// older saved reports still parse.
+    #[serde(default)]
+    pub requires_elevation: bool,
+    /// Files the runner expects the installer to *rewrite* (mtime updated
+    /// to "now" or later). Used to catch silent no-ops where the installer
+    /// returns success but does not actually replace anything on disk —
+    /// the JAWS-for-REAPER scripts NSIS package without admin elevation
+    /// being the worked example. Plain
+    /// [`PlannedExecutionPlan::verification_paths`] only check existence,
+    /// which a prior install already satisfies; freshness paths reject the
+    /// run when the file's mtime is older than `install_started_at`.
+    #[serde(default)]
+    pub freshness_paths: Vec<PathBuf>,
 }
 
 /// Per-package override used by `planned_execution_for_artifact` when a
@@ -167,6 +188,9 @@ fn automation_support_dispatch(
         crate::package::PACKAGE_REAPER => reaper::automation_support_for(kind, platform),
         crate::package::PACKAGE_OSARA => osara::automation_support_for(kind, platform),
         crate::package::PACKAGE_SWS => sws::automation_support_for(kind, platform),
+        crate::package::PACKAGE_JAWS_SCRIPTS => {
+            jaws_scripts::automation_support_for(kind, platform)
+        }
         _ => None,
     };
     if let Some(verdict) = per_package {
@@ -613,6 +637,12 @@ fn executed_unattended_item(
     // dialog even when the install itself completed, and the user already
     // has the binaries on disk. Surfacing the process error in that case
     // mis-reports a successful install as a failure.
+    //
+    // `install_started_at` is captured *before* the runner so the
+    // freshness check below can detect silent no-ops: if the installer
+    // returns success without rewriting its `freshness_paths`, those
+    // files keep their old mtimes and the run is rejected.
+    let install_started_at = SystemTime::now();
     let process_result = execute_planned_execution(&planned_execution, false);
     let post_install_result = post_execute_unattended_artifact(
         &planned.artifact,
@@ -639,6 +669,7 @@ fn executed_unattended_item(
             return Err(verify_err);
         }
     };
+    verify_planned_execution_freshness(&planned_execution, install_started_at)?;
 
     let message = match planned.artifact.package_id.as_str() {
         crate::package::PACKAGE_OSARA => osara::unattended_install_message(
@@ -723,6 +754,9 @@ fn receipt_paths_for_artifact(
         }
         crate::package::PACKAGE_SWS => {
             paths.extend(sws::receipt_paths(resource_path));
+        }
+        crate::package::PACKAGE_JAWS_SCRIPTS => {
+            paths.extend(jaws_scripts::receipt_paths(resource_path));
         }
         _ => {}
     }
@@ -904,6 +938,12 @@ fn planned_execution_for_artifact(
         effective_target_app_path.as_deref(),
         replace_osara_keymap,
     );
+    let freshness_paths = planned_freshness_paths(artifact);
+    let requires_elevation = package_requires_elevation(
+        artifact,
+        resource_path,
+        effective_target_app_path.as_deref(),
+    );
 
     if let Some(override_) = planned_execution_override_for_artifact(
         artifact,
@@ -921,6 +961,8 @@ fn planned_execution_for_artifact(
             },
             artifact_location,
             verification_paths,
+            requires_elevation,
+            freshness_paths,
         };
     }
 
@@ -937,6 +979,8 @@ fn planned_execution_for_artifact(
                 .and_then(|cached| cached.path.parent().map(Path::to_path_buf)),
             artifact_location,
             verification_paths,
+            requires_elevation,
+            freshness_paths,
         },
         ArtifactKind::Archive => PlannedExecutionPlan {
             kind: PlannedExecutionKind::ExtractArchiveAndRunInstaller,
@@ -946,6 +990,8 @@ fn planned_execution_for_artifact(
                 .and_then(|cached| cached.path.parent().map(Path::to_path_buf)),
             artifact_location,
             verification_paths,
+            requires_elevation,
+            freshness_paths,
         },
         ArtifactKind::DiskImage => PlannedExecutionPlan {
             kind: PlannedExecutionKind::MountDiskImageAndRunInstaller,
@@ -954,6 +1000,8 @@ fn planned_execution_for_artifact(
             working_directory: None,
             artifact_location,
             verification_paths,
+            requires_elevation,
+            freshness_paths,
         },
         ArtifactKind::ExtensionBinary => PlannedExecutionPlan {
             kind: PlannedExecutionKind::LaunchInstallerExecutable,
@@ -963,7 +1011,45 @@ fn planned_execution_for_artifact(
                 .and_then(|cached| cached.path.parent().map(Path::to_path_buf)),
             artifact_location,
             verification_paths,
+            requires_elevation,
+            freshness_paths,
         },
+    }
+}
+
+/// Per-package decision: does this artifact's runner need to launch through
+/// Windows UAC elevation rather than plain `CreateProcess`?
+///
+/// Two known consumers today:
+///   - **JAWS-for-REAPER scripts** — always elevate on Windows. The NSIS
+///     script declares `RequestExecutionLevel admin` and silently no-ops in
+///     `/S` mode without an elevated parent.
+///   - **REAPER** — elevate only for non-portable targets. The standard
+///     install writes to `C:\Program Files\REAPER (x64)\` (admin-only);
+///     portable installs write to a user-chosen folder and need no UAC.
+fn package_requires_elevation(
+    artifact: &ArtifactDescriptor,
+    resource_path: &Path,
+    target_app_path: Option<&Path>,
+) -> bool {
+    if !matches!(artifact.platform, Platform::Windows) {
+        return false;
+    }
+    if !matches!(artifact.kind, ArtifactKind::Installer) {
+        return false;
+    }
+    // Real vendor installers always ship as `.exe`; test fixtures use `.cmd`
+    // / `.bat` script-host helpers. ShellExecuteEx(runas) can't elevate a
+    // script-host helper and our tests have no UAC consent dialog, so gate
+    // elevation on the file extension before consulting the per-package
+    // rules.
+    if !artifact.file_name.to_ascii_lowercase().ends_with(".exe") {
+        return false;
+    }
+    match artifact.package_id.as_str() {
+        crate::package::PACKAGE_JAWS_SCRIPTS => true,
+        crate::package::PACKAGE_REAPER => !target_likely_portable(resource_path, target_app_path),
+        _ => false,
     }
 }
 
@@ -1003,6 +1089,9 @@ fn installer_arguments_for_artifact(
         }
         crate::package::PACKAGE_SWS => {
             sws::installer_arguments(artifact.kind, artifact.platform, resource_path)
+        }
+        crate::package::PACKAGE_JAWS_SCRIPTS => {
+            jaws_scripts::installer_arguments(artifact.kind, artifact.platform)
         }
         _ => None,
     };
@@ -1150,6 +1239,20 @@ fn planned_automation_description(kind: ArtifactKind) -> &'static str {
     }
 }
 
+/// Per-package freshness probe: which on-disk files should the runner
+/// confirm were rewritten by *this* install run? Empty for packages whose
+/// installers are reliable enough that an existence-only verification path
+/// is good enough; populated for packages whose `/S` silent path is known to
+/// no-op when something goes wrong (today: jaws-scripts, where the NSIS
+/// installer's `WriteUninstaller` directive stamps the only file we can
+/// reliably tell apart by mtime).
+fn planned_freshness_paths(artifact: &ArtifactDescriptor) -> Vec<PathBuf> {
+    if artifact.package_id == crate::package::PACKAGE_JAWS_SCRIPTS {
+        return jaws_scripts::freshness_paths();
+    }
+    Vec::new()
+}
+
 fn planned_verification_paths(
     artifact: &ArtifactDescriptor,
     resource_path: &Path,
@@ -1167,6 +1270,7 @@ fn planned_verification_paths(
         crate::package::PACKAGE_REAPACK | crate::package::PACKAGE_REAKONTROL => {
             vec![resource_path.join("UserPlugins")]
         }
+        crate::package::PACKAGE_JAWS_SCRIPTS => jaws_scripts::verification_paths(),
         _ => vec![resource_path.to_path_buf()],
     };
 
@@ -1202,6 +1306,7 @@ fn package_title_name(package_id: &str) -> &'static str {
         crate::package::PACKAGE_SWS => sws::TITLE,
         crate::package::PACKAGE_REAPACK => "ReaPack",
         crate::package::PACKAGE_REAKONTROL => "ReaKontrol",
+        crate::package::PACKAGE_JAWS_SCRIPTS => jaws_scripts::TITLE,
         _ => "package",
     }
 }

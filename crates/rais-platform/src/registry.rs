@@ -36,8 +36,13 @@ pub fn read_uninstall_install_location(key_name: &str) -> Option<String> {
     read_uninstall_value(key_name, "InstallLocation")
 }
 
+/// Read an arbitrary REG_SZ value off the Programs-and-Features uninstall
+/// key for `key_name`. Used when an installer wrote a non-standard value
+/// (e.g. NSIS scripts that store the install dir under `UninstallDirectory`
+/// rather than `InstallLocation`). Returns `None` when the key, the value,
+/// or its REG_SZ payload is missing, and on non-Windows hosts.
 #[cfg_attr(not(windows), allow(unused_variables))]
-fn read_uninstall_value(key_name: &str, value_name: &str) -> Option<String> {
+pub fn read_uninstall_value(key_name: &str, value_name: &str) -> Option<String> {
     read_uninstall_value_impl(key_name, value_name)
 }
 
