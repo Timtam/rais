@@ -159,15 +159,9 @@ pub struct WizardText {
     pub done_show_details_label: String,
     pub done_launch_reaper_label: String,
     pub done_open_resource_label: String,
-    pub done_rescan_label: String,
-    pub done_save_report_label: String,
     pub done_no_reaper_app: String,
-    pub done_no_report: String,
-    pub done_report_saved_prefix: String,
-    pub done_report_save_error_prefix: String,
     pub done_launch_reaper_error_prefix: String,
     pub done_open_resource_error_prefix: String,
-    pub done_rescan_error_prefix: String,
     pub done_self_update_apply_label: String,
     pub done_self_update_apply_running: String,
     pub done_self_update_error_prefix: String,
@@ -611,27 +605,13 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
             "wizard-done-open-resource",
             "wizard-done-open-resource-mnemonic",
         ),
-        done_rescan_label: localized_wx_mnemonic_label(
-            localizer,
-            "wizard-done-rescan",
-            "wizard-done-rescan-mnemonic",
-        ),
-        done_save_report_label: localized_wx_mnemonic_label(
-            localizer,
-            "wizard-done-save-report",
-            "wizard-done-save-report-mnemonic",
-        ),
         done_no_reaper_app: localizer.text("wizard-done-no-reaper-app").value,
-        done_no_report: localizer.text("wizard-done-no-report").value,
-        done_report_saved_prefix: localizer.text("wizard-done-report-saved-prefix").value,
-        done_report_save_error_prefix: localizer.text("wizard-done-report-save-error-prefix").value,
         done_launch_reaper_error_prefix: localizer
             .text("wizard-done-launch-reaper-error-prefix")
             .value,
         done_open_resource_error_prefix: localizer
             .text("wizard-done-open-resource-error-prefix")
             .value,
-        done_rescan_error_prefix: localizer.text("wizard-done-rescan-error-prefix").value,
         done_self_update_apply_label: localized_wx_mnemonic_label(
             localizer,
             "wizard-done-self-update-apply",
@@ -2491,8 +2471,6 @@ mod tests {
         );
         assert_eq!(model.text.done_launch_reaper_label, "&Launch REAPER");
         assert_eq!(model.text.done_open_resource_label, "&Open resource folder");
-        assert_eq!(model.text.done_rescan_label, "&Rescan target");
-        assert_eq!(model.text.done_save_report_label, "&Save report");
     }
 
     #[test]

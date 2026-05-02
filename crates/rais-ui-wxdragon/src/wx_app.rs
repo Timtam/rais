@@ -196,8 +196,6 @@ struct WizardWidgets {
     done_details: TextCtrl,
     done_launch_reaper: Button,
     done_open_resource: Button,
-    done_rescan: Button,
-    done_save_report: Button,
     done_self_update_apply: Button,
     self_update_status: StatusBar,
     /// Child Panel hosting the language picker + restart-note label,
@@ -550,8 +548,6 @@ pub fn run() {
                 install.enable(false);
                 widgets.done_launch_reaper.enable(false);
                 widgets.done_open_resource.enable(false);
-                widgets.done_rescan.enable(false);
-                widgets.done_save_report.enable(false);
                 widgets
                     .progress_status
                     .set_label(&model.text.progress_status_running);
@@ -620,8 +616,6 @@ pub fn run() {
                         widgets
                             .done_launch_reaper
                             .enable(can_launch_last_reaper_path(&last_reaper_app_path));
-                        widgets.done_save_report.enable(false);
-                        widgets.done_rescan.enable(true);
                         current_step.store(DONE_STEP, Ordering::SeqCst);
                         update_navigation(
                             DONE_STEP,
@@ -781,8 +775,6 @@ pub fn run() {
                                     .done_launch_reaper
                                     .enable(can_launch_last_reaper_path(&ui_last_reaper_app_path));
                                 widgets.done_open_resource.enable(true);
-                                widgets.done_rescan.enable(true);
-                                widgets.done_save_report.enable(true);
                                 // Auto-rescan: the install pipeline just
                                 // wrote a fresh receipt for whatever
                                 // landed, and the cached package_rows
@@ -828,8 +820,6 @@ pub fn run() {
                                 widgets.done_open_resource.enable(
                                     clone_last_resource_path(&ui_last_resource_path).is_some(),
                                 );
-                                widgets.done_rescan.enable(true);
-                                widgets.done_save_report.enable(true);
                             }
                         }
                         ui_current_step.store(DONE_STEP, Ordering::SeqCst);
@@ -898,31 +888,12 @@ pub fn run() {
             });
         }
 
-        {
-            let model = Arc::clone(&model);
-            let widgets = wizard_widgets;
-            let last_report = Arc::clone(&last_report);
-            widgets.done_save_report.on_click(move |_| {
-                let Some(report) = clone_last_report(&last_report) else {
-                    append_done_status(&widgets.done_status, &model.text.done_no_report);
-                    return;
-                };
-                match save_wizard_outcome_report(&report) {
-                    Ok(path) => append_done_status(
-                        &widgets.done_status,
-                        &format!(
-                            "{}: {}",
-                            model.text.done_report_saved_prefix,
-                            path.display()
-                        ),
-                    ),
-                    Err(error) => append_done_status(
-                        &widgets.done_status,
-                        &format!("{}: {}", model.text.done_report_save_error_prefix, error),
-                    ),
-                }
-            });
-        }
+        // (The "Save report" button used to live on the Done page so the
+        // user could re-save the outcome JSON+text manually. RAIS already
+        // auto-saves under `<resource>/RAIS/logs/` on every run — both
+        // success and failure paths — so the manual button was redundant
+        // and added clutter on a page meant to read like a destination,
+        // not a dashboard.)
 
         let self_update_state = Arc::new(Mutex::new(SelfUpdateUiState::default()));
 
@@ -1006,79 +977,12 @@ pub fn run() {
             });
         }
 
-        {
-            let book = book;
-            let step_label = step_label;
-            let back = back;
-            let next = next;
-            let install = install;
-            let current_step = Arc::clone(&current_step);
-            let labels = Arc::clone(&labels);
-            let model = Arc::clone(&model);
-            let widgets = wizard_widgets;
-            let package_rows = Rc::clone(&package_rows);
-            let package_notes = Rc::clone(&package_notes);
-            let can_install = Rc::clone(&can_install);
-            let review_can_install = Rc::clone(&review_can_install);
-            let last_reaper_app_path = Arc::clone(&last_reaper_app_path);
-            let last_resource_path = Arc::clone(&last_resource_path);
-            widgets.done_rescan.on_click(move |_| {
-                let Some(target) = selected_target_row(&model, &widgets) else {
-                    append_done_status(&widgets.done_status, &model.text.review_no_target);
-                    return;
-                };
-                let refreshed_target = refreshed_target_row(&model, &target);
-                match wizard_package_plan_for_target(&model, Some(&refreshed_target)) {
-                    Ok(plan) => {
-                        *package_rows.borrow_mut() = plan.package_rows;
-                        *package_notes.borrow_mut() = plan.notes;
-                        can_install.set(plan.can_install);
-                        review_can_install.set(false);
-                        refresh_package_checklist(
-                            &widgets.package_checklist,
-                            &widgets.package_details,
-                            &widgets.osara_keymap_replace,
-                            &widgets.osara_keymap_note,
-                            &model,
-                            &package_rows.borrow(),
-                        );
-                        refresh_target_choice(
-                            &model,
-                            &widgets.target_choice,
-                            refreshed_target_index(&model, &widgets),
-                            &refreshed_target,
-                        );
-                        widgets.target_details.set_value(&refreshed_target.details);
-                        set_last_path(
-                            &last_reaper_app_path,
-                            Some(planned_reaper_launch_path_for_target(&refreshed_target)),
-                        );
-                        set_last_resource_path(
-                            &last_resource_path,
-                            Some(refreshed_target.path.clone()),
-                        );
-                        current_step.store(PACKAGES_STEP, Ordering::SeqCst);
-                        update_navigation(
-                            PACKAGES_STEP,
-                            &book,
-                            &step_label,
-                            labels.as_slice(),
-                            &back,
-                            &next,
-                            &install,
-                            &widgets.language_footer,
-                            effective_can_install(&can_install, &review_can_install),
-                            target_is_valid(&model, &widgets),
-                            reapack_ack_confirmed(&widgets),
-                        );
-                    }
-                    Err(error) => append_done_status(
-                        &widgets.done_status,
-                        &format!("{}: {}", model.text.done_rescan_error_prefix, error),
-                    ),
-                }
-            });
-        }
+        // (The "Rescan target" button used to live here so the user could
+        // re-detect installed components on the Done page and jump back
+        // to the Packages step. With the post-install auto-rescan hook,
+        // package_rows is already up to date by the time the user lands
+        // on Done — manual rescan is a debugging affordance. Users who
+        // want to re-detect can just relaunch RAIS.)
 
         frame.centre();
         frame.show(true);
@@ -1150,15 +1054,8 @@ fn add_pages(
     );
 
     let done_page = Panel::builder(book).build();
-    let (
-        done_status,
-        done_details,
-        done_launch_reaper,
-        done_open_resource,
-        done_rescan,
-        done_save_report,
-        done_self_update_apply,
-    ) = build_done_page(&done_page, model);
+    let (done_status, done_details, done_launch_reaper, done_open_resource, done_self_update_apply) =
+        build_done_page(&done_page, model);
     book.add_page(&done_page, &model.steps[DONE_STEP].label, false, None);
 
     WizardWidgets {
@@ -1182,8 +1079,6 @@ fn add_pages(
         done_details,
         done_launch_reaper,
         done_open_resource,
-        done_rescan,
-        done_save_report,
         done_self_update_apply,
         self_update_status,
         language_footer,
@@ -2034,7 +1929,7 @@ fn build_progress_page(page: &Panel, model: &WizardModel) -> (StaticText, Gauge,
 fn build_done_page(
     page: &Panel,
     model: &WizardModel,
-) -> (TextCtrl, TextCtrl, Button, Button, Button, Button, Button) {
+) -> (TextCtrl, TextCtrl, Button, Button, Button) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(page, &sizer, &model.text.done_heading, "rais-done-heading");
     // One short status TextCtrl (always visible) carries the success /
@@ -2109,23 +2004,6 @@ fn build_done_page(
     open_resource.enable(false);
     actions.add(&open_resource, 0, SizerFlag::All, 6);
 
-    let rescan = Button::builder(page)
-        .with_label(&model.text.done_rescan_label)
-        .build();
-    rescan.set_name("rais-done-rescan");
-    rescan.add_style(WindowStyle::TabStop);
-    rescan.set_can_focus(true);
-    actions.add(&rescan, 0, SizerFlag::All, 6);
-
-    let save_report = Button::builder(page)
-        .with_label(&model.text.done_save_report_label)
-        .build();
-    save_report.set_name("rais-done-save-report");
-    save_report.add_style(WindowStyle::TabStop);
-    save_report.set_can_focus(true);
-    save_report.enable(false);
-    actions.add(&save_report, 0, SizerFlag::All, 6);
-
     let self_update_apply = Button::builder(page)
         .with_label(&model.text.done_self_update_apply_label)
         .build();
@@ -2142,8 +2020,6 @@ fn build_done_page(
         details,
         launch_reaper,
         open_resource,
-        rescan,
-        save_report,
         self_update_apply,
     )
 }
@@ -2459,12 +2335,6 @@ fn set_last_report(
     if let Ok(mut slot) = state.lock() {
         *slot = report;
     }
-}
-
-fn clone_last_report(
-    state: &Arc<Mutex<Option<WizardOutcomeReport>>>,
-) -> Option<WizardOutcomeReport> {
-    state.lock().ok().and_then(|slot| slot.clone())
 }
 
 fn set_last_resource_path(state: &Arc<Mutex<Option<PathBuf>>>, path: Option<PathBuf>) {
