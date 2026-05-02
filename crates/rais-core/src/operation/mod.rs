@@ -47,6 +47,14 @@ pub struct PackageOperationOptions {
     pub target_app_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock_path: Option<PathBuf>,
+    /// Packages whose plan-time `Keep` decision (installed version is
+    /// already current) should be promoted to `Update` so the install
+    /// pipeline actually reruns the vendor installer / file copy. Used by
+    /// the wizard to honor an explicit user re-tick of an already-current
+    /// row: the user opted in by checking the box, RAIS shouldn't silently
+    /// no-op just because the version matches.
+    #[serde(default)]
+    pub force_reinstall_packages: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,7 +277,24 @@ pub fn execute_resolved_package_operation_with_detections(
     let mut deferred_installable = Vec::new();
 
     for artifact in artifacts {
-        let plan_action = plan_action_for_artifact(&artifact, detections);
+        let plan_action = {
+            let computed = plan_action_for_artifact(&artifact, detections);
+            // Honor the user's explicit re-tick: a Keep computed from
+            // "installed version is current" gets promoted to Update so
+            // the install pipeline actually reruns instead of silently
+            // skipping. Install/Update stay as-is — there's nothing to
+            // promote.
+            if matches!(computed, PlanActionKind::Keep)
+                && options
+                    .force_reinstall_packages
+                    .iter()
+                    .any(|id| id == &artifact.package_id)
+            {
+                PlanActionKind::Update
+            } else {
+                computed
+            }
+        };
         match plan_action {
             PlanActionKind::Install | PlanActionKind::Update => {
                 match automation_support_for_artifact(&artifact, options) {
@@ -1379,6 +1404,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: None,
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -1419,6 +1445,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: None,
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -1450,6 +1477,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: None,
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -1492,6 +1520,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: None,
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -1699,6 +1728,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -1749,6 +1779,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: Some(target_app_path.clone()),
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -1787,6 +1818,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -1828,6 +1860,7 @@ mod tests {
                 replace_osara_keymap: true,
                 target_app_path: Some(resource_path.join("reaper.exe")),
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -1869,6 +1902,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -1922,6 +1956,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
                 lock_path: Some(dir.path().join("install.lock")),
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -1989,6 +2024,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: Some(target_app_path.clone()),
                 lock_path: Some(dir.path().join("install.lock")),
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -2031,6 +2067,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -2077,6 +2114,7 @@ mod tests {
                 replace_osara_keymap: true,
                 target_app_path: Some(resource_path.join("reaper.exe")),
                 lock_path: Some(dir.path().join("install.lock")),
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -2128,6 +2166,7 @@ mod tests {
                 replace_osara_keymap: true,
                 target_app_path: Some(resource_path.join("reaper.exe")),
                 lock_path: Some(dir.path().join("install.lock")),
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -2175,6 +2214,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
                 lock_path: Some(dir.path().join("install.lock")),
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -2235,6 +2275,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: Some(resource_path.join("reaper.exe")),
                 lock_path: Some(dir.path().join("install.lock")),
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -2283,6 +2324,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: None,
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -2359,6 +2401,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: None,
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -2422,6 +2465,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: Some(target_app_path.clone()),
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -2507,6 +2551,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: None,
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         );
 

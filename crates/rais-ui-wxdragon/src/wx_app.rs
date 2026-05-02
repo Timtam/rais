@@ -109,7 +109,7 @@ use crate::{
     wizard_package_plan_for_target, wizard_package_plan_for_target_with_available,
 };
 use rais_core::latest::fetch_latest_for_package;
-use rais_core::plan::AvailablePackage;
+use rais_core::plan::{AvailablePackage, PlanActionKind};
 use wxdragon::prelude::*;
 use wxdragon::widgets::SimpleBook;
 
@@ -263,7 +263,13 @@ pub fn run() {
         let last_report = Arc::new(Mutex::new(None::<WizardOutcomeReport>));
         let last_reaper_app_path = Arc::new(Mutex::new(None::<PathBuf>));
         let last_resource_path = Arc::new(Mutex::new(None::<PathBuf>));
-        let wizard_widgets = add_pages(&book, &model, Rc::clone(&package_rows), self_update_status);
+        let wizard_widgets = add_pages(
+            &book,
+            &model,
+            Rc::clone(&package_rows),
+            Rc::clone(&can_install),
+            self_update_status,
+        );
         root.add(&book, 1, SizerFlag::All | SizerFlag::Expand, 12);
 
         let buttons = BoxSizer::builder(Orientation::Horizontal).build();
@@ -1093,6 +1099,7 @@ fn add_pages(
     book: &SimpleBook,
     model: &WizardModel,
     package_rows: Rc<RefCell<Vec<crate::PackageRow>>>,
+    can_install: Rc<Cell<bool>>,
     self_update_status: StatusBar,
 ) -> WizardWidgets {
     let target_page = Panel::builder(book).build();
@@ -1119,7 +1126,7 @@ fn add_pages(
 
     let packages_page = Panel::builder(book).build();
     let (package_checklist, package_details, osara_keymap_replace, osara_keymap_note) =
-        build_packages_page(&packages_page, model, package_rows);
+        build_packages_page(&packages_page, model, package_rows, can_install);
     book.add_page(
         &packages_page,
         &model.steps[PACKAGES_STEP].label,
@@ -1607,6 +1614,7 @@ fn build_packages_page(
     page: &Panel,
     model: &WizardModel,
     package_rows: Rc<RefCell<Vec<crate::PackageRow>>>,
+    can_install: Rc<Cell<bool>>,
 ) -> (CheckListBox, TextCtrl, CheckBox, TextCtrl) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(
@@ -1757,6 +1765,7 @@ fn build_packages_page(
     let toggled_checklist = checklist;
     let toggled_osara_checkbox = osara_keymap_replace;
     let toggled_osara_note = osara_keymap_note;
+    let toggled_can_install = Rc::clone(&can_install);
     checklist.on_toggled(move |event| {
         if let Some(index) = event.get_selection() {
             let checked = toggled_checklist.is_checked(index);
@@ -1782,6 +1791,17 @@ fn build_packages_page(
                 // details pane.
                 let _ = apply_checkbox_state_to_package_row(&toggled_model, row, checked);
             }
+            // Recompute the plan-level "can install" flag from the
+            // post-toggle row state. Without this, a user who ticks an
+            // initially-Keep row (e.g. re-installing JAWS-for-REAPER
+            // scripts after RAIS detects the receipt at v89) sees Next /
+            // Install stay disabled on the Review page because the flag
+            // captured at plan time still says "nothing to install".
+            let any_install_or_update = toggled_package_rows.borrow().iter().any(|row| {
+                row.available_for_target
+                    && matches!(row.action, PlanActionKind::Install | PlanActionKind::Update)
+            });
+            toggled_can_install.set(any_install_or_update);
             refresh_checklist_summaries(&toggled_checklist, &toggled_package_rows.borrow());
             if let Some(value) = toggled_package_rows
                 .borrow()

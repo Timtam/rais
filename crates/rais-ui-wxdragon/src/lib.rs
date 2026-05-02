@@ -291,6 +291,12 @@ pub struct WizardInstallRequest {
     pub stage_unsupported: bool,
     pub osara_keymap_choice: OsaraKeymapChoice,
     pub cache_dir: PathBuf,
+    /// Packages whose plan-time decision was `Keep` (already current) but
+    /// the user explicitly checked the box anyway, opting in to a
+    /// re-install. The setup pipeline promotes these from Keep to Update
+    /// so the install step actually runs instead of being silently
+    /// skipped.
+    pub force_reinstall_packages: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -835,6 +841,24 @@ pub fn install_request_from_target_and_rows(
         });
     }
     let osara_selected = package_ids.iter().any(|id| id == PACKAGE_OSARA);
+    // A row is "force reinstall" when the user has the box checked but
+    // the original detection said the package was already current — i.e.
+    // the plan would normally Keep it, but the user explicitly opted in
+    // to a re-run. Detected via `original_action == Keep` on a checked
+    // row (the toggle helper promotes the displayed `action` to Update
+    // in that case, but `original_action` keeps the plan-time decision
+    // for exactly this disambiguation).
+    let force_reinstall_packages = selected_package_indices
+        .iter()
+        .filter_map(|index| {
+            let row = package_rows.get(*index)?;
+            if row.original_action == PlanActionKind::Keep {
+                Some(row.package_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
 
     Ok(WizardInstallRequest {
         resource_path: target.path.clone(),
@@ -852,6 +876,7 @@ pub fn install_request_from_target_and_rows(
             OsaraKeymapChoice::PreserveCurrent
         },
         cache_dir: options.cache_dir.unwrap_or_else(default_cache_dir),
+        force_reinstall_packages,
     })
 }
 
@@ -1414,6 +1439,7 @@ pub fn execute_wizard_install(request: WizardInstallRequest) -> Result<SetupRepo
             ),
             target_app_path: request.target_app_path.clone(),
             lock_path: None,
+            force_reinstall_packages: request.force_reinstall_packages.clone(),
         },
     )
 }
@@ -3753,6 +3779,7 @@ mod tests {
             stage_unsupported: true,
             osara_keymap_choice: OsaraKeymapChoice::ReplaceCurrent,
             cache_dir: PathBuf::from("C:/cache"),
+            force_reinstall_packages: Vec::new(),
         }
     }
 }

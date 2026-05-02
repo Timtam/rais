@@ -22,6 +22,11 @@ pub struct SetupOptions {
     pub target_app_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock_path: Option<PathBuf>,
+    /// Forwarded to [`PackageOperationOptions::force_reinstall_packages`]:
+    /// promotes plan-time `Keep` to `Update` for the listed packages so
+    /// an explicit user re-tick actually reruns the install.
+    #[serde(default)]
+    pub force_reinstall_packages: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +75,7 @@ pub fn execute_setup_operation(
             replace_osara_keymap: options.replace_osara_keymap,
             target_app_path: options.target_app_path.clone(),
             lock_path: options.lock_path.clone(),
+            force_reinstall_packages: options.force_reinstall_packages.clone(),
         },
     )?;
 
@@ -109,6 +115,7 @@ pub fn execute_resolved_setup_operation(
             replace_osara_keymap: options.replace_osara_keymap,
             target_app_path: options.target_app_path.clone(),
             lock_path: options.lock_path.clone(),
+            force_reinstall_packages: options.force_reinstall_packages.clone(),
         },
     )?;
 
@@ -159,6 +166,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: None,
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -192,6 +200,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: None,
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();
@@ -241,6 +250,7 @@ mod tests {
                 replace_osara_keymap: false,
                 target_app_path: Some(app_path.clone()),
                 lock_path: None,
+                force_reinstall_packages: Vec::new(),
             },
         )
         .unwrap();

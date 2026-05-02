@@ -635,6 +635,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     replace_osara_keymap: !preserve_osara_keymap,
                     target_app_path,
                     lock_path: None,
+                    force_reinstall_packages: Vec::new(),
                 },
             )?;
             let report_path = selected_report_path(
@@ -685,6 +686,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     replace_osara_keymap: !preserve_osara_keymap,
                     target_app_path,
                     lock_path: None,
+                    force_reinstall_packages: Vec::new(),
                 },
             )?;
             let report_path =
