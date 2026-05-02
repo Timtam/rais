@@ -642,6 +642,12 @@ pub fn run() {
                             target_is_valid(&model, &widgets),
                             reapack_ack_confirmed(&widgets),
                         );
+                        // Focus the always-visible status TextCtrl so the
+                        // screen reader reads the success/failure summary
+                        // immediately, and so Tab from there moves on to
+                        // the Show-details CheckBox / action buttons
+                        // instead of cycling back through earlier widgets.
+                        widgets.done_status.set_focus();
                         return;
                     }
                 };
@@ -846,6 +852,12 @@ pub fn run() {
                             target_is_valid(&ui_model, &widgets),
                             reapack_ack_confirmed(&widgets),
                         );
+                        // Focus the always-visible status TextCtrl so the
+                        // screen reader announces the install result and
+                        // Tab moves forward to the Show-details CheckBox
+                        // and action buttons instead of cycling back to
+                        // an earlier widget.
+                        widgets.done_status.set_focus();
                     }));
                 });
             });
@@ -1965,7 +1977,14 @@ fn build_reapack_ack_page(page: &Panel, model: &WizardModel) -> (Button, CheckBo
     let confirm = CheckBox::builder(page)
         .with_label(&model.text.reapack_ack_confirm_label)
         .build();
-    confirm.set_name("rais-reapack-ack-confirm");
+    // Mirror the OSARA-keymap / done-page CheckBox pattern: on this
+    // wxdragon version the accessible name is driven by the wxWindow
+    // *name* on Windows, not the visible `with_label` argument, so set
+    // both `name` and `label` to the localized string. Without this the
+    // screen reader announces the literal Fluent key
+    // (`rais-reapack-ack-confirm`) instead of the translated label.
+    confirm.set_name(&model.text.reapack_ack_confirm_label);
+    confirm.set_label(&model.text.reapack_ack_confirm_label);
     confirm.add_style(WindowStyle::TabStop);
     confirm.set_value(false);
     sizer.add(&confirm, 0, SizerFlag::All, 6);
@@ -2096,6 +2115,14 @@ fn build_done_page(
         let visible = event.is_checked();
         toggle_details.show(visible);
         toggle_page.layout();
+        // Move keyboard focus into the details TextCtrl as soon as the
+        // user reveals it. Screen readers (NVDA, JAWS) announce the
+        // newly-focused control, which both confirms the checkbox click
+        // and reads out the install report without the user having to
+        // hunt for it via Tab.
+        if visible {
+            toggle_details.set_focus();
+        }
     });
 
     let actions = BoxSizer::builder(Orientation::Horizontal).build();
