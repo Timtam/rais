@@ -429,6 +429,14 @@ pub fn run() {
                     effective_can_install(&can_install, &review_can_install),
                     target_is_valid(&model, &widgets),
                 );
+                if step == VERSION_CHECK_STEP {
+                    // Pull the screen reader onto the progress bar so the
+                    // user hears that a check is running. Without this,
+                    // focus would stay on the Next button from the Target
+                    // page and the version-check progress wouldn't be
+                    // announced until the auto-advance to Packages fires.
+                    widgets.version_check_gauge.set_focus();
+                }
             });
         }
 
