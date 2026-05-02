@@ -176,6 +176,10 @@ fn render_self_update_status(
     }
 }
 
+/// `wx/defs.h`: `WXK_SPACE = 32` (just the ASCII value). The default toggle
+/// key on a focused wxCheckListBox row.
+const WXK_SPACE: i32 = 32;
+
 #[derive(Clone, Copy)]
 struct WizardWidgets {
     target_choice: Choice,
@@ -1714,6 +1718,40 @@ fn build_packages_page(
             );
         });
     }
+    // Keyboard-clean disable for unavailable rows: intercept SPACE on
+    // `EVT_KEY_DOWN` BEFORE wxCheckListBox's default toggle handler runs.
+    // wxdragon's event trampoline pre-sets `Skip(true)`, so we have to
+    // explicitly call `event.skip(false)` to consume — the toggle event
+    // then never fires on disabled rows, so no flip-back is needed.
+    // (Mouse clicks still go through the `on_toggled` veto below because
+    // wxdragon doesn't expose `wxListBox::HitTest` to pinpoint which row
+    // the click landed on, so we can't intercept clicks before the
+    // toggle. Most accessibility users navigate via keyboard, where this
+    // intercept is the dominant path.)
+    {
+        let key_checklist = checklist;
+        let key_rows = Rc::clone(&package_rows);
+        checklist.on_key_down(move |event| {
+            let code = if let WindowEventData::Keyboard(kbd) = &event {
+                kbd.get_key_code()
+            } else {
+                None
+            };
+            if code == Some(WXK_SPACE) {
+                if let Some(index) = key_checklist.get_selection() {
+                    let unavailable = key_rows
+                        .borrow()
+                        .get(index as usize)
+                        .is_some_and(|row| !row.available_for_target);
+                    if unavailable {
+                        event.skip(false);
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
     let toggled_package_rows = Rc::clone(&package_rows);
     let toggled_model = model.clone();
     let toggled_checklist = checklist;
