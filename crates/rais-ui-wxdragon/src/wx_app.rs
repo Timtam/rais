@@ -416,43 +416,39 @@ pub fn run() {
                         let Some(selected_target) = selected_target_row(&model, &widgets) else {
                             return;
                         };
-                        match wizard_package_plan_for_target(&model, Some(&selected_target)) {
-                            Ok(plan) => {
-                                *package_rows.borrow_mut() = plan.package_rows;
-                                *package_notes.borrow_mut() = plan.notes;
-                                can_install.set(plan.can_install);
-                                review_can_install.set(false);
-                                refresh_package_checklist(
-                                    &widgets.package_checklist,
-                                    &widgets.package_details,
-                                    &widgets.osara_keymap_replace,
-                                    &widgets.osara_keymap_note,
-                                    &model,
-                                    &package_rows.borrow(),
-                                );
-                                start_version_check(VersionCheckUi {
-                                    widgets,
-                                    model: Arc::clone(&model),
-                                    package_rows: Rc::clone(&package_rows),
-                                    package_notes: Rc::clone(&package_notes),
-                                    can_install: Rc::clone(&can_install),
-                                    review_can_install: Rc::clone(&review_can_install),
-                                    target: selected_target,
-                                    book: book.clone(),
-                                    step_label: step_label.clone(),
-                                    labels: Arc::clone(&labels),
-                                    back: back.clone(),
-                                    next: next.clone(),
-                                    install: install.clone(),
-                                    current_step: Arc::clone(&current_step),
-                                });
-                                VERSION_CHECK_STEP
-                            }
-                            Err(error) => {
-                                widgets.target_details.set_value(&error.to_string());
-                                TARGET_STEP
-                            }
-                        }
+                        // No offline plan computation here: it would call
+                        // `detect_components` (file-system + registry
+                        // probes for every builtin package), blocking
+                        // the UI thread for ~1–2s before the page
+                        // transition fires — long enough that the
+                        // screen reader and the page-flip both lag
+                        // visibly. The version-check Finished handler
+                        // already calls `wizard_package_plan_for_target_with_available`
+                        // once latest versions are fetched, which does
+                        // the same `detect_components` + `build_install_plan`
+                        // work; doing it twice (offline first, then
+                        // online) was redundant. Reset
+                        // `review_can_install` so the Install button
+                        // can't fire from a stale Review state, and let
+                        // the worker thread do the heavy lifting.
+                        review_can_install.set(false);
+                        start_version_check(VersionCheckUi {
+                            widgets,
+                            model: Arc::clone(&model),
+                            package_rows: Rc::clone(&package_rows),
+                            package_notes: Rc::clone(&package_notes),
+                            can_install: Rc::clone(&can_install),
+                            review_can_install: Rc::clone(&review_can_install),
+                            target: selected_target,
+                            book: book.clone(),
+                            step_label: step_label.clone(),
+                            labels: Arc::clone(&labels),
+                            back: back.clone(),
+                            next: next.clone(),
+                            install: install.clone(),
+                            current_step: Arc::clone(&current_step),
+                        });
+                        VERSION_CHECK_STEP
                     }
                     PACKAGES_STEP => {
                         let selected_target = selected_target_row(&model, &widgets);
