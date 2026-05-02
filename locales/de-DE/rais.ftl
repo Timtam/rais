@@ -10,23 +10,23 @@ action-keep = Beibehalten
 
 package-reaper = REAPER
 package-osara = OSARA
-package-sws = SWS-Erweiterung
+package-sws = SWS
 package-reapack = ReaPack
 package-reakontrol = ReaKontrol
-package-jaws-scripts = JAWS-für-REAPER-Skripte
+package-jaws-scripts = JAWS-Skripte für REAPER
 
-package-reaper-description = REAPER ist die Digital Audio Workstation, auf der alle anderen Pakete hier aufbauen. RAIS kann REAPER selbst für Sie installieren oder aktualisieren.
+package-reaper-description = Reaper ist eine der vielseitigsten Digital Audio Workstations (DAWs) auf dem Markt und eignet sich sowohl für Einsteiger als auch für Profis. Besonders durch ihre Vielseitigkeit und Anpassungsfähigkeit hebt sich Reaper von anderen DAWs ab und wird von vielen professionellen Produzenten für anspruchsvolle Projekte genutzt.
 package-osara-description = OSARA macht REAPER mit Screenreadern bedienbar — NVDA, JAWS und Narrator unter Windows sowie VoiceOver unter macOS. Installieren Sie OSARA, wenn Sie REAPER mit einem Screenreader nutzen.
 package-sws-description = Die SWS-Erweiterung ist eine seit langem etablierte Community-Sammlung zusätzlicher Aktionen, Skripte und Hilfsmittel, die das Bearbeiten in REAPER abrunden. Die meisten barrierefreien REAPER-Setups setzen sie voraus.
 package-reapack-description = ReaPack ist der Paketmanager für REAPER: Er installiert und aktualisiert Skripte und Erweiterungen Dritter direkt aus REAPER heraus. Installieren Sie ReaPack, wenn Sie von der REAPER-Community geteilte Skripte verwenden möchten.
 package-reakontrol-description = ReaKontrol fügt REAPER Unterstützung für Native Instruments Komplete-Kontrol-Tastaturen hinzu. Installieren Sie es, wenn Sie eine Komplete-Kontrol-Tastatur besitzen und Hardware-Steuerung nutzen möchten.
-package-jaws-scripts-description = Die JAWS-für-REAPER-Skripte ergänzen den Screenreader JAWS unter Windows um Skript-Unterstützung für REAPER. RAIS bietet sie nur an, wenn JAWS auf diesem PC erkannt wird.
+package-jaws-scripts-description = Die JAWS-Skripte für REAPER ergänzen den Screenreader JAWS unter Windows um Skript-Unterstützung für REAPER. RAIS bietet sie nur an, wenn JAWS auf diesem PC erkannt wird.
 
 # $reason is one of the localized "wizard-package-row-unavailable-*" strings
 # explaining *why* the row is unavailable. Appended to the row's main summary
 # in the package CheckListBox.
 wizard-package-row-unavailable-suffix = (nicht verfügbar: { $reason })
-wizard-package-row-unavailable-portable = portables REAPER-Ziel
+wizard-package-row-unavailable-portable = portable REAPER-Installation
 
 detect-installed = Installiert
 detect-not-installed = Nicht installiert

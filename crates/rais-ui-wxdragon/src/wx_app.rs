@@ -206,6 +206,12 @@ struct WizardWidgets {
     done_save_report: Button,
     done_self_update_apply: Button,
     self_update_status: StatusBar,
+    /// Child Panel hosting the language picker + restart-note label,
+    /// rendered below the wizard buttons. Hidden on every step except
+    /// `TARGET_STEP` because switching languages relaunches RAIS, so the
+    /// dropdown is only useful before the user has invested any wizard
+    /// progress.
+    language_footer: Panel,
 }
 
 pub fn run() {
@@ -263,13 +269,11 @@ pub fn run() {
         let last_report = Arc::new(Mutex::new(None::<WizardOutcomeReport>));
         let last_reaper_app_path = Arc::new(Mutex::new(None::<PathBuf>));
         let last_resource_path = Arc::new(Mutex::new(None::<PathBuf>));
-        let wizard_widgets = add_pages(
-            &book,
-            &model,
-            Rc::clone(&package_rows),
-            Rc::clone(&can_install),
-            self_update_status,
-        );
+        // Build the wizard pages first, the buttons row, then the language
+        // footer. Footer is constructed after the buttons so its widgets
+        // come *after* the buttons in tab order, but it needs to exist
+        // *before* `add_pages` so the WizardWidgets struct can capture
+        // its Panel handle.
         root.add(&book, 1, SizerFlag::All | SizerFlag::Expand, 12);
 
         let buttons = BoxSizer::builder(Orientation::Horizontal).build();
@@ -309,7 +313,15 @@ pub fn run() {
 
         root.add_sizer(&buttons, 0, SizerFlag::All | SizerFlag::Expand, 6);
 
-        build_language_footer(&root_panel, &root, &model);
+        let language_footer = build_language_footer(&root_panel, &root, &model);
+        let wizard_widgets = add_pages(
+            &book,
+            &model,
+            Rc::clone(&package_rows),
+            Rc::clone(&can_install),
+            self_update_status,
+            language_footer,
+        );
 
         root_panel.set_sizer(root, true);
 
@@ -333,6 +345,7 @@ pub fn run() {
             &back,
             &next,
             &install,
+            &language_footer,
             effective_can_install(&can_install, &review_can_install),
             target_is_valid(&model, &wizard_widgets),
             reapack_ack_confirmed(&wizard_widgets),
@@ -389,6 +402,7 @@ pub fn run() {
                     &back,
                     &next,
                     &install,
+                    &widgets.language_footer,
                     effective_can_install(&can_install, &review_can_install),
                     target_is_valid(&model, &widgets),
                     reapack_ack_confirmed(&widgets),
@@ -489,6 +503,7 @@ pub fn run() {
                     &back,
                     &next,
                     &install,
+                    &widgets.language_footer,
                     effective_can_install(&can_install, &review_can_install),
                     target_is_valid(&model, &widgets),
                     reapack_ack_confirmed(&widgets),
@@ -531,6 +546,7 @@ pub fn run() {
                     &back,
                     &next,
                     &install,
+                    &widgets.language_footer,
                     effective_can_install(&can_install, &review_can_install),
                     target_is_valid(&model, &widgets),
                     reapack_ack_confirmed(&widgets),
@@ -621,6 +637,7 @@ pub fn run() {
                             &back,
                             &next,
                             &install,
+                            &widgets.language_footer,
                             effective_can_install(&can_install, &review_can_install),
                             target_is_valid(&model, &widgets),
                             reapack_ack_confirmed(&widgets),
@@ -824,6 +841,7 @@ pub fn run() {
                             &back,
                             &next,
                             &install,
+                            &widgets.language_footer,
                             can_install,
                             target_is_valid(&ui_model, &widgets),
                             reapack_ack_confirmed(&widgets),
@@ -1073,6 +1091,7 @@ pub fn run() {
                             &back,
                             &next,
                             &install,
+                            &widgets.language_footer,
                             effective_can_install(&can_install, &review_can_install),
                             target_is_valid(&model, &widgets),
                             reapack_ack_confirmed(&widgets),
@@ -1097,6 +1116,7 @@ fn add_pages(
     package_rows: Rc<RefCell<Vec<crate::PackageRow>>>,
     can_install: Rc<Cell<bool>>,
     self_update_status: StatusBar,
+    language_footer: Panel,
 ) -> WizardWidgets {
     let target_page = Panel::builder(book).build();
     let (target_choice, portable_folder, target_details) = build_target_page(&target_page, model);
@@ -1191,6 +1211,7 @@ fn add_pages(
         done_save_report,
         done_self_update_apply,
         self_update_status,
+        language_footer,
     }
 }
 
@@ -1300,14 +1321,23 @@ fn build_target_page(page: &Panel, model: &WizardModel) -> (Choice, DirPickerCtr
 /// in `WizardModel::language_options` is `LANGUAGE_MENU_ID_BASE + i`.
 const LANGUAGE_MENU_ID_BASE: i32 = 13700;
 
-/// Build the language-picker footer inside the root panel, below the wizard
-/// buttons. Adding it as a sibling of the button row means tab order naturally
-/// reaches it after the last button (rather than partway through the page),
-/// then wraps back to the page's first focusable widget.
-fn build_language_footer(root_panel: &Panel, root: &BoxSizer, model: &WizardModel) {
+/// Build the language-picker footer inside a child Panel that lives below
+/// the wizard buttons. The footer is only meaningful on the Target page —
+/// switching languages relaunches RAIS, so a switch from a later step
+/// would discard the user's wizard progress anyway. Returning the child
+/// Panel here lets the caller hide/show it via `update_navigation` based
+/// on the current step. Adding it as a sibling of the button row means
+/// tab order naturally reaches it after the last button (rather than
+/// partway through the page), then wraps back to the page's first
+/// focusable widget.
+fn build_language_footer(root_panel: &Panel, root: &BoxSizer, model: &WizardModel) -> Panel {
+    let footer = Panel::builder(root_panel).build();
+    footer.set_name("rais-language-footer");
+    let footer_sizer = BoxSizer::builder(Orientation::Vertical).build();
+
     add_label(
-        root_panel,
-        root,
+        &footer,
+        &footer_sizer,
         &model.text.target_language_label,
         "rais-target-language-label",
     );
@@ -1319,31 +1349,34 @@ fn build_language_footer(root_panel: &Panel, root: &BoxSizer, model: &WizardMode
         .map(|option| option.display_name.clone())
         .unwrap_or_else(|| model.current_language.clone());
 
-    let language_button = Button::builder(root_panel)
+    let language_button = Button::builder(&footer)
         .with_label(&current_display_name)
         .build();
     language_button.set_name("rais-target-language");
     language_button.add_style(WindowStyle::TabStop);
     language_button.set_can_focus(true);
-    root.add(&language_button, 0, SizerFlag::All | SizerFlag::Expand, 6);
+    footer_sizer.add(&language_button, 0, SizerFlag::All | SizerFlag::Expand, 6);
 
     add_label(
-        root_panel,
-        root,
+        &footer,
+        &footer_sizer,
         &model.text.target_language_restart_note,
         "rais-target-language-restart-note",
     );
+
+    footer.set_sizer(footer_sizer, true);
+    root.add(&footer, 0, SizerFlag::All | SizerFlag::Expand, 6);
 
     let language_options = model.language_options.clone();
     let current_locale = model.current_language.clone();
 
     // The popup menu dispatches its EVT_MENU to the popup's owner window
-    // (root_panel here), not to the button — only Panel/ScrolledWindow
+    // (the footer Panel here), not to the button — only Panel/ScrolledWindow
     // implement MenuEvents in wxdragon today.
     {
         let language_options = language_options.clone();
         let current_locale = current_locale.clone();
-        root_panel.on_menu_selected(move |event| {
+        footer.on_menu_selected(move |event| {
             let id = event.get_id();
             let raw_index = id - LANGUAGE_MENU_ID_BASE;
             if raw_index < 0 || (raw_index as usize) >= language_options.len() {
@@ -1359,7 +1392,7 @@ fn build_language_footer(root_panel: &Panel, root: &BoxSizer, model: &WizardMode
         });
     }
 
-    let menu_owner = root_panel.clone();
+    let menu_owner = footer;
     language_button.on_click(move |_| {
         let mut builder = Menu::builder();
         for (index, option) in language_options.iter().enumerate() {
@@ -1376,6 +1409,8 @@ fn build_language_footer(root_panel: &Panel, root: &BoxSizer, model: &WizardMode
         let mut menu = menu;
         menu_owner.popup_menu(&mut menu, None);
     });
+
+    footer
 }
 
 /// Captures everything the version-check dispatcher needs to drive the
@@ -1482,6 +1517,7 @@ fn start_version_check(ui: VersionCheckUi) {
                             &ui.back,
                             &ui.next,
                             &ui.install,
+                            &ui.widgets.language_footer,
                             effective_can_install(&ui.can_install, &ui.review_can_install),
                             true,
                             reapack_ack_confirmed(&ui.widgets),
@@ -2586,6 +2622,7 @@ fn update_navigation(
     back: &Button,
     next: &Button,
     install: &Button,
+    language_footer: &Panel,
     can_install: bool,
     target_valid: bool,
     reapack_ack_confirmed: bool,
@@ -2603,4 +2640,8 @@ fn update_navigation(
         _ => false,
     });
     install.enable(step == REVIEW_STEP && can_install);
+    // Language picker only matters on the Target step — switching languages
+    // relaunches RAIS and discards wizard progress, so a footer on later
+    // pages would just be a tripwire.
+    language_footer.show(step == TARGET_STEP);
 }
