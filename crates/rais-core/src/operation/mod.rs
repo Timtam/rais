@@ -132,7 +132,6 @@ pub enum PackageOperationStatus {
     PlannedUnattended,
     DeferredUnattended,
     SkippedCurrent,
-    SkippedManualReview,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -269,7 +268,6 @@ pub fn execute_resolved_package_operation_with_detections(
                 }
             }
             PlanActionKind::Keep => items.push(skipped_current_item(artifact, detections)),
-            PlanActionKind::ManualReview => items.push(manual_review_item(artifact, detections)),
         }
     }
 
@@ -469,8 +467,11 @@ fn plan_action_for_artifact(
         return PlanActionKind::Install;
     }
 
+    // Installed but version couldn't be read: re-install the upstream
+    // version on top of the existing files. The standard backup + receipt
+    // mechanism protects the prior install if anything goes wrong.
     let Some(installed_version) = &detection.version else {
-        return PlanActionKind::ManualReview;
+        return PlanActionKind::Update;
     };
 
     if installed_version.cmp_lenient(&artifact.version).is_lt() {
@@ -499,25 +500,6 @@ fn skipped_current_item(
             "Installed version {installed_version} is current or newer than available version {}.",
             artifact.version
         ),
-        artifact,
-        cached_artifact: None,
-        install_action: None,
-        backup_paths: Vec::new(),
-        backup_manifest_path: None,
-        planned_execution: None,
-        manual_instruction: None,
-    }
-}
-
-fn manual_review_item(
-    artifact: ArtifactDescriptor,
-    _detections: &[ComponentDetection],
-) -> PackageOperationItem {
-    PackageOperationItem {
-        package_id: artifact.package_id.clone(),
-        plan_action: PlanActionKind::ManualReview,
-        status: PackageOperationStatus::SkippedManualReview,
-        message: "Package is installed, but RAIS could not detect its installed version; leaving it unchanged.".to_string(),
         artifact,
         cached_artifact: None,
         install_action: None,
@@ -1232,7 +1214,7 @@ mod tests {
     use super::{
         PackageAutomationSupport, PackageOperationOptions, PackageOperationStatus,
         PlannedAutomationKind, PlannedExecutionKind, execute_resolved_package_operation,
-        execute_resolved_package_operation_with_detections,
+        execute_resolved_package_operation_with_detections, plan_action_for_artifact,
     };
     use crate::artifact::{ArtifactDescriptor, ArtifactKind};
     use crate::detection::detect_components;
@@ -2183,36 +2165,22 @@ mod tests {
     }
 
     #[test]
-    fn skips_installed_unknown_version_for_manual_review() {
-        let dir = tempdir().unwrap();
-        let cache = tempdir().unwrap();
-        let report = execute_resolved_package_operation_with_detections(
-            dir.path(),
-            vec![artifact(
-                PACKAGE_REAPACK,
-                ArtifactKind::ExtensionBinary,
-                "reaper_reapack-x64.dll",
-            )],
-            &[detection(PACKAGE_REAPACK, None)],
-            cache.path(),
-            &PackageOperationOptions {
-                dry_run: true,
-                allow_reaper_running: false,
-                stage_unsupported: false,
-                replace_osara_keymap: false,
-                target_app_path: None,
-                lock_path: None,
-            },
-        )
-        .unwrap();
-
-        assert!(report.install_report.is_none());
-        assert_eq!(report.items.len(), 1);
-        assert_eq!(report.items[0].plan_action, PlanActionKind::ManualReview);
-        assert_eq!(
-            report.items[0].status,
-            PackageOperationStatus::SkippedManualReview
+    fn plans_update_for_installed_package_when_version_is_unknown() {
+        // RAIS used to surface "Review manually" / "Manuell prüfen" in the
+        // wizard whenever a package was installed but its version could not
+        // be read. The plan-action resolver now returns Update for that
+        // case so a non-technical user does not have to act on internal
+        // detection failures.
+        let artifact = artifact(
+            PACKAGE_REAPACK,
+            ArtifactKind::ExtensionBinary,
+            "reaper_reapack-x64.dll",
         );
+        let detections = [detection(PACKAGE_REAPACK, None)];
+
+        let action = plan_action_for_artifact(&artifact, &detections);
+
+        assert_eq!(action, PlanActionKind::Update);
     }
 
     #[test]

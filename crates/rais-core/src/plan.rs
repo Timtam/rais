@@ -35,7 +35,6 @@ pub enum PlanActionKind {
     Install,
     Update,
     Keep,
-    ManualReview,
 }
 
 pub fn build_install_plan(
@@ -86,9 +85,14 @@ pub fn build_install_plan(
                 )
             }
         } else if installed_version.is_none() && available_version.is_some() {
+            // The package is on disk but its installed version couldn't be
+            // read. Rather than asking a non-technical user to "review
+            // manually", treat it as Update: re-install the latest known
+            // upstream version on top, with the standard backup/receipt
+            // safety net protecting the prior files.
             (
-                PlanActionKind::ManualReview,
-                "Package is installed, but its installed version could not be detected."
+                PlanActionKind::Update,
+                "Package is installed but its version could not be detected; updating to the latest available version."
                     .to_string(),
             )
         } else {
@@ -184,7 +188,11 @@ mod tests {
     }
 
     #[test]
-    fn plans_manual_review_when_installed_version_is_unknown() {
+    fn plans_update_when_installed_version_is_unknown_but_available_is_known() {
+        // When the package is on disk but its version is unreadable, the
+        // wizard should NOT push a "Review manually" decision onto the user.
+        // RAIS plans an Update instead (re-install on top, with backup +
+        // receipt protecting the prior files).
         let detections = vec![ComponentDetection {
             package_id: PACKAGE_REAPACK.to_string(),
             display_name: "ReaPack".to_string(),
@@ -203,7 +211,12 @@ mod tests {
 
         let plan = build_install_plan(None, &detections, &desired, &available);
 
-        assert_eq!(plan.actions[0].action, PlanActionKind::ManualReview);
+        assert_eq!(plan.actions[0].action, PlanActionKind::Update);
+        assert!(
+            plan.actions[0].reason.contains("could not be detected"),
+            "expected the reason text to explain the version-detection fallback, got {:?}",
+            plan.actions[0].reason
+        );
     }
 
     #[test]

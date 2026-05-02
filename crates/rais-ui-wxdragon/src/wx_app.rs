@@ -75,13 +75,12 @@ fn dispatch_version_check_event(event: VersionCheckEvent) {
 }
 use crate::{
     OsaraKeymapChoice, PackageRow, TargetRow, UiBootstrapOptions, WizardInstallOptions,
-    WizardModel, WizardOutcomeReport, build_review_preview_for_package_rows,
-    custom_portable_target_row, execute_wizard_install,
+    WizardModel, WizardOutcomeReport, apply_checkbox_state_to_package_row,
+    build_review_preview_for_package_rows, custom_portable_target_row, execute_wizard_install,
     format_package_install_lock_blocking_message, format_self_update_apply_summary,
     format_self_update_check_summary, install_request_from_target_and_rows, load_wizard_model,
-    localized_package_display_name, localizer_from_options, manual_attention_handling_summary,
-    osara_keymap_note, osara_selected_for_rows, package_requires_manual_attention,
-    preview_manual_instruction_lines, refreshed_target_row, relaunch_rais_after_apply,
+    localized_package_display_name, localizer_from_options, osara_keymap_note,
+    osara_selected_for_rows, refreshed_target_row, relaunch_rais_after_apply,
     run_wizard_package_install_lock_check, run_wizard_self_update_apply,
     run_wizard_self_update_check, save_wizard_outcome_report, wizard_desired_package_ids,
     wizard_outcome_report_from_error, wizard_outcome_report_from_success,
@@ -1543,6 +1542,15 @@ fn build_packages_page(
     let toggled_osara_note = osara_keymap_note;
     checklist.on_toggled(move |event| {
         if let Some(index) = event.get_selection() {
+            let checked = toggled_checklist.is_checked(index);
+            // Recompute the row's action/label/summary so the visible
+            // "Install / Update / Keep" text follows the new checkbox
+            // state, then refresh both the CheckListBox label and the
+            // details pane.
+            if let Some(row) = toggled_package_rows.borrow_mut().get_mut(index as usize) {
+                let _ = apply_checkbox_state_to_package_row(&toggled_model, row, checked);
+            }
+            refresh_checklist_summaries(&toggled_checklist, &toggled_package_rows.borrow());
             if let Some(value) = toggled_package_rows
                 .borrow()
                 .get(index as usize)
@@ -1802,6 +1810,25 @@ fn package_details(row: &crate::PackageRow) -> String {
     row.details.clone()
 }
 
+/// Rebuild the package CheckListBox so each row's label reflects the latest
+/// `summary` value in `package_rows`. wxdragon's safe API has no
+/// `set_string`-style mutator for CheckListBox items, so we clear and
+/// re-append; the per-row checked state and the current selection are
+/// preserved. Cheap for the small wizard package list.
+fn refresh_checklist_summaries(checklist: &CheckListBox, package_rows: &[PackageRow]) {
+    let selection = checklist.get_selection();
+    checklist.clear();
+    for (index, row) in package_rows.iter().enumerate() {
+        checklist.append(&row.summary);
+        checklist.check(index as u32, row.selected);
+    }
+    if let Some(index) = selection {
+        if (index as usize) < package_rows.len() {
+            checklist.set_selection(index, true);
+        }
+    }
+}
+
 fn progress_details_for_start(
     model: &WizardModel,
     target: Option<&TargetRow>,
@@ -1837,30 +1864,6 @@ fn progress_details_for_start(
             OsaraKeymapChoice::PreserveCurrent => model.text.review_osara_keymap_preserve.clone(),
             OsaraKeymapChoice::ReplaceCurrent => model.text.review_osara_keymap_replace.clone(),
         });
-    }
-
-    let manual_items = selected_package_indices
-        .iter()
-        .filter_map(|index| package_rows.get(*index))
-        .filter(|package| package_requires_manual_attention(model, package, osara_keymap_choice))
-        .collect::<Vec<_>>();
-    if !manual_items.is_empty() {
-        lines.push(model.text.review_manual_heading.clone());
-        for package in manual_items {
-            lines.push(format!(
-                "{}: {}",
-                package.display_name,
-                manual_attention_handling_summary(model, package, osara_keymap_choice)
-            ));
-            if let Some(target) = target {
-                lines.extend(preview_manual_instruction_lines(
-                    model,
-                    target,
-                    package,
-                    osara_keymap_choice,
-                ));
-            }
-        }
     }
 
     if let Some(cache_dir) = cache_dir {

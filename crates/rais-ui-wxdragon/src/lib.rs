@@ -27,17 +27,12 @@ use rais_core::operation::{
     PackageAutomationSupport, PackageOperationStatus, PlannedExecutionKind,
     package_automation_support, preview_manual_instruction,
 };
-use rais_core::package::{
-    BackupPolicy, PACKAGE_OSARA, PackageSpec, builtin_package_specs, package_specs_by_id,
-};
+use rais_core::package::{PACKAGE_OSARA, PackageSpec, builtin_package_specs};
 use rais_core::plan::{
     AvailablePackage, InstallPlan, PlanAction, PlanActionKind, build_install_plan,
 };
 use rais_core::report::{default_report_path, save_json_and_text_reports};
-use rais_core::resource::{
-    ResourceInitActionKind, ResourceInitItemKind, ResourceInitOptions, ResourceInitReport,
-    initialize_resource_path,
-};
+use rais_core::resource::{ResourceInitActionKind, ResourceInitOptions, initialize_resource_path};
 use rais_core::self_update::{
     ApplySelfUpdateOptions, DEFAULT_SELF_UPDATE_MANIFEST_URL, SelfUpdateApplyReport,
     SelfUpdateCheckReport, apply_self_update, check_self_update, default_self_update_staging_dir,
@@ -113,7 +108,6 @@ pub struct WizardText {
     pub target_custom_portable_app_path_label: String,
     pub target_custom_portable_path_label: String,
     pub target_custom_portable_version_label: String,
-    pub target_custom_portable_architecture_label: String,
     pub target_custom_portable_writable_label: String,
     pub target_custom_portable_note: String,
     pub packages_heading: String,
@@ -136,25 +130,12 @@ pub struct WizardText {
     pub package_handling_unavailable: String,
     pub review_heading: String,
     pub review_target_prefix: String,
-    pub review_cache_prefix: String,
-    pub review_resource_heading: String,
-    pub review_resource_create_directory_prefix: String,
-    pub review_resource_create_file_prefix: String,
-    pub review_resource_no_changes: String,
-    pub review_backup_heading: String,
-    pub review_backup_file_prefix: String,
-    pub review_backup_no_changes: String,
-    pub review_admin_heading: String,
-    pub review_admin_no_prompts: String,
-    pub review_admin_app_prefix: String,
-    pub review_admin_resource_prefix: String,
     pub review_package_heading: String,
     pub review_osara_keymap_heading: String,
     pub review_osara_keymap_preserve: String,
     pub review_osara_keymap_replace: String,
     pub review_notes_heading: String,
     pub review_preflight_prefix: String,
-    pub review_manual_heading: String,
     pub review_no_target: String,
     pub review_no_package: String,
     pub progress_heading: String,
@@ -228,6 +209,12 @@ pub struct PackageRow {
     pub available_version: String,
     pub action: PlanActionKind,
     pub action_label: String,
+    /// Plan-time action, captured before any user toggle of the package
+    /// checkbox. Used by the wizard's checklist handler to decide whether
+    /// re-checking a row means "Install" (originally not installed) or
+    /// "Update" (already installed) — the displayed `action` mutates as
+    /// the user clicks, but `original_action` is the authoritative anchor.
+    pub original_action: PlanActionKind,
     pub reason: String,
     pub handling_summary: String,
     pub manual_attention_expected: bool,
@@ -531,9 +518,6 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         target_custom_portable_version_label: localizer
             .text("wizard-target-custom-portable-version-label")
             .value,
-        target_custom_portable_architecture_label: localizer
-            .text("wizard-target-custom-portable-architecture-label")
-            .value,
         target_custom_portable_writable_label: localizer
             .text("wizard-target-custom-portable-writable-label")
             .value,
@@ -568,29 +552,12 @@ fn wizard_text(localizer: &Localizer) -> WizardText {
         package_handling_unavailable: localizer.text("wizard-package-handling-unavailable").value,
         review_heading: localizer.text("wizard-review-heading").value,
         review_target_prefix: localizer.text("wizard-review-target-prefix").value,
-        review_cache_prefix: localizer.text("wizard-review-cache-prefix").value,
-        review_resource_heading: localizer.text("wizard-review-resource-heading").value,
-        review_resource_create_directory_prefix: localizer
-            .text("wizard-review-resource-create-directory-prefix")
-            .value,
-        review_resource_create_file_prefix: localizer
-            .text("wizard-review-resource-create-file-prefix")
-            .value,
-        review_resource_no_changes: localizer.text("wizard-review-resource-no-changes").value,
-        review_backup_heading: localizer.text("wizard-review-backup-heading").value,
-        review_backup_file_prefix: localizer.text("wizard-review-backup-file-prefix").value,
-        review_backup_no_changes: localizer.text("wizard-review-backup-no-changes").value,
-        review_admin_heading: localizer.text("wizard-review-admin-heading").value,
-        review_admin_no_prompts: localizer.text("wizard-review-admin-no-prompts").value,
-        review_admin_app_prefix: localizer.text("wizard-review-admin-app-prefix").value,
-        review_admin_resource_prefix: localizer.text("wizard-review-admin-resource-prefix").value,
         review_package_heading: localizer.text("wizard-review-package-heading").value,
         review_osara_keymap_heading: localizer.text("wizard-review-osara-keymap-heading").value,
         review_osara_keymap_preserve: localizer.text("wizard-review-osara-keymap-preserve").value,
         review_osara_keymap_replace: localizer.text("wizard-review-osara-keymap-replace").value,
         review_notes_heading: localizer.text("wizard-review-notes-heading").value,
         review_preflight_prefix: localizer.text("wizard-review-preflight-prefix").value,
-        review_manual_heading: localizer.text("wizard-review-manual-heading").value,
         review_no_target: localizer.text("wizard-review-no-target").value,
         review_no_package: localizer.text("wizard-review-no-package").value,
         progress_heading: localizer.text("wizard-progress-heading").value,
@@ -745,19 +712,16 @@ fn target_rows(
 }
 
 fn target_row(localizer: &Localizer, installation: &Installation, selected: bool) -> TargetRow {
-    let kind = format!("{:?}", installation.kind);
     let version = installation
         .version
         .as_ref()
         .map(ToString::to_string)
         .unwrap_or_else(|| localizer.text("detect-version-unknown").value);
-    let architecture = architecture_text(localizer, installation.architecture);
     TargetRow {
         label: localizer
             .format(
                 "wizard-target-row",
                 &[
-                    ("kind", kind.as_str()),
                     ("version", version.as_str()),
                     ("path", &installation.resource_path.display().to_string()),
                 ],
@@ -769,13 +733,11 @@ fn target_row(localizer: &Localizer, installation: &Installation, selected: bool
                 &[
                     ("app_path", &installation.app_path.display().to_string()),
                     ("version", version.as_str()),
-                    ("architecture", architecture.as_str()),
                     ("path", &installation.resource_path.display().to_string()),
                     (
                         "writable",
                         yes_no(localizer, installation.writable).as_str(),
                     ),
-                    ("confidence", &format!("{:?}", installation.confidence)),
                 ],
             )
             .value,
@@ -983,22 +945,20 @@ pub fn build_review_preview_for_package_rows(
         };
     };
 
-    let mut lines = vec![
-        format!(
-            "{}: {}",
-            model.text.review_target_prefix,
-            target.path.display()
-        ),
-        format!(
-            "{}: {}",
-            model.text.review_cache_prefix,
-            default_cache_dir().display()
-        ),
-        String::new(),
-        model.text.review_resource_heading.clone(),
-    ];
+    let mut lines = vec![format!(
+        "{}: {}",
+        model.text.review_target_prefix,
+        target.path.display()
+    )];
 
     let mut can_install = !selected_package_indices.is_empty();
+
+    // Run the resource-path preflight to surface fatal blockers (read-only
+    // target, REAPER currently running, etc.) — those still need to land in
+    // the GUI summary so the user knows install is blocked. Successful
+    // resource-init details (the long "Create directory…" / "Create file…"
+    // list) are now report-only; the GUI just notes that backups will be
+    // taken if needed.
     match initialize_resource_path(
         &target.path,
         &ResourceInitOptions {
@@ -1016,38 +976,12 @@ pub fn build_review_preview_for_package_rows(
             target_app_path: Some(target.planned_app_path.clone()),
         },
     ) {
-        Ok(report) => {
-            let resource_lines = review_resource_lines(model, &report);
-            if resource_lines.is_empty() {
-                lines.push(model.text.review_resource_no_changes.clone());
-            } else {
-                lines.extend(resource_lines);
-            }
-        }
+        Ok(_) => {}
         Err(error) => {
             can_install = false;
             lines.push(format!("{}: {}", model.text.review_preflight_prefix, error));
         }
     }
-
-    lines.push(String::new());
-    lines.push(model.text.review_backup_heading.clone());
-    lines.extend(review_backup_lines(
-        model,
-        target,
-        selected_package_indices,
-        package_rows,
-        osara_keymap_choice,
-    ));
-
-    lines.push(String::new());
-    lines.push(model.text.review_admin_heading.clone());
-    lines.extend(review_admin_lines(
-        model,
-        target,
-        selected_package_indices,
-        package_rows,
-    ));
 
     lines.push(String::new());
     lines.push(model.text.review_package_heading.clone());
@@ -1068,29 +1002,6 @@ pub fn build_review_preview_for_package_rows(
             OsaraKeymapChoice::PreserveCurrent => model.text.review_osara_keymap_preserve.clone(),
             OsaraKeymapChoice::ReplaceCurrent => model.text.review_osara_keymap_replace.clone(),
         });
-    }
-
-    let manual_items = selected_package_indices
-        .iter()
-        .filter_map(|index| package_rows.get(*index))
-        .filter(|package| package_requires_manual_attention(model, package, osara_keymap_choice))
-        .collect::<Vec<_>>();
-    if !manual_items.is_empty() {
-        lines.push(String::new());
-        lines.push(model.text.review_manual_heading.clone());
-        for package in manual_items {
-            lines.push(format!(
-                "{}: {}",
-                package.display_name,
-                manual_attention_handling_summary(model, package, osara_keymap_choice)
-            ));
-            lines.extend(preview_manual_instruction_lines(
-                model,
-                target,
-                package,
-                osara_keymap_choice,
-            ));
-        }
     }
 
     if !notes.is_empty() {
@@ -1119,96 +1030,6 @@ pub fn manual_attention_handling_summary(
     _osara_keymap_choice: OsaraKeymapChoice,
 ) -> String {
     package.handling_summary.clone()
-}
-
-fn review_resource_lines(model: &WizardModel, report: &ResourceInitReport) -> Vec<String> {
-    let mut lines = Vec::new();
-    for action in &report.actions {
-        if action.action != ResourceInitActionKind::WouldCreate {
-            continue;
-        }
-
-        let prefix = match action.kind {
-            ResourceInitItemKind::Directory => &model.text.review_resource_create_directory_prefix,
-            ResourceInitItemKind::File => &model.text.review_resource_create_file_prefix,
-        };
-        lines.push(format!("{prefix}: {}", action.path.display()));
-    }
-    lines
-}
-
-fn review_backup_lines(
-    model: &WizardModel,
-    target: &TargetRow,
-    selected_package_indices: &[usize],
-    package_rows: &[PackageRow],
-    osara_keymap_choice: OsaraKeymapChoice,
-) -> Vec<String> {
-    let backup_paths = predicted_backup_paths_for_package_rows(
-        model,
-        target,
-        selected_package_indices,
-        package_rows,
-        osara_keymap_choice,
-    );
-    if backup_paths.is_empty() {
-        vec![model.text.review_backup_no_changes.clone()]
-    } else {
-        backup_paths
-            .into_iter()
-            .map(|path| {
-                format!(
-                    "{}: {}",
-                    model.text.review_backup_file_prefix,
-                    path.display()
-                )
-            })
-            .collect()
-    }
-}
-
-fn review_admin_lines(
-    model: &WizardModel,
-    target: &TargetRow,
-    selected_package_indices: &[usize],
-    package_rows: &[PackageRow],
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    let reaper_selected = selected_package_indices
-        .iter()
-        .filter_map(|index| package_rows.get(*index))
-        .any(|package| {
-            package.package_id == rais_core::package::PACKAGE_REAPER
-                && matches!(
-                    package.action,
-                    PlanActionKind::Install | PlanActionKind::Update
-                )
-        });
-
-    if path_likely_requires_admin_prompt(model.platform, &target.path) {
-        lines.push(format!(
-            "{}: {}",
-            model.text.review_admin_resource_prefix,
-            target.path.display()
-        ));
-    }
-
-    if reaper_selected
-        && !path_is_same_or_nested(&target.planned_app_path, &target.path)
-        && path_likely_requires_admin_prompt(model.platform, &target.planned_app_path)
-    {
-        lines.push(format!(
-            "{}: {}",
-            model.text.review_admin_app_prefix,
-            target.planned_app_path.display()
-        ));
-    }
-
-    if lines.is_empty() {
-        vec![model.text.review_admin_no_prompts.clone()]
-    } else {
-        lines
-    }
 }
 
 pub fn preview_manual_instruction_lines(
@@ -1291,6 +1112,47 @@ pub fn wizard_package_plan_for_target_with_available(
     })
 }
 
+/// Recompute a `PackageRow`'s `action`, `action_label`, `summary`, and
+/// `selected` fields to match a new checkbox state. Used by the wizard's
+/// CheckListBox toggle handler so the visible "Install/Update/Keep" label
+/// follows what the user just clicked. Returns the freshly-formatted
+/// summary so the caller can also push it into the CheckListBox label.
+pub fn apply_checkbox_state_to_package_row(
+    model: &WizardModel,
+    row: &mut PackageRow,
+    checked: bool,
+) -> Result<String> {
+    let localizer = localizer_from_options(&model.bootstrap_options)?;
+    let new_action = if checked {
+        // Originally-not-installed packages stay "Install" when re-checked;
+        // anything else means the package is on disk, so re-checking it
+        // means "Update" (re-stage the latest known upstream version).
+        match row.original_action {
+            PlanActionKind::Install => PlanActionKind::Install,
+            _ => PlanActionKind::Update,
+        }
+    } else {
+        PlanActionKind::Keep
+    };
+    let action_label = action_label(&localizer, new_action);
+    let summary = localizer
+        .format(
+            "wizard-package-row",
+            &[
+                ("package", row.display_name.as_str()),
+                ("action", action_label.as_str()),
+                ("installed", row.installed_version.as_str()),
+                ("available", row.available_version.as_str()),
+            ],
+        )
+        .value;
+    row.action = new_action;
+    row.action_label = action_label;
+    row.summary = summary.clone();
+    row.selected = checked;
+    Ok(summary)
+}
+
 /// Localized package display name for `package_id`, falling back to the raw id
 /// when no Fluent key is available. Used by the version-check progress log.
 pub fn localized_package_display_name(localizer: &Localizer, package_id: &str) -> String {
@@ -1331,18 +1193,6 @@ pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: 
         .as_ref()
         .map(ToString::to_string)
         .unwrap_or_else(|| unknown_version_text(model));
-    let architecture_text = if app_path.is_some() {
-        match model.architecture {
-            Architecture::X86 => "x86".to_string(),
-            Architecture::X64 => "x64".to_string(),
-            Architecture::Arm64 => "arm64".to_string(),
-            Architecture::Arm64Ec => "arm64ec".to_string(),
-            Architecture::Universal => "universal".to_string(),
-            Architecture::Unknown => unknown_architecture_text(model),
-        }
-    } else {
-        unknown_architecture_text(model)
-    };
     TargetRow {
         label: format!(
             "{}: {}",
@@ -1350,7 +1200,7 @@ pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: 
             path.display()
         ),
         details: format!(
-            "{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}",
+            "{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}",
             model.text.target_custom_portable_app_path_label,
             app_path
                 .as_ref()
@@ -1360,8 +1210,6 @@ pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: 
             path.display(),
             model.text.target_custom_portable_version_label,
             version_text,
-            model.text.target_custom_portable_architecture_label,
-            architecture_text,
             model.text.target_custom_portable_writable_label,
             writable_text,
             model.text.target_custom_portable_note
@@ -1834,13 +1682,7 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
         .package_operation
         .items
         .iter()
-        .filter(|item| {
-            matches!(
-                item.status,
-                PackageOperationStatus::DeferredUnattended
-                    | PackageOperationStatus::SkippedManualReview
-            )
-        })
+        .filter(|item| matches!(item.status, PackageOperationStatus::DeferredUnattended))
         .count();
 
     let mut detail_lines = vec![
@@ -2203,21 +2045,18 @@ fn package_rows(
                 .value;
             let (handling_summary, manual_attention_expected) =
                 package_handling_summary(text, &action.package_id, platform, architecture);
-            // Compose the details text shown in the wizard's package details
-            // pane. The localized description leads (so users can see what a
-            // package is before deciding what to do with it) and the
-            // power-user handling line trails. Entries with no description
-            // fall back to the previous summary-only layout.
+            // Compose the details text shown in the wizard's package
+            // details pane. The localized description follows the summary
+            // line so users can see what a package is before deciding
+            // what to do with it. The plan-reason string ("Installed
+            // version is current or newer…") and the handling-summary /
+            // automation-kind detail are not localized for end users —
+            // both stay on PackageRow as structured fields for the saved
+            // report and stay out of the wizard pane.
             let details = if description.is_empty() {
-                format!(
-                    "{summary}\n\n{}\n\n{}: {}",
-                    action.reason, text.package_details_handling_prefix, handling_summary
-                )
+                summary.clone()
             } else {
-                format!(
-                    "{summary}\n\n{description}\n\n{}\n\n{}: {}",
-                    action.reason, text.package_details_handling_prefix, handling_summary
-                )
+                format!("{summary}\n\n{description}")
             };
             PackageRow {
                 package_id: action.package_id.clone(),
@@ -2233,6 +2072,7 @@ fn package_rows(
                 available_version,
                 action: action.action,
                 action_label,
+                original_action: action.action,
                 reason: action.reason.clone(),
                 handling_summary,
                 manual_attention_expected,
@@ -2274,86 +2114,6 @@ fn package_display_name(model: &WizardModel, package_id: &str) -> String {
         .find(|spec| spec.id == package_id)
         .map(|spec| spec.display_name)
         .unwrap_or_else(|| package_id.to_string())
-}
-
-fn predicted_backup_paths_for_package_rows(
-    model: &WizardModel,
-    target: &TargetRow,
-    selected_package_indices: &[usize],
-    package_rows: &[PackageRow],
-    osara_keymap_choice: OsaraKeymapChoice,
-) -> Vec<PathBuf> {
-    let package_specs = package_specs_by_id(model.platform);
-    let mut backup_paths = Vec::new();
-
-    for index in selected_package_indices {
-        let Some(package) = package_rows.get(*index) else {
-            continue;
-        };
-        if package_requires_manual_attention(model, package, osara_keymap_choice) {
-            continue;
-        }
-
-        let Some(spec) = package_specs.get(&package.package_id) else {
-            continue;
-        };
-        if spec.backup_policy != BackupPolicy::BackupOverwrittenFiles {
-            continue;
-        }
-
-        backup_paths.extend(existing_package_backup_sources(&target.path, spec));
-        if package.package_id == PACKAGE_OSARA
-            && matches!(osara_keymap_choice, OsaraKeymapChoice::ReplaceCurrent)
-        {
-            let keymap_path = target.path.join("reaper-kb.ini");
-            if keymap_path.is_file() {
-                backup_paths.push(keymap_path);
-            }
-        }
-    }
-
-    if !backup_paths.is_empty() {
-        let receipt_path = target.path.join("RAIS").join("install-state.json");
-        if receipt_path.is_file() {
-            backup_paths.push(receipt_path);
-        }
-    }
-
-    backup_paths.sort();
-    backup_paths.dedup();
-    backup_paths
-}
-
-fn existing_package_backup_sources(resource_path: &Path, spec: &PackageSpec) -> Vec<PathBuf> {
-    let user_plugins = resource_path.join("UserPlugins");
-    if !user_plugins.is_dir() {
-        return Vec::new();
-    }
-
-    fs::read_dir(&user_plugins)
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.filter_map(std::result::Result::ok))
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file())
-        .filter(|path| {
-            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-                return false;
-            };
-            let file_name = file_name.to_ascii_lowercase();
-            let prefix_matches = spec.user_plugin_prefixes.is_empty()
-                || spec
-                    .user_plugin_prefixes
-                    .iter()
-                    .any(|prefix| file_name.starts_with(&prefix.to_ascii_lowercase()));
-            let suffix_matches = spec.user_plugin_suffixes.is_empty()
-                || spec
-                    .user_plugin_suffixes
-                    .iter()
-                    .any(|suffix| file_name.ends_with(&suffix.to_ascii_lowercase()));
-            prefix_matches && suffix_matches
-        })
-        .collect()
 }
 
 fn review_lines(
@@ -2400,27 +2160,10 @@ fn version_text(localizer: &Localizer, version: Option<&rais_core::version::Vers
         .unwrap_or_else(|| localizer.text("detect-version-unknown").value)
 }
 
-fn architecture_text(localizer: &Localizer, architecture: Option<Architecture>) -> String {
-    match architecture.unwrap_or(Architecture::Unknown) {
-        Architecture::X86 => "x86".to_string(),
-        Architecture::X64 => "x64".to_string(),
-        Architecture::Arm64 => "arm64".to_string(),
-        Architecture::Arm64Ec => "arm64ec".to_string(),
-        Architecture::Universal => "universal".to_string(),
-        Architecture::Unknown => localizer.text("detect-architecture-unknown").value,
-    }
-}
-
 fn unknown_version_text(model: &WizardModel) -> String {
     localizer_from_options(&model.bootstrap_options)
         .map(|localizer| localizer.text("detect-version-unknown").value)
         .unwrap_or_else(|_| "Version unknown".to_string())
-}
-
-fn unknown_architecture_text(model: &WizardModel) -> String {
-    localizer_from_options(&model.bootstrap_options)
-        .map(|localizer| localizer.text("detect-architecture-unknown").value)
-        .unwrap_or_else(|_| "Architecture unknown".to_string())
 }
 
 fn action_label(localizer: &Localizer, action: PlanActionKind) -> String {
@@ -2428,7 +2171,6 @@ fn action_label(localizer: &Localizer, action: PlanActionKind) -> String {
         PlanActionKind::Install => "action-install",
         PlanActionKind::Update => "action-update",
         PlanActionKind::Keep => "action-keep",
-        PlanActionKind::ManualReview => "action-review",
     };
     localizer.text(key).value
 }
@@ -2451,70 +2193,6 @@ fn is_probably_writable(path: &Path) -> bool {
     fs::metadata(existing_path)
         .map(|metadata| !metadata.permissions().readonly())
         .unwrap_or(false)
-}
-
-fn path_likely_requires_admin_prompt(platform: Platform, path: &Path) -> bool {
-    nearest_existing_ancestor(path)
-        .and_then(|existing_path| fs::metadata(existing_path).ok())
-        .is_some_and(|metadata| metadata.permissions().readonly())
-        || protected_system_roots(platform)
-            .iter()
-            .any(|root| path_is_same_or_nested(path, root))
-}
-
-fn protected_system_roots(platform: Platform) -> Vec<PathBuf> {
-    match platform {
-        Platform::Windows => {
-            let mut roots = Vec::new();
-            for key in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
-                if let Some(value) = std::env::var_os(key) {
-                    roots.push(PathBuf::from(value));
-                }
-            }
-            if roots.is_empty() {
-                roots.push(PathBuf::from(r"C:\Program Files"));
-                roots.push(PathBuf::from(r"C:\Program Files (x86)"));
-            }
-            roots
-        }
-        Platform::MacOs => vec![
-            PathBuf::from("/Applications"),
-            PathBuf::from("/Library"),
-            PathBuf::from("/System"),
-        ],
-    }
-}
-
-fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
-    let mut current = if path.exists() {
-        path.to_path_buf()
-    } else {
-        path.parent()?.to_path_buf()
-    };
-
-    loop {
-        if current.exists() {
-            return Some(current);
-        }
-        current = current.parent()?.to_path_buf();
-    }
-}
-
-fn path_is_same_or_nested(path: &Path, root: &Path) -> bool {
-    if cfg!(target_os = "windows") {
-        let path = normalize_windows_path(path);
-        let root = normalize_windows_path(root);
-        path == root || path.starts_with(&(root + "\\"))
-    } else {
-        path == root || path.starts_with(root)
-    }
-}
-
-fn normalize_windows_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('/', "\\")
-        .trim_end_matches('\\')
-        .to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -2674,18 +2352,21 @@ mod tests {
         assert_eq!(model.target_rows.len(), 1);
         assert!(model.target_rows[0].selected);
         assert!(model.target_rows[0].portable);
-        assert!(
-            model.target_rows[0]
-                .details
-                .contains("REAPER application path")
-        );
+        assert!(model.target_rows[0].details.contains("REAPER application"));
         assert!(model.target_rows[0].details.contains("REAPER version"));
-        assert!(model.target_rows[0].details.contains("Architecture"));
+        assert!(!model.target_rows[0].details.contains("Architecture"));
+        assert!(
+            !model.target_rows[0]
+                .details
+                .contains("Detection confidence")
+        );
         assert!(model.target_rows[0].details.contains("Writable"));
         assert_eq!(model.package_rows.len(), 2);
         assert_eq!(model.package_rows[0].display_name, "OSARA");
         assert!(model.package_rows[0].summary.contains("OSARA"));
-        assert!(model.package_rows[0].details.contains("Handling:"));
+        // The wizard package details pane no longer surfaces the internal
+        // handling-kind line; it stays in the saved report instead.
+        assert!(!model.package_rows[0].details.contains("Handling:"));
         // The localized package description from the embedded en-US locale
         // should land in `description` and inside `details` so the wizard's
         // package details pane explains what the package is for.
@@ -2713,6 +2394,90 @@ mod tests {
         assert!(model.controls.can_go_next);
         assert!(model.controls.can_install);
         assert!(model.review_lines.iter().any(|line| line.contains("OSARA")));
+    }
+
+    #[test]
+    fn toggling_a_package_row_updates_its_action_label_and_summary() {
+        // The package list row label must follow the user's checkbox state:
+        // unchecking should switch the visible action to "Keep", and
+        // re-checking it should restore the install/update action that the
+        // plan originally chose for this package.
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let installation = fake_installation();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            vec![installation.clone()],
+            Some(0),
+            InstallPlan {
+                target: Some(installation),
+                actions: vec![PlanAction {
+                    package_id: PACKAGE_OSARA.to_string(),
+                    action: PlanActionKind::Install,
+                    installed_version: None,
+                    available_version: Some(Version::parse("2026.1").unwrap()),
+                    reason: "Missing".to_string(),
+                }],
+                notes: Vec::new(),
+            },
+        );
+        let mut row = model.package_rows[0].clone();
+        assert_eq!(row.action, PlanActionKind::Install);
+        assert_eq!(row.action_label, "Install");
+        assert!(row.selected);
+
+        let summary = super::apply_checkbox_state_to_package_row(&model, &mut row, false).unwrap();
+        assert_eq!(row.action, PlanActionKind::Keep);
+        assert_eq!(row.action_label, "Keep");
+        assert!(!row.selected);
+        assert!(summary.contains("Keep"));
+        assert!(row.summary.contains("Keep"));
+
+        // Re-checking restores the original install action because the
+        // package was originally not installed.
+        let summary = super::apply_checkbox_state_to_package_row(&model, &mut row, true).unwrap();
+        assert_eq!(row.action, PlanActionKind::Install);
+        assert_eq!(row.action_label, "Install");
+        assert!(row.selected);
+        assert!(summary.contains("Install"));
+    }
+
+    #[test]
+    fn toggling_a_keep_row_to_checked_promotes_it_to_update() {
+        // For a package that was already installed and current, the plan's
+        // original action is Keep. If the user explicitly checks the row,
+        // they're asking RAIS to re-stage the package — that translates to
+        // Update so the install pipeline runs.
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let installation = fake_installation();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            vec![installation.clone()],
+            Some(0),
+            InstallPlan {
+                target: Some(installation),
+                actions: vec![PlanAction {
+                    package_id: PACKAGE_REAPACK.to_string(),
+                    action: PlanActionKind::Keep,
+                    installed_version: Some(Version::parse("1.2.6").unwrap()),
+                    available_version: Some(Version::parse("1.2.6").unwrap()),
+                    reason: "Current".to_string(),
+                }],
+                notes: Vec::new(),
+            },
+        );
+        let mut row = model.package_rows[0].clone();
+        assert_eq!(row.action, PlanActionKind::Keep);
+        assert!(!row.selected);
+
+        let _ = super::apply_checkbox_state_to_package_row(&model, &mut row, true).unwrap();
+        assert_eq!(row.action, PlanActionKind::Update);
+        assert_eq!(row.action_label, "Update");
+        assert!(row.selected);
+        assert!(row.summary.contains("Update"));
     }
 
     #[test]
@@ -2855,7 +2620,7 @@ mod tests {
         assert!(row.label.contains("Portable REAPER folder"));
         assert!(row.details.contains("REAPER application path"));
         assert!(row.details.contains("REAPER version: Version unknown"));
-        assert!(row.details.contains("Architecture: Architecture unknown"));
+        assert!(!row.details.contains("Architecture"));
         assert!(row.details.contains("Portable resource path"));
     }
 
@@ -2998,11 +2763,11 @@ mod tests {
         assert_eq!(reaper.display_name, "REAPER");
         assert_eq!(reaper.action, PlanActionKind::Install);
         assert!(!reaper.manual_attention_expected);
-        assert!(reaper.details.contains("Handling:"));
-        assert!(
-            reaper
-                .details
-                .contains(&model.text.package_handling_unattended)
+        // Handling-kind no longer surfaces in the wizard details pane; it
+        // remains as a structured field on PackageRow for the saved report.
+        assert_eq!(
+            reaper.handling_summary,
+            model.text.package_handling_unattended
         );
         assert!(reaper.selected);
     }
@@ -3040,62 +2805,6 @@ mod tests {
     }
 
     #[test]
-    fn review_preview_lists_manual_attention_for_selected_packages() {
-        let dir = tempdir().unwrap();
-        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
-        let model = model_from_plan(
-            &localizer,
-            Platform::Windows,
-            Architecture::X64,
-            Vec::new(),
-            None,
-            InstallPlan {
-                target: None,
-                actions: Vec::new(),
-                notes: Vec::new(),
-            },
-        );
-        let target = custom_portable_target_row(&model, dir.path().join("PortableREAPER"), true);
-        let package_rows = vec![super::PackageRow {
-            package_id: PACKAGE_OSARA.to_string(),
-            display_name: "OSARA".to_string(),
-            description: String::new(),
-            selected: true,
-            summary: "OSARA: Install".to_string(),
-            details: "OSARA details".to_string(),
-            installed_version: "Version unknown".to_string(),
-            available_version: "2026.1".to_string(),
-            action: PlanActionKind::Install,
-            action_label: "Install".to_string(),
-            reason: "Missing".to_string(),
-            handling_summary: model.text.package_handling_planned.clone(),
-            manual_attention_expected: true,
-        }];
-
-        let preview = super::build_review_preview_for_package_rows(
-            &model,
-            Some(&target),
-            &[0],
-            &package_rows,
-            &[],
-            OsaraKeymapChoice::ReplaceCurrent,
-        );
-
-        assert!(preview.can_install);
-        assert!(
-            preview
-                .lines
-                .iter()
-                .any(|line| line == "Manual attention expected")
-        );
-        assert!(
-            preview
-                .lines
-                .iter()
-                .any(|line| line.contains("OSARA") && line.contains("still reports the steps"))
-        );
-    }
-
     #[test]
     fn reaper_windows_row_uses_unattended_handling() {
         let dir = tempdir().unwrap();
@@ -3196,269 +2905,6 @@ mod tests {
                 .iter()
                 .any(|line| line == "Manual attention expected")
         );
-    }
-
-    #[test]
-    fn review_preview_lists_expected_backup_files_for_direct_updates() {
-        let dir = tempdir().unwrap();
-        let resource_path = dir.path().join("PortableREAPER");
-        let plugins = resource_path.join("UserPlugins");
-        std::fs::create_dir_all(&plugins).unwrap();
-        std::fs::create_dir_all(resource_path.join("RAIS")).unwrap();
-        std::fs::write(plugins.join("reaper_reapack-x64.dll"), b"old").unwrap();
-        std::fs::write(resource_path.join("RAIS/install-state.json"), b"{}").unwrap();
-
-        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
-        let model = model_from_plan(
-            &localizer,
-            Platform::Windows,
-            Architecture::X64,
-            Vec::new(),
-            None,
-            InstallPlan {
-                target: None,
-                actions: Vec::new(),
-                notes: Vec::new(),
-            },
-        );
-        let target = custom_portable_target_row(&model, resource_path, true);
-        let package_rows = vec![super::PackageRow {
-            package_id: PACKAGE_REAPACK.to_string(),
-            display_name: "ReaPack".to_string(),
-            description: String::new(),
-            selected: true,
-            summary: "ReaPack: Update".to_string(),
-            details: "ReaPack details".to_string(),
-            installed_version: "1.2.5".to_string(),
-            available_version: "1.2.6".to_string(),
-            action: PlanActionKind::Update,
-            action_label: "Update".to_string(),
-            reason: "Outdated".to_string(),
-            handling_summary: model.text.package_handling_automatic.clone(),
-            manual_attention_expected: false,
-        }];
-
-        let preview = super::build_review_preview_for_package_rows(
-            &model,
-            Some(&target),
-            &[0],
-            &package_rows,
-            &[],
-            OsaraKeymapChoice::PreserveCurrent,
-        );
-
-        assert!(preview.lines.iter().any(|line| line == "Backups expected"));
-        assert!(
-            preview
-                .lines
-                .iter()
-                .any(|line| line.contains("reaper_reapack-x64.dll"))
-        );
-        assert!(
-            preview
-                .lines
-                .iter()
-                .any(|line| line.contains("install-state.json"))
-        );
-    }
-
-    #[test]
-    fn review_preview_lists_expected_backup_for_osara_keymap_replacement() {
-        let dir = tempdir().unwrap();
-        let resource_path = dir.path().join("PortableREAPER");
-        let plugins = resource_path.join("UserPlugins");
-        std::fs::create_dir_all(&plugins).unwrap();
-        std::fs::write(plugins.join("reaper_osara64.dll"), b"old").unwrap();
-        std::fs::write(resource_path.join("reaper-kb.ini"), b"current keymap").unwrap();
-
-        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
-        let model = model_from_plan(
-            &localizer,
-            Platform::Windows,
-            Architecture::X64,
-            Vec::new(),
-            None,
-            InstallPlan {
-                target: None,
-                actions: Vec::new(),
-                notes: Vec::new(),
-            },
-        );
-        let target = custom_portable_target_row(&model, resource_path, true);
-        let plan = super::wizard_package_plan_for_target(&model, Some(&target)).unwrap();
-        let selected = plan
-            .package_rows
-            .iter()
-            .enumerate()
-            .filter_map(|(index, row)| (row.package_id == PACKAGE_OSARA).then_some(index))
-            .collect::<Vec<_>>();
-
-        let preview = super::build_review_preview_for_package_rows(
-            &model,
-            Some(&target),
-            &selected,
-            &plan.package_rows,
-            &plan.notes,
-            OsaraKeymapChoice::ReplaceCurrent,
-        );
-
-        assert!(preview.lines.iter().any(|line| line == "Backups expected"));
-        assert!(
-            preview
-                .lines
-                .iter()
-                .any(|line| line.contains("reaper-kb.ini"))
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn review_preview_lists_admin_prompt_for_standard_reaper_target() {
-        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
-        let installation = fake_standard_installation();
-        let model = model_from_plan(
-            &localizer,
-            Platform::Windows,
-            Architecture::X64,
-            vec![installation.clone()],
-            Some(0),
-            InstallPlan {
-                target: Some(installation),
-                actions: Vec::new(),
-                notes: Vec::new(),
-            },
-        );
-        let package_rows = vec![super::PackageRow {
-            package_id: PACKAGE_REAPER.to_string(),
-            display_name: "REAPER".to_string(),
-            description: String::new(),
-            selected: true,
-            summary: "REAPER: Install".to_string(),
-            details: "REAPER details".to_string(),
-            installed_version: "Version unknown".to_string(),
-            available_version: "7.69".to_string(),
-            action: PlanActionKind::Install,
-            action_label: "Install".to_string(),
-            reason: "Missing".to_string(),
-            handling_summary: model.text.package_handling_unattended.clone(),
-            manual_attention_expected: false,
-        }];
-
-        let preview = super::build_review_preview_for_package_rows(
-            &model,
-            model.target_rows.first(),
-            &[0],
-            &package_rows,
-            &[],
-            OsaraKeymapChoice::PreserveCurrent,
-        );
-
-        assert!(
-            preview
-                .lines
-                .iter()
-                .any(|line| line == "Administrator prompts expected")
-        );
-        assert!(preview.lines.iter().any(|line| {
-            line.contains("Administrator approval may be required for the REAPER application path")
-                && line.contains("Program Files")
-        }));
-    }
-
-    #[test]
-    fn review_preview_reports_no_admin_prompt_for_user_portable_target() {
-        let dir = tempdir().unwrap();
-        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
-        let model = model_from_plan(
-            &localizer,
-            Platform::Windows,
-            Architecture::X64,
-            Vec::new(),
-            None,
-            InstallPlan {
-                target: None,
-                actions: Vec::new(),
-                notes: Vec::new(),
-            },
-        );
-        let target = custom_portable_target_row(&model, dir.path().join("PortableREAPER"), true);
-        let package_rows = vec![super::PackageRow {
-            package_id: PACKAGE_REAPACK.to_string(),
-            display_name: "ReaPack".to_string(),
-            description: String::new(),
-            selected: true,
-            summary: "ReaPack: Install".to_string(),
-            details: "ReaPack details".to_string(),
-            installed_version: "Version unknown".to_string(),
-            available_version: "1.2.6".to_string(),
-            action: PlanActionKind::Install,
-            action_label: "Install".to_string(),
-            reason: "Missing".to_string(),
-            handling_summary: model.text.package_handling_automatic.clone(),
-            manual_attention_expected: false,
-        }];
-
-        let preview = super::build_review_preview_for_package_rows(
-            &model,
-            Some(&target),
-            &[0],
-            &package_rows,
-            &[],
-            OsaraKeymapChoice::PreserveCurrent,
-        );
-
-        assert!(
-            preview
-                .lines
-                .iter()
-                .any(|line| { line == "No administrator prompt is currently expected." })
-        );
-    }
-
-    #[test]
-    fn review_preview_uses_minimal_resource_layout_for_standard_reaper_only() {
-        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
-        let installation = fake_standard_installation();
-        let model = model_from_plan(
-            &localizer,
-            Platform::Windows,
-            Architecture::X64,
-            vec![installation.clone()],
-            Some(0),
-            InstallPlan {
-                target: Some(installation),
-                actions: Vec::new(),
-                notes: Vec::new(),
-            },
-        );
-        let package_rows = vec![PackageRow {
-            package_id: PACKAGE_REAPER.to_string(),
-            display_name: "REAPER".to_string(),
-            description: String::new(),
-            selected: true,
-            summary: "REAPER: Install".to_string(),
-            details: "REAPER details".to_string(),
-            installed_version: "Version unknown".to_string(),
-            available_version: "7.70".to_string(),
-            action: PlanActionKind::Install,
-            action_label: "Install".to_string(),
-            reason: "Missing".to_string(),
-            handling_summary: model.text.package_handling_unattended.clone(),
-            manual_attention_expected: false,
-        }];
-
-        let preview = super::build_review_preview_for_package_rows(
-            &model,
-            model.target_rows.first(),
-            &[0],
-            &package_rows,
-            &[],
-            OsaraKeymapChoice::PreserveCurrent,
-        );
-
-        assert!(!preview.lines.iter().any(|line| {
-            line.contains("UserPlugins") || line.contains("KeyMaps") || line.contains("reaper.ini")
-        }));
     }
 
     #[test]
@@ -3765,57 +3211,6 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Backup manifest:"))
         );
-    }
-
-    #[test]
-    fn review_resource_lines_only_include_pending_changes() {
-        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
-        let model = model_from_plan(
-            &localizer,
-            Platform::Windows,
-            Architecture::X64,
-            Vec::new(),
-            None,
-            InstallPlan {
-                target: None,
-                actions: Vec::new(),
-                notes: Vec::new(),
-            },
-        );
-        let report = ResourceInitReport {
-            resource_path: PathBuf::from("C:/PortableREAPER"),
-            dry_run: true,
-            portable: true,
-            preflight: PreflightReport {
-                passed: true,
-                checks: Vec::new(),
-            },
-            actions: vec![
-                ResourceInitAction {
-                    path: PathBuf::from("C:/PortableREAPER"),
-                    kind: ResourceInitItemKind::Directory,
-                    action: ResourceInitActionKind::AlreadyExists,
-                },
-                ResourceInitAction {
-                    path: PathBuf::from("C:/PortableREAPER/UserPlugins"),
-                    kind: ResourceInitItemKind::Directory,
-                    action: ResourceInitActionKind::WouldCreate,
-                },
-                ResourceInitAction {
-                    path: PathBuf::from("C:/PortableREAPER/reaper.ini"),
-                    kind: ResourceInitItemKind::File,
-                    action: ResourceInitActionKind::WouldCreate,
-                },
-            ],
-        };
-
-        let lines = super::review_resource_lines(&model, &report);
-
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].starts_with("Create directory:"));
-        assert!(lines[0].contains("UserPlugins"));
-        assert!(lines[1].starts_with("Create file:"));
-        assert!(lines[1].contains("reaper.ini"));
     }
 
     #[test]

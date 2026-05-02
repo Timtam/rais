@@ -7,7 +7,6 @@ common-no = nein
 action-install = Installieren
 action-update = Aktualisieren
 action-keep = Beibehalten
-action-review = Manuell prüfen
 
 package-reaper = REAPER
 package-osara = OSARA
@@ -24,7 +23,6 @@ package-reakontrol-description = ReaKontrol fügt REAPER Unterstützung für Nat
 detect-installed = Installiert
 detect-not-installed = Nicht installiert
 detect-version-unknown = Version unbekannt
-detect-architecture-unknown = Architektur unbekannt
 detect-source-receipt = RAIS-Beleg
 detect-source-files = Vorhandene Datei in UserPlugins
 detect-source-reapack-registry = ReaPack-Registry
@@ -66,23 +64,19 @@ wizard-target-custom-portable-label = Portabler REAPER-Ordner
 wizard-target-custom-portable-app-path-label = Pfad der REAPER-Anwendung
 wizard-target-custom-portable-path-label = Portabler Ressourcenpfad
 wizard-target-custom-portable-version-label = REAPER-Version
-wizard-target-custom-portable-architecture-label = Architektur
 wizard-target-custom-portable-writable-label = Beschreibbar
 wizard-target-custom-portable-note = RAIS legt das REAPER-Ressourcenlayout hier an, falls es fehlt.
 
-# $kind is the detected installation kind, $version is the REAPER version or an unknown-version label, and $path is the resource path.
-wizard-target-row = { $kind } REAPER { $version } unter { $path }
+# $version is the REAPER version or an unknown-version label and $path is the resource path.
+wizard-target-row = REAPER { $version } unter { $path }
 
 # $app_path is the REAPER application path, $path is the REAPER resource path,
-# $version is the REAPER version or an unknown-version label, $architecture is the
-# REAPER architecture or an unknown-architecture label, $writable is yes/no, and
-# $confidence is the detection confidence.
-wizard-target-details = Pfad der REAPER-Anwendung: { $app_path }
+# $version is the REAPER version or an unknown-version label, and $writable
+# is yes/no.
+wizard-target-details = REAPER-Anwendung: { $app_path }
     REAPER-Version: { $version }
-    Architektur: { $architecture }
     Ressourcenpfad: { $path }
     Beschreibbar: { $writable }
-    Erkennungsvertrauen: { $confidence }
 
 wizard-packages-heading = Pakete auswählen
 wizard-packages-list-label = Zu installierende oder zu aktualisierende Pakete
@@ -115,25 +109,12 @@ wizard-package-row = { $package }: { $action }. Installiert: { $installed }. Ver
 
 wizard-review-heading = Änderungen überprüfen
 wizard-review-target-prefix = Ziel
-wizard-review-cache-prefix = Zwischenspeicher
-wizard-review-resource-heading = Einrichtung des Ressourcenpfads
-wizard-review-resource-create-directory-prefix = Verzeichnis anlegen
-wizard-review-resource-create-file-prefix = Datei anlegen
-wizard-review-resource-no-changes = Es sind keine Änderungen am Ressourcenpfad erforderlich.
-wizard-review-backup-heading = Erwartete Sicherungen
-wizard-review-backup-file-prefix = Datei sichern
-wizard-review-backup-no-changes = Derzeit werden keine Sicherungsdateien erwartet.
-wizard-review-admin-heading = Erwartete Administratoraufforderungen
-wizard-review-admin-no-prompts = Derzeit wird keine Administratoraufforderung erwartet.
-wizard-review-admin-app-prefix = Für den Pfad der REAPER-Anwendung kann eine Administratorbestätigung erforderlich sein
-wizard-review-admin-resource-prefix = Für den ausgewählten Ressourcenpfad kann eine Administratorbestätigung erforderlich sein
 wizard-review-package-heading = Ausgewählte Pakete
 wizard-review-osara-keymap-heading = OSARA-Tastenzuordnung
 wizard-review-osara-keymap-preserve = Aktuelle Tastenzuordnung beibehalten und die OSARA-Tastenzuordnung nicht anwenden.
 wizard-review-osara-keymap-replace = Aktuelle Tastenzuordnung nach Sicherung von reaper-kb.ini ersetzen.
 wizard-review-notes-heading = Hinweise
 wizard-review-preflight-prefix = Installation derzeit nicht möglich
-wizard-review-manual-heading = Manuelle Aufmerksamkeit erforderlich
 
 # $path is the selected REAPER resource path.
 wizard-review-target = Ziel: { $path }

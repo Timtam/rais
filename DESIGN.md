@@ -43,9 +43,9 @@ questions they cannot reasonably answer.
   needed unless installing REAPER itself into a protected location.
 - Preserve user configuration by default where possible, but when OSARA is
   selected RAIS replaces the active key map with the OSARA key map after
-  backing up `reaper-kb.ini`. This is the default and is not exposed as a
-  user-facing question in the GUI; the CLI keeps an explicit opt-out for power
-  users.
+  backing up `reaper-kb.ini`. The Packages step shows an explicit checkbox so
+  the user sees and can opt out of the replacement; the CLI keeps the same
+  opt-out via `--preserve-osara-keymap`.
 - Make every user-visible string localizable from the beginning. Embedded
   locales today: en-US and de-DE.
 - Build Windows and macOS artifacts automatically for every push in GitHub
@@ -476,10 +476,12 @@ user can finish the install by pressing Next a few times.
      package before deciding to install it.
    - Defaults: install or update missing/outdated recommended accessibility
      packages.
-   - OSARA key map: RAIS replaces `reaper-kb.ini` with the OSARA key map after
-     backing it up. The GUI does not ask the user to confirm; the backup is
-     mentioned in the final report. The CLI keeps `--preserve-osara-keymap`
-     for power users who want the opt-out.
+   - OSARA key map: an explicit checkbox stays on the Packages page so the
+     user sees and controls what RAIS will do with `reaper-kb.ini`. Default
+     is replace-with-backup, matching the OSARA project's default. The
+     short note next to the checkbox explains both options in one sentence
+     each in the active locale. The CLI exposes the same opt-out via
+     `--preserve-osara-keymap`.
 
 4. ReaPack donation acknowledgement (only when ReaPack is being installed
    or updated this run)
