@@ -105,6 +105,11 @@ pub enum RaisError {
         exit_code: Option<i32>,
     },
 
+    #[error(
+        "the Windows administrator approval prompt for {program} was cancelled or declined; re-run and approve the prompt to continue, or pick a portable REAPER target that doesn't need elevation"
+    )]
+    UserCancelledElevation { program: String },
+
     #[error("post-install verification failed; missing paths: {missing_paths:?}")]
     PostInstallVerificationFailed { missing_paths: Vec<PathBuf> },
 

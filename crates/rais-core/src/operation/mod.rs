@@ -603,14 +603,42 @@ fn executed_unattended_item(
         target_app_path,
         replace_osara_keymap,
     );
-    execute_planned_execution(&planned_execution, false)?;
-    let post_install = post_execute_unattended_artifact(
+    // Run the planned execution, the package's post-install fixups, and
+    // verify the produced files. Original order is preserved (some
+    // post-install steps such as the OSARA keymap replacement produce
+    // files that `verify_planned_execution_paths` then checks). We
+    // tolerate a non-zero process exit *if* verification confirms the
+    // install actually landed: REAPER's NSIS installer (and a few others)
+    // can return 1223 / non-zero on Cancel from a post-install offer
+    // dialog even when the install itself completed, and the user already
+    // has the binaries on disk. Surfacing the process error in that case
+    // mis-reports a successful install as a failure.
+    let process_result = execute_planned_execution(&planned_execution, false);
+    let post_install_result = post_execute_unattended_artifact(
         &planned.artifact,
         resource_path,
         target_app_path,
         replace_osara_keymap,
-    )?;
-    verify_planned_execution_paths(&planned_execution)?;
+    );
+    let post_install = match verify_planned_execution_paths(&planned_execution) {
+        Ok(()) => {
+            // Verify confirms the expected files are on disk — accept the
+            // run even if the process or post-install steps reported
+            // errors. Use the post-install report when available; fall
+            // back to a default report (no extra backups recorded) when
+            // post-install itself failed but the files we needed are
+            // already there.
+            post_install_result.unwrap_or_default()
+        }
+        Err(verify_err) => {
+            // Verification didn't see the expected files: surface the
+            // most informative error available — process first, then
+            // post-install, then verify.
+            process_result?;
+            post_install_result?;
+            return Err(verify_err);
+        }
+    };
 
     let message = match planned.artifact.package_id.as_str() {
         crate::package::PACKAGE_OSARA => osara::unattended_install_message(

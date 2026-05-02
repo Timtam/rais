@@ -80,6 +80,7 @@
       "package_kind": "user_plugin_binary",
       "required": false,
       "recommended": true,
+      "requires_user_acknowledgement": true,
       "supported_platforms": ["windows", "macos"],
       "supported_architectures": ["x86", "x64", "arm64", "arm64-ec", "universal"],
       "latest_version_provider": "reapack_github_release",

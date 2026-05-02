@@ -86,6 +86,18 @@ fn execute_program_plan(plan: &PlannedExecutionPlan) -> Result<()> {
         source,
     })?;
     if !status.success() {
+        // Windows exit code 1223 is `ERROR_CANCELLED`: the user clicked
+        // "No" on the UAC elevation prompt (or it timed out / was
+        // dismissed). The installer never actually ran, so RAIS surfaces
+        // it as a distinct, recoverable error instead of the generic
+        // "process failed for X with exit code Some(1223)" — that lets
+        // the wizard tell the user "approve the prompt and try again"
+        // rather than implying the install itself broke.
+        if cfg!(target_os = "windows") && status.code() == Some(1223) {
+            return Err(RaisError::UserCancelledElevation {
+                program: program.clone(),
+            });
+        }
         return Err(RaisError::ProcessFailed {
             program: program.clone(),
             exit_code: status.code(),

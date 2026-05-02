@@ -33,6 +33,7 @@ status-package-installed = { $package } installed
 wizard-step-target = Target
 wizard-step-version-check = Version check
 wizard-step-packages = Packages
+wizard-step-reapack-acknowledgement = ReaPack donation
 wizard-step-review = Review
 wizard-step-progress = Progress
 wizard-step-done = Done
@@ -80,6 +81,13 @@ wizard-target-details = REAPER application: { $app_path }
 
 wizard-packages-heading = Choose packages
 wizard-packages-list-label = Packages to install or update
+
+wizard-reapack-ack-heading = ReaPack donation notice
+wizard-reapack-ack-body = ReaPack is free software released under the LGPL. Its author Christian Fillion accepts donations to support continued development. Donations are entirely optional and never required to use ReaPack or RAIS.
+wizard-reapack-ack-link-label = Open the ReaPack donation page
+wizard-reapack-ack-confirm-label = I have read the notice above and want to continue installing or updating ReaPack
+cli-reapack-ack-prompt-summary = ReaPack is free software (LGPL). Donations to its author Christian Fillion at https://reapack.com/donate are optional and never required to use ReaPack or RAIS.
+cli-reapack-ack-flag-required = ReaPack is in this run's plan but the donation acknowledgement is missing. Re-run with --accept-reapack-donation-notice to confirm you have read https://reapack.com/donate and want RAIS to install or update ReaPack.
 
 wizard-version-check-heading = Checking latest versions
 wizard-version-check-status-pending = Preparing latest-version check…
