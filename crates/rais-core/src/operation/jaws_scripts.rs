@@ -13,9 +13,19 @@
 //!
 //! Because all of that lives inside the NSIS script (which runs the
 //! `JAWSSetupUtility.dll` plugin to pick the right JAWS slot), RAIS doesn't
-//! need to replicate any of that logic — we just launch the installer with
-//! `/S` for a silent, unattended run and verify the standard REAPER
-//! UserPlugins side landed afterwards.
+//! need to replicate any of that logic — we just launch the installer
+//! interactively with elevation and verify the standard REAPER UserPlugins
+//! side landed afterwards.
+//!
+//! **Why not silent (`/S`)?** NSIS's silent flag suppresses the main wizard
+//! window but does not suppress modal dialogs from NSIS plugins. The
+//! `JAWSSetupUtility.dll` plugin embedded in this package opens an invisible
+//! "JAWS detected, pick a language" dialog at install time, and silent mode
+//! turns that into a hang because the dialog can never receive a click. We
+//! launch the installer interactively (no `/S`) so the user can step through
+//! it; the existing UAC consent prompt + the wxdragon `WaitForSingleObject`
+//! in the elevated runner mean RAIS still pauses until the installer exits
+//! and the freshness verification still catches a no-op run.
 //!
 //! The installer hard-codes the standard REAPER `%APPDATA%\REAPER` path, so
 //! a portable REAPER target won't receive the `Reaper_ComAccess*.dll` files
@@ -48,12 +58,14 @@ pub(super) fn automation_support_for(
     }
 }
 
-/// `["/S"]` — NSIS-3 silent install. The installer's `JAWSSetupUtility.dll`
-/// auto-picks the JAWS version + language; no `/D=` override since the
-/// destination paths are hard-coded inside the NSIS script.
+/// No arguments — see the module-level doc-comment for why we don't pass
+/// `/S`. tl;dr: the embedded `JAWSSetupUtility.dll` plugin opens a modal
+/// dialog that NSIS-silent mode hides without dismissing, hanging the
+/// installer; running interactively with elevation lets the user click
+/// through the JAWS-detection prompt instead.
 pub(super) fn installer_arguments(kind: ArtifactKind, platform: Platform) -> Option<Vec<String>> {
     match (kind, platform) {
-        (ArtifactKind::Installer, Platform::Windows) => Some(vec!["/S".to_string()]),
+        (ArtifactKind::Installer, Platform::Windows) => Some(Vec::new()),
         _ => None,
     }
 }
