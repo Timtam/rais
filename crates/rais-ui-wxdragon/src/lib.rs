@@ -730,13 +730,23 @@ fn target_row(localizer: &Localizer, installation: &Installation, selected: bool
         .as_ref()
         .map(ToString::to_string)
         .unwrap_or_else(|| localizer.text("detect-version-unknown").value);
+    // Dropdown label shows the *install directory* (where reaper.exe
+    // lives), not the resource folder. For a standard install that's
+    // typically `C:\Program Files\REAPER (x64)`; for portable it's the
+    // portable folder itself. The resource folder still appears in the
+    // expanded "Target details" pane via `wizard-target-details`.
+    let install_dir = installation
+        .app_path
+        .parent()
+        .map(|parent| parent.display().to_string())
+        .unwrap_or_else(|| installation.app_path.display().to_string());
     TargetRow {
         label: localizer
             .format(
                 "wizard-target-row",
                 &[
                     ("version", version.as_str()),
-                    ("path", &installation.resource_path.display().to_string()),
+                    ("path", install_dir.as_str()),
                 ],
             )
             .value,
