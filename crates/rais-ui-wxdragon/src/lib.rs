@@ -1685,12 +1685,19 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
         .filter(|item| matches!(item.status, PackageOperationStatus::DeferredUnattended))
         .count();
 
+    let architecture_label = architecture_label_for_summary(model.architecture);
     let mut detail_lines = vec![
         format_localized_message(
             localizer.as_ref(),
             "wizard-summary-target",
             &[("path", report.resource_path.display().to_string())],
             format!("Target: {}", report.resource_path.display()),
+        ),
+        format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-architecture",
+            &[("architecture", architecture_label.clone())],
+            format!("Architecture: {architecture_label}"),
         ),
         format_localized_message(
             localizer.as_ref(),
@@ -1862,6 +1869,20 @@ pub fn summarize_setup_report(model: &WizardModel, report: &SetupReport) -> Wiza
             ],
             format!("{package_name}: {}", item.message),
         ));
+        let plan_action_label = action_label_for_summary(localizer.as_ref(), item.plan_action);
+        detail_lines.push(format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-package-plan-action",
+            &[("action", plan_action_label.clone())],
+            format!("  Plan action: {plan_action_label}"),
+        ));
+        let status_label = status_label_for_summary(localizer.as_ref(), item.status);
+        detail_lines.push(format_localized_message(
+            localizer.as_ref(),
+            "wizard-summary-package-status",
+            &[("status", status_label.clone())],
+            format!("  Status: {status_label}"),
+        ));
         if let Some(plan) = &item.planned_execution {
             detail_lines.push(format_localized_message(
                 localizer.as_ref(),
@@ -2003,6 +2024,60 @@ fn planned_execution_runner_label(
     localizer
         .map(|localizer| localizer.text(id).value)
         .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Localized "Install / Update / Keep" label resolver scoped to the saved
+/// summary report. Mirrors the wizard's `action_label` but works against an
+/// `Option<&Localizer>` so the summarizer can degrade gracefully when no
+/// localizer is available.
+fn action_label_for_summary(localizer: Option<&Localizer>, action: PlanActionKind) -> String {
+    let (id, fallback) = match action {
+        PlanActionKind::Install => ("action-install", "Install"),
+        PlanActionKind::Update => ("action-update", "Update"),
+        PlanActionKind::Keep => ("action-keep", "Keep"),
+    };
+    localizer
+        .map(|localizer| localizer.text(id).value)
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Localized status-label resolver for `PackageOperationStatus` values
+/// surfaced by the saved summary report.
+fn status_label_for_summary(
+    localizer: Option<&Localizer>,
+    status: PackageOperationStatus,
+) -> String {
+    let (id, fallback) = match status {
+        PackageOperationStatus::InstalledOrChecked => {
+            ("status-installed-or-checked", "Installed or checked")
+        }
+        PackageOperationStatus::PlannedUnattended => {
+            ("status-planned-unattended", "Planned unattended")
+        }
+        PackageOperationStatus::DeferredUnattended => {
+            ("status-deferred-unattended", "Deferred unattended")
+        }
+        PackageOperationStatus::SkippedCurrent => {
+            ("status-skipped-current", "Skipped (already current)")
+        }
+    };
+    localizer
+        .map(|localizer| localizer.text(id).value)
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Format the wizard's detected architecture as a stable short token used in
+/// the summary report. Not localized — these are the same identifiers the
+/// CLI's `rais detect` output uses, so external tooling can grep for them.
+fn architecture_label_for_summary(architecture: Architecture) -> String {
+    match architecture {
+        Architecture::X86 => "x86".to_string(),
+        Architecture::X64 => "x64".to_string(),
+        Architecture::Arm64 => "arm64".to_string(),
+        Architecture::Arm64Ec => "arm64ec".to_string(),
+        Architecture::Universal => "universal".to_string(),
+        Architecture::Unknown => "unknown".to_string(),
+    }
 }
 
 fn package_rows(
@@ -3026,6 +3101,26 @@ mod tests {
         assert!(summary.detail_lines.iter().any(|line| {
             line.contains("Note:") && line.contains("Leave reaper-kb.ini unchanged")
         }));
+        // Architecture line + per-package plan action / status are now part
+        // of the saved report so power users have everything the wizard hides.
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line.contains("Architecture:") && line.contains("x64"))
+        );
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line.contains("Plan action:") && line.contains("Install"))
+        );
+        assert!(
+            summary
+                .detail_lines
+                .iter()
+                .any(|line| line.contains("Status:") && line.contains("Deferred unattended"))
+        );
     }
 
     #[test]

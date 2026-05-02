@@ -197,6 +197,16 @@ wizard-summary-backup-file = Backup file: { $path }
 wizard-summary-receipt-backup = Receipt backup: { $path }
 wizard-summary-backup-manifest = Backup manifest: { $path }
 wizard-summary-package-message = { $package }: { $message }
+# $action is one of the localized "action-*" labels (Install/Update/Keep).
+wizard-summary-package-plan-action =   Plan action: { $action }
+# $status is one of the localized "status-*" labels.
+wizard-summary-package-status =   Status: { $status }
+# $architecture is the detected REAPER architecture (x64, arm64, …).
+wizard-summary-architecture = Architecture: { $architecture }
+status-installed-or-checked = Installed or checked
+status-planned-unattended = Planned unattended
+status-deferred-unattended = Deferred unattended
+status-skipped-current = Skipped (already current)
 wizard-summary-planned-execution-title = Planned unattended execution:
 wizard-summary-planned-execution-runner =   Runner: { $runner }
 wizard-summary-planned-execution-artifact =   Artifact: { $artifact }

@@ -197,6 +197,16 @@ wizard-summary-backup-file = Sicherungsdatei: { $path }
 wizard-summary-receipt-backup = Beleg-Sicherung: { $path }
 wizard-summary-backup-manifest = Sicherungsmanifest: { $path }
 wizard-summary-package-message = { $package }: { $message }
+# $action is one of the localized "action-*" labels (Installieren/Aktualisieren/Beibehalten).
+wizard-summary-package-plan-action =   Plan-Aktion: { $action }
+# $status is one of the localized "status-*" labels.
+wizard-summary-package-status =   Status: { $status }
+# $architecture is the detected REAPER architecture (x64, arm64, …).
+wizard-summary-architecture = Architektur: { $architecture }
+status-installed-or-checked = Installiert oder geprüft
+status-planned-unattended = Unbeaufsichtigt geplant
+status-deferred-unattended = Unbeaufsichtigt verschoben
+status-skipped-current = Übersprungen (bereits aktuell)
 wizard-summary-planned-execution-title = Geplante unbeaufsichtigte Ausführung:
 wizard-summary-planned-execution-runner =   Ausführer: { $runner }
 wizard-summary-planned-execution-artifact =   Artefakt: { $artifact }
