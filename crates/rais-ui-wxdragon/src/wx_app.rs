@@ -856,6 +856,7 @@ pub fn run() {
             let model = Arc::clone(&model);
             let widgets = wizard_widgets;
             let last_reaper_app_path = Arc::clone(&last_reaper_app_path);
+            let frame_for_launch = frame.clone();
             widgets.done_launch_reaper.on_click(move |_| {
                 let Some(app_path) = clone_last_path(&last_reaper_app_path) else {
                     append_done_status(&widgets.done_status, &model.text.done_no_reaper_app);
@@ -866,7 +867,9 @@ pub fn run() {
                         &widgets.done_status,
                         &format!("{}: {}", model.text.done_launch_reaper_error_prefix, error),
                     );
+                    return;
                 }
+                frame_for_launch.close(true);
             });
         }
 

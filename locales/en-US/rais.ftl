@@ -156,8 +156,8 @@ wizard-done-status-no-packages = No package was selected for installation or upd
 wizard-done-show-details = Show details
 # Mnemonic messages are single-character native access keys. Choose a character
 # from the translated label when possible.
-wizard-done-launch-reaper = Launch REAPER
-wizard-done-launch-reaper-mnemonic = L
+wizard-done-launch-reaper = Open REAPER and close RAIS
+wizard-done-launch-reaper-mnemonic = P
 wizard-done-open-resource = Open resource folder
 wizard-done-open-resource-mnemonic = O
 wizard-done-no-reaper-app = No launchable REAPER application is known for this target.

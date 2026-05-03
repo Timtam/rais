@@ -2392,15 +2392,13 @@ mod tests {
     use rais_core::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS};
     use rais_core::plan::{InstallPlan, PlanAction, PlanActionKind};
     use rais_core::preflight::PreflightReport;
-    use rais_core::resource::{
-        ResourceInitAction, ResourceInitActionKind, ResourceInitItemKind, ResourceInitReport,
-    };
+    use rais_core::resource::ResourceInitReport;
     use rais_core::setup::SetupReport;
     use rais_core::version::Version;
     use tempfile::tempdir;
 
     use super::{
-        HostCapabilities, OsaraKeymapChoice, PackageRow, UiBootstrapOptions, WizardInstallRequest,
+        HostCapabilities, OsaraKeymapChoice, UiBootstrapOptions, WizardInstallRequest,
         custom_portable_target_row, format_self_update_apply_summary, localizer_from_options,
         model_from_plan, refreshed_target_row, wizard_desired_package_ids_for_host,
     };
@@ -2479,7 +2477,10 @@ mod tests {
             model.text.packages_osara_keymap_replace_label,
             "Replace current key map with OSARA key map"
         );
-        assert_eq!(model.text.done_launch_reaper_label, "&Launch REAPER");
+        assert_eq!(
+            model.text.done_launch_reaper_label,
+            "O&pen REAPER and close RAIS"
+        );
         assert_eq!(model.text.done_open_resource_label, "&Open resource folder");
     }
 
@@ -3012,7 +3013,6 @@ mod tests {
         );
     }
 
-    #[test]
     #[test]
     fn reaper_windows_row_uses_unattended_handling() {
         let dir = tempdir().unwrap();
