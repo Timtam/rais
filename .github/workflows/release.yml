@@ -58,8 +58,8 @@ jobs:
           cargo fmt --all --check
           cargo test --workspace
 
-      - name: Build release rais binary with GUI feature
-        run: cargo build --release -p rais --features gui
+      - name: Build release rabbit binary with GUI feature
+        run: cargo build --release -p rabbit --features gui
 
       - name: Resolve artifact name
         shell: bash
@@ -77,17 +77,17 @@ jobs:
             ARM) ARCH="armv7" ;;
             *) echo "unsupported runner arch: $RUNNER_ARCH" >&2; exit 1 ;;
           esac
-          ARTIFACT_NAME="rais-${VERSION}-${PLATFORM_ID}-${ARCH}${EXTENSION}"
-          echo "RAIS_VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "RAIS_ARCH=${ARCH}" >> "$GITHUB_ENV"
-          echo "RAIS_ARTIFACT_NAME=${ARTIFACT_NAME}" >> "$GITHUB_ENV"
+          ARTIFACT_NAME="rabbit-${VERSION}-${PLATFORM_ID}-${ARCH}${EXTENSION}"
+          echo "RABBIT_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "RABBIT_ARCH=${ARCH}" >> "$GITHUB_ENV"
+          echo "RABBIT_ARTIFACT_NAME=${ARTIFACT_NAME}" >> "$GITHUB_ENV"
 
       - name: Stage Windows release file
         if: matrix.platform_id == 'windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target\release\rais.exe "dist\$env:RAIS_ARTIFACT_NAME" -Force
+          Copy-Item target\release\rabbit.exe "dist\$env:RABBIT_ARTIFACT_NAME" -Force
 
       - name: Sign Windows binaries (if certificate is configured)
         if: matrix.platform_id == 'windows'
@@ -104,7 +104,7 @@ jobs:
             Write-Error "WINDOWS_SIGNING_CERTIFICATE_BASE64 was set but WINDOWS_SIGNING_CERTIFICATE_PASSWORD is empty."
             exit 1
           }
-          $pfxPath = Join-Path $env:RUNNER_TEMP "rais-codesign.pfx"
+          $pfxPath = Join-Path $env:RUNNER_TEMP "rabbit-codesign.pfx"
           [System.IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WIN_CERT_B64))
           try {
             $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
@@ -121,9 +121,9 @@ jobs:
               /tr "http://timestamp.digicert.com" `
               /td SHA256 `
               /fd SHA256 `
-              dist\${{ env.RAIS_ARTIFACT_NAME }}
+              dist\${{ env.RABBIT_ARTIFACT_NAME }}
             if ($LASTEXITCODE -ne 0) { throw "signtool sign failed with exit $LASTEXITCODE" }
-            & $signtool.FullName verify /pa /q dist\${{ env.RAIS_ARTIFACT_NAME }}
+            & $signtool.FullName verify /pa /q dist\${{ env.RABBIT_ARTIFACT_NAME }}
             if ($LASTEXITCODE -ne 0) { throw "signtool verify failed with exit $LASTEXITCODE" }
           }
           finally {
@@ -134,25 +134,25 @@ jobs:
         if: matrix.platform_id == 'windows'
         shell: pwsh
         run: |
-          $Hash = (Get-FileHash dist\${{ env.RAIS_ARTIFACT_NAME }} -Algorithm SHA256).Hash.ToLowerInvariant()
-          "{0}  {1}" -f $Hash, "${{ env.RAIS_ARTIFACT_NAME }}" | Set-Content dist\${{ env.RAIS_ARTIFACT_NAME }}.sha256
+          $Hash = (Get-FileHash dist\${{ env.RABBIT_ARTIFACT_NAME }} -Algorithm SHA256).Hash.ToLowerInvariant()
+          "{0}  {1}" -f $Hash, "${{ env.RABBIT_ARTIFACT_NAME }}" | Set-Content dist\${{ env.RABBIT_ARTIFACT_NAME }}.sha256
 
       - name: Stage macOS release file
         if: matrix.platform_id == 'macos'
         shell: bash
         run: |
           mkdir -p dist
-          cp target/release/rais dist/${{ env.RAIS_ARTIFACT_NAME }}
-          chmod +x dist/${{ env.RAIS_ARTIFACT_NAME }}
+          cp target/release/rabbit dist/${{ env.RABBIT_ARTIFACT_NAME }}
+          chmod +x dist/${{ env.RABBIT_ARTIFACT_NAME }}
 
       - name: Build macOS .app bundle
         if: matrix.platform_id == 'macos'
         shell: bash
         env:
-          RAIS_BUNDLE_ZIP: ${{ env.RAIS_ARTIFACT_NAME }}.app.zip
+          RABBIT_BUNDLE_ZIP: ${{ env.RABBIT_ARTIFACT_NAME }}.app.zip
         run: |
-          # Assembles dist/Rais.app + dist/<RAIS_BUNDLE_ZIP> with an ad-hoc
-          # baseline signature. RAIS deliberately ships unsigned (no Apple
+          # Assembles dist/Rabbit.app + dist/<RABBIT_BUNDLE_ZIP> with an ad-hoc
+          # baseline signature. RABBIT deliberately ships unsigned (no Apple
           # Developer Program enrollment) — ad-hoc signing is the free
           # workaround that prevents the "damaged and can't be opened"
           # Gatekeeper error on Apple Silicon. First-launch trust is
@@ -160,34 +160,34 @@ jobs:
           # `xattr -dr com.apple.quarantine`; future self-updates inherit
           # that trust.
           bash packaging/macos/build-bundle.sh \
-            --binary "target/release/rais" \
-            --version "${RAIS_VERSION}" \
+            --binary "target/release/rabbit" \
+            --version "${RABBIT_VERSION}" \
             --out "dist" \
-            --zip-name "${RAIS_BUNDLE_ZIP}" \
+            --zip-name "${RABBIT_BUNDLE_ZIP}" \
             --adhoc-sign
-          shasum -a 256 "dist/${{ env.RAIS_ARTIFACT_NAME }}" | awk '{print tolower($1) "  ${{ env.RAIS_ARTIFACT_NAME }}"}' > "dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256"
-          echo "RAIS_BUNDLE_ZIP=${RAIS_BUNDLE_ZIP}" >> "$GITHUB_ENV"
+          shasum -a 256 "dist/${{ env.RABBIT_ARTIFACT_NAME }}" | awk '{print tolower($1) "  ${{ env.RABBIT_ARTIFACT_NAME }}"}' > "dist/${{ env.RABBIT_ARTIFACT_NAME }}.sha256"
+          echo "RABBIT_BUNDLE_ZIP=${RABBIT_BUNDLE_ZIP}" >> "$GITHUB_ENV"
 
       - name: Upload Windows release artifact
         if: matrix.platform_id == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: rais-${{ matrix.platform_id }}-${{ env.RAIS_ARCH }}
+          name: rabbit-${{ matrix.platform_id }}-${{ env.RABBIT_ARCH }}
           path: |
-            dist/${{ env.RAIS_ARTIFACT_NAME }}
-            dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256
+            dist/${{ env.RABBIT_ARTIFACT_NAME }}
+            dist/${{ env.RABBIT_ARTIFACT_NAME }}.sha256
           if-no-files-found: error
 
       - name: Upload macOS release artifact
         if: matrix.platform_id == 'macos'
         uses: actions/upload-artifact@v4
         with:
-          name: rais-${{ matrix.platform_id }}-${{ env.RAIS_ARCH }}
+          name: rabbit-${{ matrix.platform_id }}-${{ env.RABBIT_ARCH }}
           path: |
-            dist/${{ env.RAIS_ARTIFACT_NAME }}
-            dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256
-            dist/${{ env.RAIS_BUNDLE_ZIP }}
-            dist/${{ env.RAIS_BUNDLE_ZIP }}.sha256
+            dist/${{ env.RABBIT_ARTIFACT_NAME }}
+            dist/${{ env.RABBIT_ARTIFACT_NAME }}.sha256
+            dist/${{ env.RABBIT_BUNDLE_ZIP }}
+            dist/${{ env.RABBIT_BUNDLE_ZIP }}.sha256
           if-no-files-found: error
 
   publish:
@@ -201,7 +201,7 @@ jobs:
       - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: rais-*
+          pattern: rabbit-*
           merge-multiple: true
           path: release
 
@@ -218,15 +218,15 @@ jobs:
         run: |
           VERSION="${TAG_NAME#v}"
           PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          # Find the per-platform artifacts by their `rais-<version>-<os>-<arch>`
+          # Find the per-platform artifacts by their `rabbit-<version>-<os>-<arch>`
           # filenames. Glob matches the binary itself (any arch) and excludes
           # the sidecar `.sha256` file.
-          WINDOWS_PATH="$(find release -maxdepth 1 -type f -name 'rais-*-windows-*.exe' ! -name '*.sha256' | sort | head -1)"
+          WINDOWS_PATH="$(find release -maxdepth 1 -type f -name 'rabbit-*-windows-*.exe' ! -name '*.sha256' | sort | head -1)"
           # Bare-binary macOS asset is what the self-updater downloads
           # (it copies bytes straight over the install target — no zip
-          # extraction). The Rais.app.zip ships alongside for Finder
+          # extraction). The Rabbit.app.zip ships alongside for Finder
           # launches and is excluded here.
-          MACOS_PATH="$(find release -maxdepth 1 -type f -name 'rais-*-macos-*' ! -name '*.exe' ! -name '*.sha256' ! -name '*.zip' | sort | head -1)"
+          MACOS_PATH="$(find release -maxdepth 1 -type f -name 'rabbit-*-macos-*' ! -name '*.exe' ! -name '*.sha256' ! -name '*.zip' | sort | head -1)"
           if [ -z "$WINDOWS_PATH" ] || [ -z "$MACOS_PATH" ]; then
             echo "expected per-platform artifacts under release/ but found:" >&2
             ls release/ >&2
@@ -264,13 +264,13 @@ jobs:
                   sha256: $macos_sha
                 }
               }
-            }' > release/rais-update-stable.json
+            }' > release/rabbit-update-stable.json
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/rais-*
+            release/rabbit-*
             release/SHA256SUMS.txt
-            release/rais-update-stable.json
+            release/rabbit-update-stable.json
           generate_release_notes: true

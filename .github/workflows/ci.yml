@@ -37,8 +37,8 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace
 
-      - name: Build release rais binary (no GUI feature)
-        run: cargo build --release -p rais
+      - name: Build release rabbit binary (no GUI feature)
+        run: cargo build --release -p rabbit
 
   artifacts:
     name: Artifact (${{ matrix.platform_id }})
@@ -81,8 +81,8 @@ jobs:
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
           echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
 
-      - name: Build release rais binary with GUI feature
-        run: cargo build --release -p rais --features gui
+      - name: Build release rabbit binary with GUI feature
+        run: cargo build --release -p rabbit --features gui
 
       - name: Resolve artifact name
         shell: bash
@@ -106,34 +106,34 @@ jobs:
             ARM) ARCH="armv7" ;;
             *) echo "unsupported runner arch: $RUNNER_ARCH" >&2; exit 1 ;;
           esac
-          ARTIFACT_NAME="rais-${VERSION}-${PLATFORM_ID}-${ARCH}${EXTENSION}"
-          echo "RAIS_VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "RAIS_ARCH=${ARCH}" >> "$GITHUB_ENV"
-          echo "RAIS_ARTIFACT_NAME=${ARTIFACT_NAME}" >> "$GITHUB_ENV"
+          ARTIFACT_NAME="rabbit-${VERSION}-${PLATFORM_ID}-${ARCH}${EXTENSION}"
+          echo "RABBIT_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "RABBIT_ARCH=${ARCH}" >> "$GITHUB_ENV"
+          echo "RABBIT_ARTIFACT_NAME=${ARTIFACT_NAME}" >> "$GITHUB_ENV"
 
       - name: Stage Windows artifact
         if: matrix.platform_id == 'windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target\release\rais.exe "dist\$env:RAIS_ARTIFACT_NAME" -Force
-          $Hash = (Get-FileHash "dist\$env:RAIS_ARTIFACT_NAME" -Algorithm SHA256).Hash.ToLowerInvariant()
-          "{0}  {1}" -f $Hash, $env:RAIS_ARTIFACT_NAME | Set-Content "dist\$env:RAIS_ARTIFACT_NAME.sha256"
+          Copy-Item target\release\rabbit.exe "dist\$env:RABBIT_ARTIFACT_NAME" -Force
+          $Hash = (Get-FileHash "dist\$env:RABBIT_ARTIFACT_NAME" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "{0}  {1}" -f $Hash, $env:RABBIT_ARTIFACT_NAME | Set-Content "dist\$env:RABBIT_ARTIFACT_NAME.sha256"
 
       - name: Stage macOS artifact
         if: matrix.platform_id == 'macos'
         shell: bash
         run: |
           mkdir -p dist
-          cp target/release/rais "dist/${RAIS_ARTIFACT_NAME}"
-          chmod +x "dist/${RAIS_ARTIFACT_NAME}"
-          shasum -a 256 "dist/${RAIS_ARTIFACT_NAME}" | awk -v name="${RAIS_ARTIFACT_NAME}" '{print tolower($1) "  " name}' > "dist/${RAIS_ARTIFACT_NAME}.sha256"
+          cp target/release/rabbit "dist/${RABBIT_ARTIFACT_NAME}"
+          chmod +x "dist/${RABBIT_ARTIFACT_NAME}"
+          shasum -a 256 "dist/${RABBIT_ARTIFACT_NAME}" | awk -v name="${RABBIT_ARTIFACT_NAME}" '{print tolower($1) "  " name}' > "dist/${RABBIT_ARTIFACT_NAME}.sha256"
 
       - name: Build macOS .app bundle
         if: matrix.platform_id == 'macos'
         shell: bash
         env:
-          RAIS_BUNDLE_ZIP: ${{ env.RAIS_ARTIFACT_NAME }}.app.zip
+          RABBIT_BUNDLE_ZIP: ${{ env.RABBIT_ARTIFACT_NAME }}.app.zip
         run: |
           # Snapshot bundle for Finder launches. The bare binary above is
           # still the self-update asset; this zip is the double-clickable
@@ -141,31 +141,31 @@ jobs:
           # flagging the download as "damaged" — Developer ID signing only
           # happens in release.yml when secrets are configured.
           bash packaging/macos/build-bundle.sh \
-            --binary "target/release/rais" \
-            --version "${RAIS_VERSION}" \
+            --binary "target/release/rabbit" \
+            --version "${RABBIT_VERSION}" \
             --out "dist" \
-            --zip-name "${RAIS_BUNDLE_ZIP}" \
+            --zip-name "${RABBIT_BUNDLE_ZIP}" \
             --adhoc-sign
-          echo "RAIS_BUNDLE_ZIP=${RAIS_BUNDLE_ZIP}" >> "$GITHUB_ENV"
+          echo "RABBIT_BUNDLE_ZIP=${RABBIT_BUNDLE_ZIP}" >> "$GITHUB_ENV"
 
       - name: Upload Windows artifact
         if: matrix.platform_id == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: rais-${{ matrix.platform_id }}-${{ env.RAIS_ARCH }}
+          name: rabbit-${{ matrix.platform_id }}-${{ env.RABBIT_ARCH }}
           path: |
-            dist/${{ env.RAIS_ARTIFACT_NAME }}
-            dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256
+            dist/${{ env.RABBIT_ARTIFACT_NAME }}
+            dist/${{ env.RABBIT_ARTIFACT_NAME }}.sha256
           if-no-files-found: error
 
       - name: Upload macOS artifact
         if: matrix.platform_id == 'macos'
         uses: actions/upload-artifact@v4
         with:
-          name: rais-${{ matrix.platform_id }}-${{ env.RAIS_ARCH }}
+          name: rabbit-${{ matrix.platform_id }}-${{ env.RABBIT_ARCH }}
           path: |
-            dist/${{ env.RAIS_ARTIFACT_NAME }}
-            dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256
-            dist/${{ env.RAIS_BUNDLE_ZIP }}
-            dist/${{ env.RAIS_BUNDLE_ZIP }}.sha256
+            dist/${{ env.RABBIT_ARTIFACT_NAME }}
+            dist/${{ env.RABBIT_ARTIFACT_NAME }}.sha256
+            dist/${{ env.RABBIT_BUNDLE_ZIP }}
+            dist/${{ env.RABBIT_BUNDLE_ZIP }}.sha256
           if-no-files-found: error

@@ -1,23 +1,23 @@
-# RAIS Design
+# RABBIT Design
 
 Status: revised 2026-05-01
 
-RAIS means "REAPER Accessibility Installation Software" and is pronounced like
-"rice". Its job is to install and update REAPER, OSARA, SWS, ReaPack,
+RABBIT means "REAPER Accessibility Bootstrap & Bundle Installation Tool". Its
+job is to install and update REAPER, OSARA, SWS, ReaPack,
 ReaKontrol, JAWS-for-REAPER scripts (Windows only), and later additional
 packages, while keeping the workflow usable with screen readers on Windows and
 macOS.
 
 The audience is REAPER users — including users who are not Rust developers,
-accessibility experts, or installer engineers. RAIS must therefore choose
+accessibility experts, or installer engineers. RABBIT must therefore choose
 sensible defaults, hide implementation detail, and avoid asking the user
 questions they cannot reasonably answer.
 
 ## Product Goals
 
-- One executable. RAIS ships as a single self-contained binary per platform.
+- One executable. RABBIT ships as a single self-contained binary per platform.
   Run with no arguments → graphical wizard; run with any argument or `--help` →
-  CLI. There is no separate `rais-cli` binary, no helper executable, no
+  CLI. There is no separate `rabbit-cli` binary, no helper executable, no
   installer, no companion resource folder.
 - On Windows the executable does not pop up a console window when launched as
   a GUI; the same binary still attaches to the parent console when run from a
@@ -25,10 +25,10 @@ questions they cannot reasonably answer.
 - Release builds are optimized for file size first, then runtime speed
   (`opt-level = "z"`, fat LTO, single codegen unit, stripped symbols, panic
   abort) so a download stays small for users on metered or slow connections.
-- The wizard is short, opinionated, and free of jargon. RAIS picks the
+- The wizard is short, opinionated, and free of jargon. RABBIT picks the
   defaults a non-technical user would otherwise have to research, and presents
   results in plain terms ("REAPER 7.69 installed", "OSARA up to date") rather
-  than internal mechanics ("detector: rais-receipt", "confidence: High",
+  than internal mechanics ("detector: rabbit-receipt", "confidence: High",
   "PlannedAutomationKind::VendorInstaller").
 - Install into an existing standard REAPER installation, into an existing
   portable REAPER installation, or set up REAPER plus the selected packages
@@ -42,7 +42,7 @@ questions they cannot reasonably answer.
 - Prefer user-level installation paths for extensions so admin rights are not
   needed unless installing REAPER itself into a protected location.
 - Preserve user configuration by default where possible, but when OSARA is
-  selected RAIS replaces the active key map with the OSARA key map after
+  selected RABBIT replaces the active key map with the OSARA key map after
   backing up `reaper-kb.ini`. The Packages step shows an explicit checkbox so
   the user sees and can opt out of the replacement; the CLI keeps the same
   opt-out via `--preserve-osara-keymap`.
@@ -53,7 +53,7 @@ questions they cannot reasonably answer.
   raw single-file binaries; no zipping.
 - Publish signed release artifacts through a GitHub release pipeline so tagged
   versions become downloadable binaries with checksums and update metadata.
-- Let RAIS detect when a newer RAIS version has been released and update
+- Let RABBIT detect when a newer RABBIT version has been released and update
   itself with as little user interaction as practical while preserving
   accessibility and platform trust requirements.
 
@@ -124,32 +124,32 @@ questions they cannot reasonably answer.
   It is the rejetto/HFS server (`https://github.com/rejetto/hfs`), which exposes
   a documented public REST API: `POST /~/api/get_file_list` returns a JSON
   directory listing including each entry's name, size, and modified time, which
-  RAIS can use as the latest-version provider for the JAWS scripts.
+  RABBIT can use as the latest-version provider for the JAWS scripts.
 
 ## Recommended Technical Direction
 
 Use Rust for the core application, package engine, and primary UI. The UI
-should prefer wxDragon so RAIS can stay in one Rust codebase while still using
+should prefer wxDragon so RABBIT can stay in one Rust codebase while still using
 mature wxWidgets-backed native controls.
 
 Recommended implementation:
 
-- `rais-core` in Rust: detection, manifests, downloads, verification, install
+- `rabbit-core` in Rust: detection, manifests, downloads, verification, install
   planning, backups, receipts, localization lookup, and logging.
-- `rais-platform` in Rust: Windows/macOS native API isolation (file-version
+- `rabbit-platform` in Rust: Windows/macOS native API isolation (file-version
   probes, registry probes, keychain/codesign, locale probe, plist parsing,
-  disk-image mounting). One-way dependency from `rais-core` to
-  `rais-platform`.
-- `rais` in Rust (single binary, formerly `rais-cli` + `rais-ui-wxdragon`): the
+  disk-image mounting). One-way dependency from `rabbit-core` to
+  `rabbit-platform`.
+- `rabbit` in Rust (single binary, formerly `rabbit-cli` + `rabbit-ui-wxdragon`): the
   user-facing entry point. Built with the GUI feature on by default so a release
   binary can launch the wizard. The `main` function dispatches by argv:
   - no arguments → run the wxDragon wizard
   - any arguments or `--help` → run the CLI subcommand parser
   This single-binary model removes the duplicate distribution shape and makes
-  it easy for users to memorize "the file is `RAIS.exe`/`RAIS`".
+  it easy for users to memorize "the file is `RABBIT.exe`/`RABBIT`".
 - Build release artifacts as self-contained executables wherever the platform
   allows. Embed required UI text, default localization resources, package
-  metadata, and small static assets into the binary. Do not require a RAIS
+  metadata, and small static assets into the binary. Do not require a RABBIT
   installer for normal use.
 
 ### Single-Binary Argv Dispatch
@@ -165,7 +165,7 @@ Top-level `main`:
    to the parent console (or allocates one) so help output and command
    results are visible.
 
-The CLI subcommand surface stays roughly what `rais-cli` exposes today;
+The CLI subcommand surface stays roughly what `rabbit-cli` exposes today;
 moving it under the same crate is a packaging change, not a feature change.
 
 ### Release Build Profile
@@ -187,7 +187,7 @@ dependency for the normal launch path.
 
 This keeps the important logic and UI integration in Rust and avoids maintaining
 a separate C++/Objective-C/C ABI UI shell. The tradeoff is that wxDragon is a
-younger Rust layer over a mature toolkit, so RAIS should keep the GUI thin and
+younger Rust layer over a mature toolkit, so RABBIT should keep the GUI thin and
 well tested. If wxDragon blocks required accessibility behavior, the fallback
 should be a direct wxWidgets shell with the same view-model boundary rather than
 rewriting the installer engine.
@@ -196,14 +196,14 @@ rewriting the installer engine.
 
 Full unattended installation is part of the product definition, not a stretch
 goal. For the first-class supported package set of REAPER, OSARA, SWS,
-ReaPack, and ReaKontrol, RAIS should converge on one shared unattended
+ReaPack, and ReaKontrol, RABBIT should converge on one shared unattended
 execution path used by both the GUI and CLI.
 
 Design rules:
 
 - The normal supported path must not stop at "download and tell the user what to
   do next" for REAPER, OSARA, SWS, ReaPack, or ReaKontrol.
-- For executable installers, RAIS itself must download, verify, launch, wait
+- For executable installers, RABBIT itself must download, verify, launch, wait
   for completion, evaluate exit status, and validate the installed result in the
   same run.
 - The supported flow must not require the user to manually open an `.exe`,
@@ -213,27 +213,27 @@ Design rules:
   gap, not acceptable steady-state product behavior.
 - The GUI wizard and CLI must call the same package execution engine so
   unattended behavior is consistent and testable.
-- RAIS should prefer direct verified file installation for extensions when that
+- RABBIT should prefer direct verified file installation for extensions when that
   is technically reliable, because it is more deterministic and accessible than
   driving third-party interactive installers.
-- When RAIS must use a vendor installer, it should do so with documented or
+- When RABBIT must use a vendor installer, it should do so with documented or
   validated silent arguments, explicit exit-code handling, integrity checks, and
   a post-install verification pass.
-- "Run upstream installer" in the package model means RAIS invokes the installer
+- "Run upstream installer" in the package model means RABBIT invokes the installer
   itself as part of the installation operation. It does not mean "download the
   installer and ask the user to run it manually later".
-- If a package cannot currently be installed unattended on a platform, RAIS
+- If a package cannot currently be installed unattended on a platform, RABBIT
   should mark that as unsupported for that build/platform combination, not treat
   permanent manual installation as the finished design.
 
-## RAIS Portability
+## RABBIT Portability
 
-RAIS should behave like a portable utility. A user should be able to download a
+RABBIT should behave like a portable utility. A user should be able to download a
 single executable, run it from any writable folder, complete the REAPER setup or
 update, and remove the executable afterward. The executable may create cache,
-log, backup, report, and receipt files in explicit RAIS locations under the
+log, backup, report, and receipt files in explicit RABBIT locations under the
 selected REAPER resource path or user cache directory, but those files are
-operation data, not files required to start RAIS.
+operation data, not files required to start RABBIT.
 
 Distribution goals:
 
@@ -243,10 +243,10 @@ Distribution goals:
 - macOS: a single signed and notarized executable. Use an `.app` bundle
   layout only if macOS GUI launch policy forces it for a given
   wxWidgets/wxDragon shape; in that case the bundle stays self-contained with
-  no separate RAIS installer, and the CLI command-line surface still works
+  no separate RABBIT installer, and the CLI command-line surface still works
   against the binary inside the bundle.
-- Release artifact names follow `rais-<version>-<os>-<arch>[.exe]`
-  (e.g. `rais-0.2.0-windows-x86_64.exe`, `rais-0.2.0-macos-aarch64`). This
+- Release artifact names follow `rabbit-<version>-<os>-<arch>[.exe]`
+  (e.g. `rabbit-0.2.0-windows-x86_64.exe`, `rabbit-0.2.0-macos-aarch64`). This
   makes successive downloads distinguishable on disk, calls out the build's
   architecture explicitly, and works around the macOS-binary-without-extension
   ambiguity. Users may rename the file after downloading; the self-update
@@ -257,11 +257,11 @@ Distribution goals:
   artifacts; release notes link directly to the per-platform binaries.
 - Do not require separate locale files, XRC files, icons, package manifests,
   or certificates beside the executable for the default experience.
-- Store downloads in the normal RAIS cache directory and allow the cache to be
+- Store downloads in the normal RABBIT cache directory and allow the cache to be
   deleted safely.
 - Store install receipts, backups, and reports in the selected REAPER resource
   path so they travel with portable REAPER installations when possible.
-- Do not write RAIS program settings to the Windows Registry. If user
+- Do not write RABBIT program settings to the Windows Registry. If user
   preferences become necessary, keep them optional and user-scoped.
 
 Implementation rules:
@@ -271,25 +271,25 @@ Implementation rules:
 - Treat external locale/resource directories as optional developer or advanced
   override paths, not runtime requirements.
 - Keep wxDragon/wxWidgets deployment self-contained for release builds. The
-  release check must verify that launching RAIS does not depend on DLLs or
+  release check must verify that launching RABBIT does not depend on DLLs or
   dylibs sitting beside the executable unless the platform's GUI framework
   requires a signed app bundle layout.
 - Any temporary extraction of embedded helpers must go to a temporary directory,
   be integrity-checked, and be cleaned up best-effort.
 - The same portability rule applies to self-update: updated binaries should
-  replace the old RAIS binary or app bundle in place, not install a separate
+  replace the old RABBIT binary or app bundle in place, not install a separate
   long-lived updater application.
 
 ## CI/CD And Release Delivery
 
-RAIS should have first-class delivery automation from the beginning. The design
+RABBIT should have first-class delivery automation from the beginning. The design
 target is that every push produces testable platform artifacts and every tagged
 release produces end-user release assets plus update metadata.
 
 GitHub Actions build pipeline for every push:
 
 - Trigger on every push and pull request.
-- Build RAIS on at least:
+- Build RABBIT on at least:
   - `windows-latest` for the Windows executable
   - `macos-latest` for the macOS app or executable artifact
 - Run the normal Rust checks on both platforms:
@@ -297,8 +297,8 @@ GitHub Actions build pipeline for every push:
   - unit/integration tests
   - release-mode build
 - Build the distributable artifact shape, not only debug binaries:
-  - Windows: a single `RAIS.exe`
-  - macOS: a single `RAIS` executable (or a self-contained signed `.app`
+  - Windows: a single `RABBIT.exe`
+  - macOS: a single `RABBIT` executable (or a self-contained signed `.app`
     bundle if macOS GUI launch policy requires it for the chosen
     wxWidgets/wxDragon shape)
 - Upload build artifacts to the workflow run so every push has downloadable
@@ -319,7 +319,7 @@ GitHub release pipeline:
   - SHA-256 checksums
   - machine-readable release/update manifest
 - Apply code signing where available:
-  - Windows Authenticode signing for `RAIS.exe`
+  - Windows Authenticode signing for `RABBIT.exe`
   - macOS code signing and notarization for the app bundle or executable
 - Generate release notes from a changelog or tag diff, with manual override for
   accessibility-relevant release notes.
@@ -329,13 +329,13 @@ GitHub release pipeline:
 Release metadata:
 
 - Each published release should expose enough machine-readable metadata for
-  RAIS self-update, including:
+  RABBIT self-update, including:
   - semantic version
   - release channel (`stable`, later optionally `beta`)
   - publish timestamp
   - per-platform download URL
   - expected SHA-256
-  - minimum supported previous RAIS version if a breaking updater transition is
+  - minimum supported previous RABBIT version if a breaking updater transition is
     ever needed
 - The release workflow should emit a stable JSON manifest asset or equivalent
   update feed derived from the GitHub Release so the updater does not need to
@@ -350,33 +350,33 @@ Suggested workflow layout:
     release.yml
 ```
 
-## RAIS Self-Update
+## RABBIT Self-Update
 
-RAIS should be able to update itself from GitHub Releases with minimal user
+RABBIT should be able to update itself from GitHub Releases with minimal user
 interaction while staying accessible and verifiable.
 
 Updater design goals:
 
-- Check for RAIS updates separately from package updates for REAPER and its
+- Check for RABBIT updates separately from package updates for REAPER and its
   extensions.
 - Use the GitHub release/update manifest as the authoritative source for the
-  latest RAIS version and platform artifact URL.
-- Compare versions using strict semantic versioning for RAIS itself.
+  latest RABBIT version and platform artifact URL.
+- Compare versions using strict semantic versioning for RABBIT itself.
 - Default behavior should be:
-  - detect newer RAIS release
+  - detect newer RABBIT release
   - present a short accessible prompt
   - download in the background after confirmation
   - apply the update with one restart/replace step
 - Advanced later option:
-  - support a user preference for automatically downloading stable RAIS updates
+  - support a user preference for automatically downloading stable RABBIT updates
     and applying them on the next restart
 
 Updater flow:
 
-1. On startup, or on explicit `Check for RAIS updates`, fetch the signed or
+1. On startup, or on explicit `Check for RABBIT updates`, fetch the signed or
    checksum-validated release manifest from the configured GitHub release
    channel.
-2. If the current RAIS version is already current, report that plainly.
+2. If the current RABBIT version is already current, report that plainly.
 3. If a newer version exists, show:
    - current version
    - available version
@@ -389,45 +389,45 @@ Updater flow:
    - expected SHA-256 from release metadata
    - Windows signature or macOS code signing/notarization where applicable
 6. Stage the replacement.
-7. Replace RAIS with the new version using the smallest platform-appropriate
+7. Replace RABBIT with the new version using the smallest platform-appropriate
    restart flow.
-8. Relaunch the updated RAIS instance and confirm the new version.
+8. Relaunch the updated RABBIT instance and confirm the new version.
 
 Platform update strategy:
 
 - Windows single-executable build:
-  - RAIS cannot replace its own running `.exe` in place.
+  - RABBIT cannot replace its own running `.exe` in place.
   - Stage the new executable beside the current one or in a temporary
     directory.
   - Launch a very small temporary updater helper process or script whose only
-    job is to wait for RAIS to exit, swap the executable, and relaunch RAIS.
+    job is to wait for RABBIT to exit, swap the executable, and relaunch RABBIT.
   - The helper must be ephemeral, integrity-checked, and cleaned up best-effort.
 - macOS app bundle build:
   - Stage the new signed/notarized app bundle in a temporary directory.
-  - After RAIS exits, replace the existing bundle atomically where possible and
+  - After RABBIT exits, replace the existing bundle atomically where possible and
     relaunch it.
   - Preserve the app bundle path so Dock aliases and user expectations do not
     break.
 
 Updater safety rules:
 
-- Never apply a RAIS self-update while a package installation/update operation
+- Never apply a RABBIT self-update while a package installation/update operation
   is running.
-- Never replace RAIS with an unsigned or checksum-mismatched artifact.
-- Keep one rollback copy of the previously running RAIS binary or bundle until
+- Never replace RABBIT with an unsigned or checksum-mismatched artifact.
+- Keep one rollback copy of the previously running RABBIT binary or bundle until
   the first successful restart of the updated version.
 - Log the update attempt and result in a plain text and machine-readable report.
-- If self-update fails, RAIS must continue running the existing version and
+- If self-update fails, RABBIT must continue running the existing version and
   report the error without leaving itself half-replaced.
 
 CLI and UI expectations:
 
 - CLI should expose explicit commands later such as:
-  - `rais self-update check`
-  - `rais self-update apply`
+  - `rabbit self-update check`
+  - `rabbit self-update apply`
 - GUI should expose:
   - automatic startup check
-  - manual `Check for RAIS updates`
+  - manual `Check for RABBIT updates`
   - accessible progress/status during download and replacement
 
 ## Accessibility Rules
@@ -472,12 +472,12 @@ user can finish the install by pressing Next a few times.
    - The selected row's details pane shows the package's localized
      description (one or two plain-language sentences explaining what the
      package is and why a user might want it). The same description is
-     exposed by the CLI via `rais packages`, so users can read about every
+     exposed by the CLI via `rabbit packages`, so users can read about every
      package before deciding to install it.
    - Defaults: install or update missing/outdated recommended accessibility
      packages.
    - OSARA key map: an explicit checkbox stays on the Packages page so the
-     user sees and controls what RAIS will do with `reaper-kb.ini`. Default
+     user sees and controls what RABBIT will do with `reaper-kb.ini`. Default
      is replace-with-backup, matching the OSARA project's default. The
      short note next to the checkbox explains both options in one sentence
      each in the active locale. The CLI exposes the same opt-out via
@@ -586,28 +586,28 @@ REAPER runtime probe:
 
 ## Version Detection Strategy
 
-There is no single generic, external "REAPER extension version" API that RAIS
+There is no single generic, external "REAPER extension version" API that RABBIT
 should rely on. Detection must be package-specific and confidence-scored.
 
 | Component | Primary detector | Fallback detector | Confidence notes |
 | --- | --- | --- | --- |
 | REAPER | executable/app metadata or optional `GetAppVersion()` runtime probe | presence of app only | Runtime probe is most accurate, metadata is good enough for normal installs. |
-| OSARA | RAIS receipt after RAIS-managed install; Windows standard uninstall `DisplayVersion` | binary string scan for embedded `OSARA_VERSION`; presence of `reaper_osara*` | Portable/mac installs do not have a universal external version registry. Binary scan is useful but should be marked best-effort. |
-| SWS | RAIS receipt; Windows PE `ProductVersion`; ReaPack registry if installed by ReaPack | binary metadata/string scan; presence of `reaper_sws*` | Prefer ReaPack registry for ReaPack-managed SWS. |
-| ReaPack | RAIS receipt; Windows PE `ProductVersion`; ReaPack self-entry in `ReaPack/registry.db` after first launch | presence of `reaper_reapack*` | The registry DB may not exist until ReaPack has run inside REAPER. |
-| ReaKontrol | RAIS receipt after RAIS-managed install | best-effort binary metadata if available; presence of `reaper_kontrol*` | No installer or registry-based detector is expected; validate binary metadata quality during implementation. |
+| OSARA | RABBIT receipt after RABBIT-managed install; Windows standard uninstall `DisplayVersion` | binary string scan for embedded `OSARA_VERSION`; presence of `reaper_osara*` | Portable/mac installs do not have a universal external version registry. Binary scan is useful but should be marked best-effort. |
+| SWS | RABBIT receipt; Windows PE `ProductVersion`; ReaPack registry if installed by ReaPack | binary metadata/string scan; presence of `reaper_sws*` | Prefer ReaPack registry for ReaPack-managed SWS. |
+| ReaPack | RABBIT receipt; Windows PE `ProductVersion`; ReaPack self-entry in `ReaPack/registry.db` after first launch | presence of `reaper_reapack*` | The registry DB may not exist until ReaPack has run inside REAPER. |
+| ReaKontrol | RABBIT receipt after RABBIT-managed install | best-effort binary metadata if available; presence of `reaper_kontrol*` | No installer or registry-based detector is expected; validate binary metadata quality during implementation. |
 | ReaPack packages | `ReaPack/registry.db` table `entries.version` | none | This is the best source for packages ReaPack knows about. |
 
-RAIS should keep its own receipt in each REAPER resource path:
+RABBIT should keep its own receipt in each REAPER resource path:
 
 ```text
-<resource_path>/RAIS/install-state.json
+<resource_path>/RABBIT/install-state.json
 ```
 
 The receipt should record package id, installed version, source URL, SHA-256,
-installed files, backup files, install time, RAIS version, and target
-architecture. This is authoritative only for files RAIS installed. If the user
-later changes files manually, RAIS should show that the receipt and disk state
+installed files, backup files, install time, RABBIT version, and target
+architecture. This is authoritative only for files RABBIT installed. If the user
+later changes files manually, RABBIT should show that the receipt and disk state
 do not match.
 
 ## Package Model
@@ -640,13 +640,13 @@ Every package ships a `display_description_key` that resolves to a one- or
 two-sentence localized description of what the package is and why a user
 might want it. The wizard surfaces the description in the package details
 pane (the same spot that today shows the handling/version block); the CLI
-exposes it via `rais packages` so non-technical users can read about
+exposes it via `rabbit packages` so non-technical users can read about
 REAPER, OSARA, SWS, ReaPack, ReaKontrol, and the JAWS scripts before
 deciding what to install.
 
 `requires_user_acknowledgement` is set on packages whose upstream policy or
 licensing posture asks for an explicit acknowledgement before install — see
-the ReaPack donation rule below. Default is `false`. When set, RAIS must
+the ReaPack donation rule below. Default is `false`. When set, RABBIT must
 not start the install for that package until the user has confirmed the
 package-specific acknowledgement message in the GUI (a dedicated wizard
 page) or in the CLI (an interactive prompt or an explicit
@@ -666,7 +666,7 @@ Initial package kinds:
   kind only appears in the wizard when the relevant screen reader is
   available on the host.
 
-For the initial supported package set, RAIS should implement these unattended
+For the initial supported package set, RABBIT should implement these unattended
 strategies:
 
 - REAPER Windows standard install:
@@ -694,7 +694,7 @@ strategies:
   - install unattended by either invoking a validated silent installer path or
     reproducing the upstream file layout directly into the selected REAPER
     resource path,
-  - manage the keymap behavior as a RAIS choice with default replacement plus
+  - manage the keymap behavior as a RABBIT choice with default replacement plus
     backup, and an explicit preserve-current opt-out.
 - SWS:
   - install unattended by placing the correct verified binary into
@@ -703,7 +703,7 @@ strategies:
   - install unattended by placing the correct verified binary into
     `UserPlugins` for the selected REAPER architecture.
   - mark the package with `requires_user_acknowledgement = true`. Whenever
-    a RAIS run would install or update ReaPack, the wizard must show a
+    a RABBIT run would install or update ReaPack, the wizard must show a
     dedicated confirmation page before the Review step, and the CLI must
     prompt before staging the artifact. The page reproduces the donation
     hint visible on <https://reapack.com/> in the active locale: ReaPack is
@@ -711,7 +711,7 @@ strategies:
     Christian Fillion accepts donations at <https://reapack.com/donate> to
     support continued development. The page links to the donation URL,
     states clearly that donating is optional and that no donation is
-    required to use ReaPack or RAIS, and only enables Continue once the
+    required to use ReaPack or RABBIT, and only enables Continue once the
     user has explicitly acknowledged the notice (a checkbox or focused
     button in the GUI; an interactive prompt or
     `--accept-reapack-donation-notice` flag in the CLI for unattended
@@ -724,7 +724,7 @@ strategies:
     user content, not package-owned files.
 - JAWS scripts (Windows only):
   - latest-version + artifact provider: HFS REST API at
-    `hoard.reaperaccessibility.com`. RAIS calls
+    `hoard.reaperaccessibility.com`. RABBIT calls
     `POST /~/api/get_file_list` with the JAWS-Scripts directory as the path
     and parses the returned JSON to pick the newest archive (date + filename
     contain the version anchor). Source archive URLs come from the same API.
@@ -735,7 +735,7 @@ strategies:
   - the package only appears in the wizard package list on Windows when JAWS
     is detected on the host. macOS users never see the JAWS scripts row.
   - back up any existing same-named script files before overwriting; track
-    the install through the standard RAIS receipt mechanism.
+    the install through the standard RABBIT receipt mechanism.
 
 ## Install Targets
 
@@ -753,7 +753,7 @@ Resource path layout:
     fxMaps/
   osara/
     locale/
-  RAIS/
+  RABBIT/
     install-state.json
     logs/
     backups/
@@ -790,9 +790,9 @@ Extension files:
 3. Refresh latest-version metadata from providers.
 4. Build an install plan.
 5. Show the plan and require confirmation.
-6. Download artifacts into the RAIS cache:
-   - Windows: `%LOCALAPPDATA%\RAIS\cache`
-   - macOS: `~/Library/Caches/RAIS`
+6. Download artifacts into the RABBIT cache:
+   - Windows: `%LOCALAPPDATA%\RABBIT\cache`
+   - macOS: `~/Library/Caches/RABBIT`
 7. Verify artifacts:
    - HTTPS only.
    - SHA-256 when known.
@@ -803,7 +803,7 @@ Extension files:
 10. Apply changes unattended:
    - invoke verified silent REAPER install steps where required,
    - launch installer executables or equivalent package routines directly from
-     RAIS where the package model says so,
+     RABBIT where the package model says so,
    - copy verified extension files directly where possible,
    - use temp files and atomic rename where possible.
 11. Write receipt and report.
@@ -819,25 +819,25 @@ Extension files:
   map instead.
 - Do not overwrite or delete user-created `reaKontrol/fxMaps` content during a
   ReaKontrol install or update.
-- Back up every overwritten file under `RAIS/backups/<timestamp>/`.
+- Back up every overwritten file under `RABBIT/backups/<timestamp>/`.
 - Keep a machine-readable operation report and a plain text report.
 - Treat non-writable targets as a planning error before downloading anything.
 - Do not request elevation unless the selected REAPER app install target
   requires it.
-- Do not delete unknown files during update. Only remove files listed in a RAIS
+- Do not delete unknown files during update. Only remove files listed in a RABBIT
   receipt or explicitly owned by the package manifest.
 
 ## Localization
 
 Use message IDs from the first commit. Recommended Rust-side choice: Fluent via
 `fluent-rs`. Required built-in locales should be embedded into the executable.
-During development and for advanced overrides, RAIS may also read locale files
+During development and for advanced overrides, RABBIT may also read locale files
 like:
 
 ```text
 locales/
   en-US/
-    rais.ftl
+    rabbit.ftl
 ```
 
 Rules:
@@ -857,9 +857,9 @@ Rules:
 ```text
 Cargo.toml
 crates/
-  rais-core/
-  rais-platform/
-  rais/                # the single user-facing binary (CLI + GUI dispatch)
+  rabbit-core/
+  rabbit-platform/
+  rabbit/                # the single user-facing binary (CLI + GUI dispatch)
 ui/
   wxdragon/
     xrc/
@@ -871,11 +871,11 @@ docs/
 tests/
 ```
 
-`rais-core` has no GUI dependency. `rais-platform` isolates Windows/macOS
-APIs. The `rais` binary crate depends on both and contains:
+`rabbit-core` has no GUI dependency. `rabbit-platform` isolates Windows/macOS
+APIs. The `rabbit` binary crate depends on both and contains:
 
-- `cli/` — the clap-based subcommand parser (former `rais-cli` content).
-- `ui/` — the wxDragon wizard (former `rais-ui-wxdragon` content), behind a
+- `cli/` — the clap-based subcommand parser (former `rabbit-cli` content).
+- `ui/` — the wxDragon wizard (former `rabbit-ui-wxdragon` content), behind a
   `gui` Cargo feature for dev-loop builds that skip native deps.
 - `main.rs` — the argv dispatcher that picks GUI or CLI mode.
 
@@ -899,7 +899,7 @@ Automated tests:
 - release packaging checks for accidental runtime file dependencies
 - GitHub Actions workflow validation for push builds and tagged releases
 - release-manifest generation and checksum publication
-- RAIS self-update version comparison and channel selection
+- RABBIT self-update version comparison and channel selection
 - self-update staging, verification, rollback, and restart handoff logic
 
 Manual accessibility tests:
@@ -927,14 +927,14 @@ Install tests:
 - GitHub Actions push build produces downloadable Windows and macOS artifacts
 - GitHub release workflow publishes release assets, checksums, and update
   metadata
-- launch RAIS from a temporary folder with no neighboring resource files
+- launch RABBIT from a temporary folder with no neighboring resource files
 - existing user key map preserved
 - OSARA key map replacement with backup
 - ReaPack already installed with populated registry
 - existing `reaKontrol/fxMaps` user maps preserved
 - extension installed manually with unknown version
-- RAIS self-update from one released version to the next on Windows
-- RAIS self-update from one released version to the next on macOS
+- RABBIT self-update from one released version to the next on Windows
+- RABBIT self-update from one released version to the next on macOS
 
 ## Open Questions
 
@@ -945,12 +945,12 @@ Install tests:
   mounted DMG copy flow, packaged installer flow, or another vendor-supported
   non-interactive path.
 - Confirm SWS and ReaPack macOS binaries expose reliable version metadata
-  outside ReaPack's registry DB. If not, RAIS receipts and ReaPack DB should be
+  outside ReaPack's registry DB. If not, RABBIT receipts and ReaPack DB should be
   treated as the reliable sources.
 - Confirm whether ReaKontrol release binaries expose reliable version metadata
-  on Windows and macOS. If not, RAIS receipts plus package-file presence should
+  on Windows and macOS. If not, RABBIT receipts plus package-file presence should
   be treated as the reliable sources.
-- Decide whether the RAIS update feed should be a GitHub release asset JSON
+- Decide whether the RABBIT update feed should be a GitHub release asset JSON
   generated by `release.yml`, a repository-hosted appcast/manifest file, or
   both.
 - Validate the exact Windows self-update replacement mechanism for a running
@@ -959,16 +959,16 @@ Install tests:
 - Validate the exact macOS self-update replacement mechanism for a signed and
   notarized app bundle without breaking code signing, quarantine, or app path
   stability.
-- Decide how stable and beta RAIS release channels should be represented in the
+- Decide how stable and beta RABBIT release channels should be represented in the
   GitHub release/update metadata and in the UI.
-- Decide whether first-version RAIS should install SWS directly from SWS
+- Decide whether first-version RABBIT should install SWS directly from SWS
   release assets or through an unattended ReaPack-driven path after ReaPack is
   present. The design target remains unattended either way.
 - Build a small wxDragon proof of concept and test it with NVDA, Narrator, and
   VoiceOver before expanding it into the full wizard.
-- Verify whether wxDragon exposes the wxWidgets accessibility hooks RAIS needs
+- Verify whether wxDragon exposes the wxWidgets accessibility hooks RABBIT needs
   directly. If not, document the smallest upstream contribution or local wrapper
   needed for accessible names, descriptions, roles, and state.
 - Verify wxDragon/wxWidgets release packaging on Windows and macOS can meet the
-  one-download, no-RAIS-installer goal without sacrificing code signing,
+  one-download, no-RABBIT-installer goal without sacrificing code signing,
   notarization, or screen-reader behavior.

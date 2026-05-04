@@ -1,0 +1,19 @@
+[package]
+name = "rabbit-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fluent-bundle.workspace = true
+rabbit-platform = { path = "../rabbit-platform" }
+reqwest.workspace = true
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sysinfo.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+unic-langid.workspace = true
+zip.workspace = true

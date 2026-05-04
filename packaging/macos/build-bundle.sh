@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# Assembles a Rais.app bundle from a built rais binary, then wraps it in a
+# Assembles a Rabbit.app bundle from a built rabbit binary, then wraps it in a
 # zip alongside an "Open Me First.command" helper that clears macOS's
-# first-launch quarantine. RAIS ships unsigned, so the helper is the
+# first-launch quarantine. RABBIT ships unsigned, so the helper is the
 # friction-free path users take in place of right-click → Open or
 # `xattr -dr com.apple.quarantine`.
 #
 # Zip layout (one wrapper folder so both items extract together):
-#   Rais/
-#     Rais.app/Contents/{Info.plist,MacOS/rais,Resources,PkgInfo}
+#   Rabbit/
+#     Rabbit.app/Contents/{Info.plist,MacOS/rabbit,Resources,PkgInfo}
 #     Open Me First.command
 set -euo pipefail
 
 usage() {
 	cat >&2 <<'USAGE'
 Usage: build-bundle.sh --binary <path> --version <x.y.z> --out <dir> --zip-name <name.zip>
-  --binary     Path to the built rais Mach-O executable.
+  --binary     Path to the built rabbit Mach-O executable.
   --version    Version string to embed in CFBundleVersion / CFBundleShortVersionString.
-  --out        Output directory; will be created if missing. Both Rais.app and the zip land here.
-  --zip-name   Filename for the zipped bundle (e.g. rais-0.1.0-macos-aarch64.app.zip).
+  --out        Output directory; will be created if missing. Both Rabbit.app and the zip land here.
+  --zip-name   Filename for the zipped bundle (e.g. rabbit-0.1.0-macos-aarch64.app.zip).
   --adhoc-sign Optionally ad-hoc sign the bundle (codesign -s -). Off by default.
 USAGE
 	exit 64
@@ -57,7 +57,7 @@ if [ ! -f "$INFO_PLIST_TEMPLATE" ]; then
 fi
 
 mkdir -p "$OUT_DIR"
-APP_DIR="$OUT_DIR/Rais.app"
+APP_DIR="$OUT_DIR/Rabbit.app"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
@@ -66,8 +66,8 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 ESCAPED_VERSION="$(printf '%s' "$VERSION" | sed -e 's/[\/&]/\\&/g')"
 sed -e "s/@VERSION@/$ESCAPED_VERSION/g" "$INFO_PLIST_TEMPLATE" > "$APP_DIR/Contents/Info.plist"
 
-cp "$BINARY" "$APP_DIR/Contents/MacOS/rais"
-chmod +x "$APP_DIR/Contents/MacOS/rais"
+cp "$BINARY" "$APP_DIR/Contents/MacOS/rabbit"
+chmod +x "$APP_DIR/Contents/MacOS/rabbit"
 
 # PkgInfo is optional but Launch Services historically reads it. APPL????
 # matches CFBundlePackageType + CFBundleSignature in Info.plist.
@@ -82,30 +82,30 @@ if [ "$ADHOC_SIGN" -eq 1 ]; then
 	codesign --force --deep --sign - "$APP_DIR"
 fi
 
-# Stage Rais.app + the unquarantine helper under a single wrapper folder so
+# Stage Rabbit.app + the unquarantine helper under a single wrapper folder so
 # both extract together when the user double-clicks the zip.
 STAGE_DIR="$OUT_DIR/.bundle-stage"
-WRAPPER_NAME="Rais"
+WRAPPER_NAME="Rabbit"
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR/$WRAPPER_NAME"
-mv "$APP_DIR" "$STAGE_DIR/$WRAPPER_NAME/Rais.app"
-APP_DIR="$STAGE_DIR/$WRAPPER_NAME/Rais.app"
+mv "$APP_DIR" "$STAGE_DIR/$WRAPPER_NAME/Rabbit.app"
+APP_DIR="$STAGE_DIR/$WRAPPER_NAME/Rabbit.app"
 
 cat > "$STAGE_DIR/$WRAPPER_NAME/Open Me First.command" <<'HELPER'
 #!/bin/bash
-# RAIS ships unsigned (no Apple Developer Program enrollment). Running this
-# helper once clears macOS's first-launch quarantine on Rais.app so it
+# RABBIT ships unsigned (no Apple Developer Program enrollment). Running this
+# helper once clears macOS's first-launch quarantine on Rabbit.app so it
 # launches normally from Finder. Future self-updates inherit the trust.
 DIR="$(cd "$(dirname "$0")" && pwd)"
-TARGET="$DIR/Rais.app"
+TARGET="$DIR/Rabbit.app"
 if [ ! -d "$TARGET" ]; then
-	echo "Rais.app was not found next to this helper."
+	echo "Rabbit.app was not found next to this helper."
 	echo "Make sure both items extracted into the same folder, then run this again."
 	exit 1
 fi
 xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
-echo "Rais.app is now trusted."
-echo "You can close this window and double-click Rais.app to launch RAIS."
+echo "Rabbit.app is now trusted."
+echo "You can close this window and double-click Rabbit.app to launch RABBIT."
 HELPER
 chmod +x "$STAGE_DIR/$WRAPPER_NAME/Open Me First.command"
 
@@ -113,7 +113,7 @@ ZIP_PATH="$OUT_DIR/$ZIP_NAME"
 rm -f "$ZIP_PATH"
 # `ditto -c -k --keepParent` preserves the executable bit and resource forks
 # (plain `zip` does not, which would produce a broken .app on extract). The
-# wrapper folder keeps Rais.app + the helper grouped after extraction.
+# wrapper folder keeps Rabbit.app + the helper grouped after extraction.
 ditto -c -k --keepParent "$STAGE_DIR/$WRAPPER_NAME" "$ZIP_PATH"
 
 shasum -a 256 "$ZIP_PATH" | awk -v name="$ZIP_NAME" '{print tolower($1) "  " name}' > "$ZIP_PATH.sha256"

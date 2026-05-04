@@ -1,0 +1,17 @@
+[package]
+name = "rabbit-ui-wxdragon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+gui = ["dep:wxdragon"]
+
+[dependencies]
+rabbit-core = { path = "../rabbit-core" }
+serde.workspace = true
+wxdragon = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

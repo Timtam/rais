@@ -1,0 +1,20 @@
+[package]
+name = "rabbit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+gui = ["rabbit-ui-wxdragon/gui"]
+
+[dependencies]
+rabbit-cli = { path = "../rabbit-cli" }
+rabbit-ui-wxdragon = { path = "../rabbit-ui-wxdragon" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+] }

@@ -41,14 +41,14 @@ if ($Release) {
     $ProfileName = "release"
 }
 
-& cargo build -p rais --features gui @ProfileArgs
+& cargo build -p rabbit --features gui @ProfileArgs
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$SourceExe = Join-Path $RepoRoot "target\$ProfileName\rais.exe"
+$SourceExe = Join-Path $RepoRoot "target\$ProfileName\rabbit.exe"
 if (-not (Test-Path -LiteralPath $SourceExe)) {
-    throw "Expected RAIS executable was not produced: $SourceExe"
+    throw "Expected RABBIT executable was not produced: $SourceExe"
 }
 
 if ([System.IO.Path]::IsPathRooted($OutDir)) {
@@ -59,12 +59,12 @@ if ([System.IO.Path]::IsPathRooted($OutDir)) {
 
 New-Item -ItemType Directory -Force -Path $ResolvedOutDir | Out-Null
 
-$TargetExe = Join-Path $ResolvedOutDir "RAIS-wxdragon-test.exe"
+$TargetExe = Join-Path $ResolvedOutDir "RABBIT-wxdragon-test.exe"
 Copy-Item -LiteralPath $SourceExe -Destination $TargetExe -Force
 
 $SourcePdb = [System.IO.Path]::ChangeExtension($SourceExe, ".pdb")
 if (Test-Path -LiteralPath $SourcePdb) {
-    Copy-Item -LiteralPath $SourcePdb -Destination (Join-Path $ResolvedOutDir "RAIS-wxdragon-test.pdb") -Force
+    Copy-Item -LiteralPath $SourcePdb -Destination (Join-Path $ResolvedOutDir "RABBIT-wxdragon-test.pdb") -Force
 }
 
 Write-Host "wxDragon test executable: $TargetExe"

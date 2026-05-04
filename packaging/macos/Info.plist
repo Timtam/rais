@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>RAIS</string>
+	<string>RABBIT</string>
 	<key>CFBundleExecutable</key>
-	<string>rais</string>
+	<string>rabbit</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.github.timtam.rais</string>
+	<string>io.github.timtam.rabbit</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>RAIS</string>
+	<string>RABBIT</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -29,7 +29,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>RAIS — REAPER Accessibility Installation Software. Licensed under MIT OR Apache-2.0.</string>
+	<string>RABBIT — REAPER Accessibility Bootstrap & Bundle Installation Tool. Licensed under MIT OR Apache-2.0.</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
 </dict>

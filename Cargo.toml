@@ -1,10 +1,10 @@
 [workspace]
 members = [
-    "crates/rais",
-    "crates/rais-cli",
-    "crates/rais-core",
-    "crates/rais-platform",
-    "crates/rais-ui-wxdragon",
+    "crates/rabbit",
+    "crates/rabbit-cli",
+    "crates/rabbit-core",
+    "crates/rabbit-platform",
+    "crates/rabbit-ui-wxdragon",
 ]
 resolver = "3"
 
