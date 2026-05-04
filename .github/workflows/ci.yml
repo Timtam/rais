@@ -50,7 +50,13 @@ jobs:
           - os: windows-latest
             platform_id: windows
             extension: ".exe"
+          - os: windows-11-arm
+            platform_id: windows
+            extension: ".exe"
           - os: macos-latest
+            platform_id: macos
+            extension: ""
+          - os: macos-13
             platform_id: macos
             extension: ""
 
