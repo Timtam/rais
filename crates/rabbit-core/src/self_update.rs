@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -9,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::Result;
 use crate::error::{IoPathContext, RabbitError};
 use crate::hash::sha256_file;
-use crate::model::Platform;
+use crate::model::{Architecture, Platform};
 use crate::signature::{SignatureVerdict, verify_executable_signature};
 use crate::version::Version;
 
@@ -36,8 +37,20 @@ pub struct SelfUpdateManifest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelfUpdateAssets {
+    /// Legacy single-arch slot kept for backward compatibility with RABBIT
+    /// releases that predate the per-arch schema. New publishers should
+    /// continue to populate this with the primary-arch asset (x86_64 on
+    /// Windows) so old clients keep working.
     pub windows: Option<SelfUpdateAsset>,
+    /// Legacy single-arch slot, mirrors `windows`. Primary arch on macOS
+    /// is aarch64 (Apple Silicon).
     pub macos: Option<SelfUpdateAsset>,
+    /// Authoritative per-arch table when present. Keys are
+    /// `<platform>-<arch>` (e.g. `windows-x86_64`, `macos-aarch64`); the
+    /// arch tokens match `Architecture::release_artifact_token()`. New
+    /// clients prefer this over the legacy fields; old clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platforms: Option<BTreeMap<String, SelfUpdateAsset>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +142,8 @@ struct RawSelfUpdateManifest {
 struct RawSelfUpdateAssets {
     windows: Option<RawSelfUpdateAsset>,
     macos: Option<RawSelfUpdateAsset>,
+    #[serde(default)]
+    platforms: Option<BTreeMap<String, RawSelfUpdateAsset>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,6 +218,21 @@ pub fn parse_self_update_manifest(body: &str, manifest_url: &str) -> Result<Self
             parse_semantic_version(value, manifest_url, "minimum_supported_previous_version")
         })
         .transpose()?;
+    let platforms = raw
+        .assets
+        .platforms
+        .as_ref()
+        .map(|raw_platforms| {
+            raw_platforms
+                .iter()
+                .map(|(key, asset)| {
+                    validate_platform_key(key, manifest_url)?;
+                    let parsed = parse_asset(asset, manifest_url, key)?;
+                    Ok::<_, RabbitError>((key.clone(), parsed))
+                })
+                .collect::<Result<BTreeMap<_, _>>>()
+        })
+        .transpose()?;
     let assets = SelfUpdateAssets {
         windows: raw
             .assets
@@ -216,6 +246,7 @@ pub fn parse_self_update_manifest(body: &str, manifest_url: &str) -> Result<Self
             .as_ref()
             .map(|asset| parse_asset(asset, manifest_url, "macos"))
             .transpose()?,
+        platforms,
     };
 
     Ok(SelfUpdateManifest {
@@ -230,7 +261,13 @@ pub fn parse_self_update_manifest(body: &str, manifest_url: &str) -> Result<Self
 
 pub fn check_self_update(platform: Platform, manifest_url: &str) -> Result<SelfUpdateCheckReport> {
     let manifest = fetch_self_update_manifest(manifest_url)?;
-    evaluate_self_update_report(platform, manifest_url, current_rabbit_version()?, &manifest)
+    evaluate_self_update_report(
+        platform,
+        Architecture::current(),
+        manifest_url,
+        current_rabbit_version()?,
+        &manifest,
+    )
 }
 
 pub fn stage_self_update(
@@ -482,6 +519,7 @@ fn backup_path_for(install_path: &Path) -> PathBuf {
 
 fn evaluate_self_update_report(
     platform: Platform,
+    architecture: Architecture,
     manifest_url: &str,
     current_version: Version,
     manifest: &SelfUpdateManifest,
@@ -513,7 +551,7 @@ fn evaluate_self_update_report(
         minimum_supported_previous_version,
         update_available: latest_semver > current_semver,
         requires_manual_transition,
-        asset: select_asset_for_platform(platform, manifest, manifest_url)?,
+        asset: select_asset_for_platform(platform, architecture, manifest, manifest_url)?,
     })
 }
 
@@ -607,9 +645,45 @@ fn stage_self_update_from_report(
 
 fn select_asset_for_platform(
     platform: Platform,
+    architecture: Architecture,
     manifest: &SelfUpdateManifest,
     manifest_url: &str,
 ) -> Result<SelfUpdateAssetSelection> {
+    // Prefer the per-arch `platforms` table when the manifest carries one.
+    // Its presence means the publisher has explicitly enumerated which
+    // (platform, arch) combinations are supported, so a missing entry is
+    // an authoritative "no asset for this arch" rather than a reason to
+    // fall back to a possibly-wrong-arch legacy field.
+    if let Some(platforms) = &manifest.assets.platforms {
+        let arch_token =
+            architecture
+                .release_artifact_token()
+                .ok_or_else(|| RabbitError::RemoteData {
+                    url: manifest_url.to_string(),
+                    message: format!(
+                        "no manifest asset for {platform:?} on architecture {architecture:?}: \
+                     architecture is not produced by the RABBIT release pipeline."
+                    ),
+                })?;
+        let key = format!("{}-{}", platform_token(platform), arch_token);
+        let asset = platforms.get(&key).ok_or_else(|| RabbitError::RemoteData {
+            url: manifest_url.to_string(),
+            message: format!(
+                "manifest does not list a {key} asset; \
+                 download the matching build from the GitHub releases page manually."
+            ),
+        })?;
+        return Ok(SelfUpdateAssetSelection {
+            platform,
+            url: asset.url.clone(),
+            sha256: asset.sha256.clone(),
+        });
+    }
+
+    // Legacy schema fallback: platform-level slot only, arch implicit. The
+    // safety net below catches the case where a RABBIT instance running on
+    // a non-default arch (Windows ARM, Intel Mac) would otherwise overwrite
+    // its native binary with one for the wrong CPU.
     let asset = match platform {
         Platform::Windows => manifest.assets.windows.as_ref(),
         Platform::MacOs => manifest.assets.macos.as_ref(),
@@ -619,11 +693,70 @@ fn select_asset_for_platform(
         message: format!("missing asset entry for platform {platform:?}"),
     })?;
 
+    if let (Some(expected), Some(actual)) = (
+        architecture.release_artifact_token(),
+        arch_token_from_asset_url(&asset.url),
+    ) && expected != actual
+    {
+        return Err(RabbitError::RemoteData {
+            url: manifest_url.to_string(),
+            message: format!(
+                "self-update asset is built for {actual} but RABBIT is running on {expected}; \
+                 refusing to overwrite this binary with one for the wrong architecture. \
+                 Download the matching build from the GitHub releases page manually."
+            ),
+        });
+    }
+
     Ok(SelfUpdateAssetSelection {
         platform,
         url: asset.url.clone(),
         sha256: asset.sha256.clone(),
     })
+}
+
+fn platform_token(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Windows => "windows",
+        Platform::MacOs => "macos",
+    }
+}
+
+/// Validates that a `platforms` map key has the canonical `<os>-<arch>`
+/// shape with a known platform token and a release-pipeline arch token.
+/// Unknown shapes are rejected at parse time so downstream lookup logic
+/// can stay simple.
+fn validate_platform_key(key: &str, manifest_url: &str) -> Result<()> {
+    let (os, arch) = key.split_once('-').ok_or_else(|| RabbitError::RemoteData {
+        url: manifest_url.to_string(),
+        message: format!("manifest platforms key '{key}' must be '<os>-<arch>'"),
+    })?;
+    let os_ok = matches!(os, "windows" | "macos");
+    let arch_ok = matches!(arch, "x86_64" | "aarch64" | "i686" | "armv7");
+    if !os_ok || !arch_ok {
+        return Err(RabbitError::RemoteData {
+            url: manifest_url.to_string(),
+            message: format!(
+                "manifest platforms key '{key}' uses an unrecognised os or arch token"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Extracts the trailing arch token from a release artifact URL whose filename
+/// follows the canonical `rabbit-<version>-<os>-<arch>[.exe]` pattern. Returns
+/// `None` for any other shape — non-conforming filenames simply skip the
+/// arch-mismatch check rather than tripping false positives.
+fn arch_token_from_asset_url(url: &str) -> Option<&str> {
+    let basename = url.rsplit_once('/').map(|(_, name)| name).unwrap_or(url);
+    let stem = basename.strip_suffix(".exe").unwrap_or(basename);
+    let rest = stem.strip_prefix("rabbit-")?;
+    let (_, arch) = rest.rsplit_once('-')?;
+    match arch {
+        "x86_64" | "aarch64" | "i686" | "armv7" => Some(arch),
+        _ => None,
+    }
 }
 
 fn parse_asset(
@@ -800,12 +933,13 @@ mod tests {
 
     use super::{
         ApplySelfUpdateOptions, SelfUpdateAssetSelection, SelfUpdateCheckReport,
-        SelfUpdateManifest, SelfUpdateStageReport, apply_self_update, current_rabbit_version,
-        evaluate_self_update_report, parse_self_update_manifest, stage_self_update_from_report,
+        SelfUpdateManifest, SelfUpdateStageReport, apply_self_update, arch_token_from_asset_url,
+        current_rabbit_version, evaluate_self_update_report, parse_self_update_manifest,
+        stage_self_update_from_report,
     };
     use crate::RabbitError;
     use crate::hash::sha256_file;
-    use crate::model::Platform;
+    use crate::model::{Architecture, Platform};
     use crate::version::Version;
 
     const MANIFEST_URL: &str = "https://example.test/rabbit-update-stable.json";
@@ -894,6 +1028,7 @@ mod tests {
 
         let report = evaluate_self_update_report(
             Platform::Windows,
+            Architecture::X64,
             MANIFEST_URL,
             Version::parse("0.1.0").unwrap(),
             &manifest,
@@ -912,6 +1047,7 @@ mod tests {
 
         let report = evaluate_self_update_report(
             Platform::Windows,
+            Architecture::X64,
             MANIFEST_URL,
             Version::parse("0.0.9").unwrap(),
             &manifest,
@@ -920,6 +1056,212 @@ mod tests {
 
         assert!(report.update_available);
         assert!(report.requires_manual_transition);
+    }
+
+    #[test]
+    fn arch_token_parser_extracts_known_archs() {
+        assert_eq!(
+            arch_token_from_asset_url("https://example.test/rabbit-0.2.0-windows-x86_64.exe"),
+            Some("x86_64")
+        );
+        assert_eq!(
+            arch_token_from_asset_url("https://example.test/rabbit-0.2.0-macos-aarch64"),
+            Some("aarch64")
+        );
+        // Non-conforming filenames produce None so the safety net stays
+        // off rather than tripping false positives on legacy / synthetic URLs.
+        assert_eq!(
+            arch_token_from_asset_url("https://example.test/RABBIT-windows.zip"),
+            None
+        );
+        assert_eq!(
+            arch_token_from_asset_url("https://example.test/rabbit-0.2.0-linux-riscv64"),
+            None
+        );
+    }
+
+    #[test]
+    fn refuses_self_update_when_asset_arch_mismatches_runtime() {
+        let manifest = parse_self_update_manifest(
+            r#"{
+              "version": "0.2.0",
+              "channel": "stable",
+              "published_at": "2026-04-25T00:00:00Z",
+              "assets": {
+                "windows": {
+                  "url": "https://example.test/rabbit-0.2.0-windows-x86_64.exe",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                }
+              }
+            }"#,
+            MANIFEST_URL,
+        )
+        .unwrap();
+
+        let error = evaluate_self_update_report(
+            Platform::Windows,
+            Architecture::Arm64,
+            MANIFEST_URL,
+            Version::parse("0.1.0").unwrap(),
+            &manifest,
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("x86_64"), "message was: {message}");
+        assert!(message.contains("aarch64"), "message was: {message}");
+    }
+
+    #[test]
+    fn allows_self_update_when_asset_arch_matches_runtime() {
+        let manifest = parse_self_update_manifest(
+            r#"{
+              "version": "0.2.0",
+              "channel": "stable",
+              "published_at": "2026-04-25T00:00:00Z",
+              "assets": {
+                "macos": {
+                  "url": "https://example.test/rabbit-0.2.0-macos-aarch64",
+                  "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+                }
+              }
+            }"#,
+            MANIFEST_URL,
+        )
+        .unwrap();
+
+        let report = evaluate_self_update_report(
+            Platform::MacOs,
+            Architecture::Arm64,
+            MANIFEST_URL,
+            Version::parse("0.1.0").unwrap(),
+            &manifest,
+        )
+        .unwrap();
+
+        assert!(report.update_available);
+        assert!(report.asset.url.ends_with("rabbit-0.2.0-macos-aarch64"));
+    }
+
+    #[test]
+    fn per_arch_platforms_table_is_authoritative_when_present() {
+        let manifest = parse_self_update_manifest(
+            r#"{
+              "version": "0.2.0",
+              "channel": "stable",
+              "published_at": "2026-04-25T00:00:00Z",
+              "assets": {
+                "windows": {
+                  "url": "https://example.test/rabbit-0.2.0-windows-x86_64.exe",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                },
+                "macos": {
+                  "url": "https://example.test/rabbit-0.2.0-macos-aarch64",
+                  "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+                },
+                "platforms": {
+                  "windows-x86_64": {
+                    "url": "https://example.test/rabbit-0.2.0-windows-x86_64.exe",
+                    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                  },
+                  "windows-aarch64": {
+                    "url": "https://example.test/rabbit-0.2.0-windows-aarch64.exe",
+                    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                  },
+                  "macos-aarch64": {
+                    "url": "https://example.test/rabbit-0.2.0-macos-aarch64",
+                    "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+                  },
+                  "macos-x86_64": {
+                    "url": "https://example.test/rabbit-0.2.0-macos-x86_64",
+                    "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                  }
+                }
+              }
+            }"#,
+            MANIFEST_URL,
+        )
+        .unwrap();
+
+        // Windows ARM picks the per-arch entry, NOT the legacy x86_64 slot.
+        let windows_arm = evaluate_self_update_report(
+            Platform::Windows,
+            Architecture::Arm64,
+            MANIFEST_URL,
+            Version::parse("0.1.0").unwrap(),
+            &manifest,
+        )
+        .unwrap();
+        assert!(windows_arm.asset.url.ends_with("windows-aarch64.exe"));
+
+        // Intel Mac picks its per-arch entry — under the old schema this
+        // would have errored out due to the arch-mismatch safety net.
+        let macos_intel = evaluate_self_update_report(
+            Platform::MacOs,
+            Architecture::X64,
+            MANIFEST_URL,
+            Version::parse("0.1.0").unwrap(),
+            &manifest,
+        )
+        .unwrap();
+        assert!(macos_intel.asset.url.ends_with("macos-x86_64"));
+    }
+
+    #[test]
+    fn per_arch_platforms_table_errors_for_missing_arch() {
+        let manifest = parse_self_update_manifest(
+            r#"{
+              "version": "0.2.0",
+              "channel": "stable",
+              "published_at": "2026-04-25T00:00:00Z",
+              "assets": {
+                "windows": {
+                  "url": "https://example.test/rabbit-0.2.0-windows-x86_64.exe",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                },
+                "platforms": {
+                  "windows-x86_64": {
+                    "url": "https://example.test/rabbit-0.2.0-windows-x86_64.exe",
+                    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                  }
+                }
+              }
+            }"#,
+            MANIFEST_URL,
+        )
+        .unwrap();
+
+        let error = evaluate_self_update_report(
+            Platform::Windows,
+            Architecture::Arm64,
+            MANIFEST_URL,
+            Version::parse("0.1.0").unwrap(),
+            &manifest,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("windows-aarch64"));
+    }
+
+    #[test]
+    fn rejects_manifest_with_unknown_platforms_key() {
+        let error = parse_self_update_manifest(
+            r#"{
+              "version": "0.2.0",
+              "channel": "stable",
+              "published_at": "2026-04-25T00:00:00Z",
+              "assets": {
+                "platforms": {
+                  "linux-x86_64": {
+                    "url": "https://example.test/rabbit-0.2.0-linux-x86_64",
+                    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                  }
+                }
+              }
+            }"#,
+            MANIFEST_URL,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unrecognised"));
     }
 
     #[test]

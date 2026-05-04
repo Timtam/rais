@@ -241,40 +241,55 @@ jobs:
         run: |
           VERSION="${TAG_NAME#v}"
           PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          # The self-update manifest currently points at a single asset per
-          # platform, so pick the arch that covers the majority of users:
-          # x86_64 on Windows, aarch64 (Apple Silicon) on macOS. Users on
-          # Windows ARM or Intel Mac still get release-page downloads, but
-          # in-app self-update on those targets is not yet wired up — the
-          # manifest schema in rabbit-core/self_update.rs would need a
-          # per-arch field for that.
-          WINDOWS_PATH="$(find release -maxdepth 1 -type f -name 'rabbit-*-windows-x86_64.exe' ! -name '*.sha256' | head -1)"
-          # Bare-binary macOS asset is what the self-updater downloads
-          # (it copies bytes straight over the install target — no zip
-          # extraction). The Rabbit.app.zip ships alongside for Finder
-          # launches and is excluded here.
-          MACOS_PATH="$(find release -maxdepth 1 -type f -name 'rabbit-*-macos-aarch64' ! -name '*.sha256' ! -name '*.zip' | head -1)"
-          if [ -z "$WINDOWS_PATH" ] || [ -z "$MACOS_PATH" ]; then
-            echo "expected per-platform artifacts under release/ but found:" >&2
+          RELEASE_NOTES_URL="https://github.com/${REPOSITORY}/releases/tag/${TAG_NAME}"
+          DOWNLOAD_PREFIX="https://github.com/${REPOSITORY}/releases/download/${TAG_NAME}"
+
+          # Build the per-arch `platforms` map by scanning every bare-binary
+          # asset in release/. The bare binary is what the self-updater
+          # downloads (it copies bytes straight over the install target —
+          # no zip extraction). Rabbit.app.zip bundles ship alongside for
+          # Finder launches but are not self-update assets.
+          #
+          # The legacy top-level `windows` / `macos` fields are populated
+          # from the primary-arch entries (x86_64 on Windows, aarch64 on
+          # macOS) so RABBIT clients predating the per-arch schema keep
+          # auto-updating. New clients prefer `platforms` and ignore the
+          # legacy fields.
+          PLATFORMS_JSON='{}'
+          add_platform() {
+            local key="$1" path="$2"
+            if [ -z "$path" ]; then
+              return 0
+            fi
+            local name sha url
+            name="$(basename "$path")"
+            sha="$(awk '{print $1}' "${path}.sha256")"
+            url="${DOWNLOAD_PREFIX}/${name}"
+            PLATFORMS_JSON="$(printf '%s' "$PLATFORMS_JSON" | jq \
+              --arg key "$key" --arg url "$url" --arg sha "$sha" \
+              '. + {($key): {url: $url, sha256: $sha}}')"
+          }
+          add_platform "windows-x86_64"  "$(find release -maxdepth 1 -type f -name 'rabbit-*-windows-x86_64.exe'  ! -name '*.sha256' | head -1)"
+          add_platform "windows-aarch64" "$(find release -maxdepth 1 -type f -name 'rabbit-*-windows-aarch64.exe' ! -name '*.sha256' | head -1)"
+          add_platform "macos-aarch64"   "$(find release -maxdepth 1 -type f -name 'rabbit-*-macos-aarch64'       ! -name '*.sha256' ! -name '*.zip' | head -1)"
+          add_platform "macos-x86_64"    "$(find release -maxdepth 1 -type f -name 'rabbit-*-macos-x86_64'        ! -name '*.sha256' ! -name '*.zip' | head -1)"
+
+          WINDOWS_LEGACY="$(printf '%s' "$PLATFORMS_JSON" | jq '."windows-x86_64" // empty')"
+          MACOS_LEGACY="$(printf '%s' "$PLATFORMS_JSON" | jq '."macos-aarch64" // empty')"
+          if [ -z "$WINDOWS_LEGACY" ] || [ -z "$MACOS_LEGACY" ]; then
+            echo "expected primary-arch per-platform artifacts under release/ but found:" >&2
             ls release/ >&2
             exit 1
           fi
-          WINDOWS_NAME="$(basename "$WINDOWS_PATH")"
-          MACOS_NAME="$(basename "$MACOS_PATH")"
-          WINDOWS_SHA="$(awk '{print $1}' "${WINDOWS_PATH}.sha256")"
-          MACOS_SHA="$(awk '{print $1}' "${MACOS_PATH}.sha256")"
-          RELEASE_NOTES_URL="https://github.com/${REPOSITORY}/releases/tag/${TAG_NAME}"
-          WINDOWS_URL="https://github.com/${REPOSITORY}/releases/download/${TAG_NAME}/${WINDOWS_NAME}"
-          MACOS_URL="https://github.com/${REPOSITORY}/releases/download/${TAG_NAME}/${MACOS_NAME}"
+
           jq -n \
             --arg version "$VERSION" \
             --arg channel "stable" \
             --arg published_at "$PUBLISHED_AT" \
             --arg release_notes_url "$RELEASE_NOTES_URL" \
-            --arg windows_url "$WINDOWS_URL" \
-            --arg windows_sha "$WINDOWS_SHA" \
-            --arg macos_url "$MACOS_URL" \
-            --arg macos_sha "$MACOS_SHA" \
+            --argjson windows "$WINDOWS_LEGACY" \
+            --argjson macos "$MACOS_LEGACY" \
+            --argjson platforms "$PLATFORMS_JSON" \
             '{
               version: $version,
               channel: $channel,
@@ -282,14 +297,9 @@ jobs:
               release_notes_url: $release_notes_url,
               minimum_supported_previous_version: null,
               assets: {
-                windows: {
-                  url: $windows_url,
-                  sha256: $windows_sha
-                },
-                macos: {
-                  url: $macos_url,
-                  sha256: $macos_sha
-                }
+                windows: $windows,
+                macos: $macos,
+                platforms: $platforms
               }
             }' > release/rabbit-update-stable.json
 

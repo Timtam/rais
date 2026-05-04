@@ -53,6 +53,18 @@ impl Architecture {
             Self::Unknown
         }
     }
+
+    /// Token used in release artifact filenames (`rabbit-<version>-<os>-<arch>[.exe]`).
+    /// Returns `None` for variants that the release pipeline does not produce, so
+    /// callers can safely skip arch-mismatch checks against unknown / synthetic builds.
+    pub fn release_artifact_token(self) -> Option<&'static str> {
+        match self {
+            Self::X86 => Some("i686"),
+            Self::X64 => Some("x86_64"),
+            Self::Arm64 => Some("aarch64"),
+            Self::Arm64Ec | Self::Universal | Self::Unknown => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
