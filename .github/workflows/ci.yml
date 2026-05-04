@@ -56,9 +56,6 @@ jobs:
           - os: macos-latest
             platform_id: macos
             extension: ""
-          - os: macos-13
-            platform_id: macos
-            extension: ""
 
     steps:
       - name: Checkout
@@ -104,16 +101,14 @@ jobs:
           brew install llvm ninja
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
           echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+          # GitHub-hosted Intel mac runners (macos-13) have very limited
+          # capacity and queue for hours, so we cross-build x86_64 from the
+          # Apple Silicon runner instead of using a separate matrix entry.
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-      - name: Build release rabbit binary with GUI feature
-        run: cargo build --release -p rabbit --features gui
-
-      - name: Resolve artifact name
+      - name: Resolve version
         shell: bash
         env:
-          PLATFORM_ID: ${{ matrix.platform_id }}
-          RUNNER_ARCH: ${{ runner.arch }}
-          EXTENSION: ${{ matrix.extension }}
           GITHUB_SHA: ${{ github.sha }}
         run: |
           # CI artifacts embed the workspace version + a short git sha so
@@ -122,16 +117,26 @@ jobs:
           # filename pattern for snapshots and stable downloads.
           BASE_VERSION="$(awk -F'\"' '/^version *= *\"/{print $2; exit}' Cargo.toml)"
           SHORT_SHA="${GITHUB_SHA:0:7}"
-          VERSION="${BASE_VERSION}-${SHORT_SHA}"
+          echo "RABBIT_VERSION=${BASE_VERSION}-${SHORT_SHA}" >> "$GITHUB_ENV"
+
+      - name: Build Windows release rabbit binary with GUI feature
+        if: matrix.platform_id == 'windows'
+        run: cargo build --release -p rabbit --features gui
+
+      - name: Resolve Windows artifact name
+        if: matrix.platform_id == 'windows'
+        shell: bash
+        env:
+          PLATFORM_ID: ${{ matrix.platform_id }}
+          RUNNER_ARCH: ${{ runner.arch }}
+          EXTENSION: ${{ matrix.extension }}
+        run: |
           case "$RUNNER_ARCH" in
             X64) ARCH="x86_64" ;;
             ARM64) ARCH="aarch64" ;;
-            X86) ARCH="i686" ;;
-            ARM) ARCH="armv7" ;;
-            *) echo "unsupported runner arch: $RUNNER_ARCH" >&2; exit 1 ;;
+            *) echo "unsupported windows runner arch: $RUNNER_ARCH" >&2; exit 1 ;;
           esac
-          ARTIFACT_NAME="rabbit-${VERSION}-${PLATFORM_ID}-${ARCH}${EXTENSION}"
-          echo "RABBIT_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          ARTIFACT_NAME="rabbit-${RABBIT_VERSION}-${PLATFORM_ID}-${ARCH}${EXTENSION}"
           echo "RABBIT_ARCH=${ARCH}" >> "$GITHUB_ENV"
           echo "RABBIT_ARTIFACT_NAME=${ARTIFACT_NAME}" >> "$GITHUB_ENV"
 
@@ -144,33 +149,35 @@ jobs:
           $Hash = (Get-FileHash "dist\$env:RABBIT_ARTIFACT_NAME" -Algorithm SHA256).Hash.ToLowerInvariant()
           "{0}  {1}" -f $Hash, $env:RABBIT_ARTIFACT_NAME | Set-Content "dist\$env:RABBIT_ARTIFACT_NAME.sha256"
 
-      - name: Stage macOS artifact
+      - name: Build & stage macOS artifacts (both arches)
         if: matrix.platform_id == 'macos'
         shell: bash
         run: |
+          # Build aarch64 (native) and x86_64 (cross) in one job. Apple
+          # Silicon runners have both SDKs via Xcode; the `cmake` Rust crate
+          # propagates Cargo's target arch into CMAKE_OSX_ARCHITECTURES, so
+          # wxdragon's C++ wrapper builds for the right arch automatically.
           mkdir -p dist
-          cp target/release/rabbit "dist/${RABBIT_ARTIFACT_NAME}"
-          chmod +x "dist/${RABBIT_ARTIFACT_NAME}"
-          shasum -a 256 "dist/${RABBIT_ARTIFACT_NAME}" | awk -v name="${RABBIT_ARTIFACT_NAME}" '{print tolower($1) "  " name}' > "dist/${RABBIT_ARTIFACT_NAME}.sha256"
-
-      - name: Build macOS .app bundle
-        if: matrix.platform_id == 'macos'
-        shell: bash
-        env:
-          RABBIT_BUNDLE_ZIP: ${{ env.RABBIT_ARTIFACT_NAME }}.app.zip
-        run: |
-          # Snapshot bundle for Finder launches. The bare binary above is
-          # still the self-update asset; this zip is the double-clickable
-          # alternative. Ad-hoc signing keeps Apple Silicon Macs from
-          # flagging the download as "damaged" — Developer ID signing only
-          # happens in release.yml when secrets are configured.
-          bash packaging/macos/build-bundle.sh \
-            --binary "target/release/rabbit" \
-            --version "${RABBIT_VERSION}" \
-            --out "dist" \
-            --zip-name "${RABBIT_BUNDLE_ZIP}" \
-            --adhoc-sign
-          echo "RABBIT_BUNDLE_ZIP=${RABBIT_BUNDLE_ZIP}" >> "$GITHUB_ENV"
+          for PAIR in "aarch64:aarch64-apple-darwin" "x86_64:x86_64-apple-darwin"; do
+            ARCH="${PAIR%%:*}"
+            TARGET="${PAIR##*:}"
+            cargo build --release --target "$TARGET" -p rabbit --features gui
+            ARTIFACT="rabbit-${RABBIT_VERSION}-macos-${ARCH}"
+            cp "target/${TARGET}/release/rabbit" "dist/${ARTIFACT}"
+            chmod +x "dist/${ARTIFACT}"
+            shasum -a 256 "dist/${ARTIFACT}" | awk -v name="${ARTIFACT}" '{print tolower($1) "  " name}' > "dist/${ARTIFACT}.sha256"
+            # Snapshot bundle for Finder launches. The bare binary is still
+            # the self-update asset; this zip is the double-clickable
+            # alternative. Ad-hoc signing keeps Apple Silicon Macs from
+            # flagging the download as "damaged" — Developer ID signing
+            # only happens in release.yml when secrets are configured.
+            bash packaging/macos/build-bundle.sh \
+              --binary "target/${TARGET}/release/rabbit" \
+              --version "${RABBIT_VERSION}" \
+              --out "dist" \
+              --zip-name "${ARTIFACT}.app.zip" \
+              --adhoc-sign
+          done
 
       - name: Upload Windows artifact
         if: matrix.platform_id == 'windows'
@@ -182,14 +189,11 @@ jobs:
             dist/${{ env.RABBIT_ARTIFACT_NAME }}.sha256
           if-no-files-found: error
 
-      - name: Upload macOS artifact
+      - name: Upload macOS artifacts (both arches)
         if: matrix.platform_id == 'macos'
         uses: actions/upload-artifact@v4
         with:
-          name: rabbit-${{ matrix.platform_id }}-${{ env.RABBIT_ARCH }}
+          name: rabbit-macos
           path: |
-            dist/${{ env.RABBIT_ARTIFACT_NAME }}
-            dist/${{ env.RABBIT_ARTIFACT_NAME }}.sha256
-            dist/${{ env.RABBIT_BUNDLE_ZIP }}
-            dist/${{ env.RABBIT_BUNDLE_ZIP }}.sha256
+            dist/rabbit-*-macos-*
           if-no-files-found: error
