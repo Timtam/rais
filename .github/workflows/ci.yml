@@ -129,11 +129,43 @@ jobs:
           chmod +x "dist/${RAIS_ARTIFACT_NAME}"
           shasum -a 256 "dist/${RAIS_ARTIFACT_NAME}" | awk -v name="${RAIS_ARTIFACT_NAME}" '{print tolower($1) "  " name}' > "dist/${RAIS_ARTIFACT_NAME}.sha256"
 
-      - name: Upload single-file artifact
+      - name: Build macOS .app bundle
+        if: matrix.platform_id == 'macos'
+        shell: bash
+        env:
+          RAIS_BUNDLE_ZIP: ${{ env.RAIS_ARTIFACT_NAME }}.app.zip
+        run: |
+          # Snapshot bundle for Finder launches. The bare binary above is
+          # still the self-update asset; this zip is the double-clickable
+          # alternative. Ad-hoc signing keeps Apple Silicon Macs from
+          # flagging the download as "damaged" — Developer ID signing only
+          # happens in release.yml when secrets are configured.
+          bash packaging/macos/build-bundle.sh \
+            --binary "target/release/rais" \
+            --version "${RAIS_VERSION}" \
+            --out "dist" \
+            --zip-name "${RAIS_BUNDLE_ZIP}" \
+            --adhoc-sign
+          echo "RAIS_BUNDLE_ZIP=${RAIS_BUNDLE_ZIP}" >> "$GITHUB_ENV"
+
+      - name: Upload Windows artifact
+        if: matrix.platform_id == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: rais-${{ matrix.platform_id }}-${{ env.RAIS_ARCH }}
           path: |
             dist/${{ env.RAIS_ARTIFACT_NAME }}
             dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256
+          if-no-files-found: error
+
+      - name: Upload macOS artifact
+        if: matrix.platform_id == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rais-${{ matrix.platform_id }}-${{ env.RAIS_ARCH }}
+          path: |
+            dist/${{ env.RAIS_ARTIFACT_NAME }}
+            dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256
+            dist/${{ env.RAIS_BUNDLE_ZIP }}
+            dist/${{ env.RAIS_BUNDLE_ZIP }}.sha256
           if-no-files-found: error

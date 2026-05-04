@@ -145,74 +145,49 @@ jobs:
           cp target/release/rais dist/${{ env.RAIS_ARTIFACT_NAME }}
           chmod +x dist/${{ env.RAIS_ARTIFACT_NAME }}
 
-      - name: Sign macOS binaries (if certificate is configured)
+      - name: Build macOS .app bundle
         if: matrix.platform_id == 'macos'
         shell: bash
         env:
-          MAC_CERT_B64: ${{ secrets.MACOS_SIGNING_CERTIFICATE_BASE64 }}
-          MAC_CERT_PWD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
-          MAC_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          RAIS_BUNDLE_ZIP: ${{ env.RAIS_ARTIFACT_NAME }}.app.zip
         run: |
-          if [ -z "$MAC_CERT_B64" ]; then
-            echo "MACOS_SIGNING_CERTIFICATE_BASE64 secret is not set; publishing unsigned macOS binaries."
-            exit 0
-          fi
-          if [ -z "$MAC_CERT_PWD" ] || [ -z "$MAC_SIGNING_IDENTITY" ]; then
-            echo "MACOS_SIGNING_CERTIFICATE_BASE64 was set but MACOS_SIGNING_CERTIFICATE_PASSWORD or MACOS_SIGNING_IDENTITY is empty." >&2
-            exit 1
-          fi
-          KEYCHAIN_PATH="$RUNNER_TEMP/rais-codesign.keychain-db"
-          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
-          CERT_PATH="$RUNNER_TEMP/rais-codesign.p12"
-          echo "$MAC_CERT_B64" | base64 --decode > "$CERT_PATH"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "$MAC_CERT_PWD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security set-key-partition-list -S "apple-tool:,apple:,codesign:" -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
-          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | tr -d '"')
-          /usr/bin/codesign --force --options runtime --timestamp \
-            --sign "$MAC_SIGNING_IDENTITY" \
-            dist/${{ env.RAIS_ARTIFACT_NAME }}
-          /usr/bin/codesign --verify --strict --verbose=2 dist/${{ env.RAIS_ARTIFACT_NAME }}
-          rm -f "$CERT_PATH"
-
-      - name: Hash macOS release file
-        if: matrix.platform_id == 'macos'
-        shell: bash
-        run: |
+          # Assembles dist/Rais.app + dist/<RAIS_BUNDLE_ZIP> with an ad-hoc
+          # baseline signature. RAIS deliberately ships unsigned (no Apple
+          # Developer Program enrollment) — ad-hoc signing is the free
+          # workaround that prevents the "damaged and can't be opened"
+          # Gatekeeper error on Apple Silicon. First-launch trust is
+          # cleared by the bundled "Open Me First.command" helper or by
+          # `xattr -dr com.apple.quarantine`; future self-updates inherit
+          # that trust.
+          bash packaging/macos/build-bundle.sh \
+            --binary "target/release/rais" \
+            --version "${RAIS_VERSION}" \
+            --out "dist" \
+            --zip-name "${RAIS_BUNDLE_ZIP}" \
+            --adhoc-sign
           shasum -a 256 "dist/${{ env.RAIS_ARTIFACT_NAME }}" | awk '{print tolower($1) "  ${{ env.RAIS_ARTIFACT_NAME }}"}' > "dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256"
+          echo "RAIS_BUNDLE_ZIP=${RAIS_BUNDLE_ZIP}" >> "$GITHUB_ENV"
 
-      - name: Notarize macOS binary (if notary credentials are configured)
-        if: matrix.platform_id == 'macos'
-        shell: bash
-        env:
-          MAC_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
-          MAC_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
-          MAC_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
-        run: |
-          if [ -z "$MAC_NOTARY_APPLE_ID" ] || [ -z "$MAC_NOTARY_TEAM_ID" ] || [ -z "$MAC_NOTARY_PASSWORD" ]; then
-            echo "Notary credentials not configured; skipping notarization."
-            exit 0
-          fi
-          # notarytool requires a zip, dmg, or pkg. Build a throwaway zip
-          # purely as a notary submission carrier; we do not publish it.
-          NOTARY_ZIP="$RUNNER_TEMP/rais-notary.zip"
-          ditto -c -k --keepParent "dist/${{ env.RAIS_ARTIFACT_NAME }}" "$NOTARY_ZIP"
-          xcrun notarytool submit "$NOTARY_ZIP" \
-            --apple-id "$MAC_NOTARY_APPLE_ID" \
-            --team-id "$MAC_NOTARY_TEAM_ID" \
-            --password "$MAC_NOTARY_PASSWORD" \
-            --wait
-          rm -f "$NOTARY_ZIP"
-
-      - name: Upload release artifact
+      - name: Upload Windows release artifact
+        if: matrix.platform_id == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: rais-${{ matrix.platform_id }}-${{ env.RAIS_ARCH }}
           path: |
             dist/${{ env.RAIS_ARTIFACT_NAME }}
             dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256
+          if-no-files-found: error
+
+      - name: Upload macOS release artifact
+        if: matrix.platform_id == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rais-${{ matrix.platform_id }}-${{ env.RAIS_ARCH }}
+          path: |
+            dist/${{ env.RAIS_ARTIFACT_NAME }}
+            dist/${{ env.RAIS_ARTIFACT_NAME }}.sha256
+            dist/${{ env.RAIS_BUNDLE_ZIP }}
+            dist/${{ env.RAIS_BUNDLE_ZIP }}.sha256
           if-no-files-found: error
 
   publish:
@@ -247,7 +222,11 @@ jobs:
           # filenames. Glob matches the binary itself (any arch) and excludes
           # the sidecar `.sha256` file.
           WINDOWS_PATH="$(find release -maxdepth 1 -type f -name 'rais-*-windows-*.exe' ! -name '*.sha256' | sort | head -1)"
-          MACOS_PATH="$(find release -maxdepth 1 -type f -name 'rais-*-macos-*' ! -name '*.exe' ! -name '*.sha256' | sort | head -1)"
+          # Bare-binary macOS asset is what the self-updater downloads
+          # (it copies bytes straight over the install target — no zip
+          # extraction). The Rais.app.zip ships alongside for Finder
+          # launches and is excluded here.
+          MACOS_PATH="$(find release -maxdepth 1 -type f -name 'rais-*-macos-*' ! -name '*.exe' ! -name '*.sha256' ! -name '*.zip' | sort | head -1)"
           if [ -z "$WINDOWS_PATH" ] || [ -z "$MACOS_PATH" ]; then
             echo "expected per-platform artifacts under release/ but found:" >&2
             ls release/ >&2

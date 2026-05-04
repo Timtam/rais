@@ -440,12 +440,30 @@ fn swap_install_file(
             source: error,
         });
     }
+    clear_macos_quarantine(install_target);
     replaced.push(ReplacedFile {
         install_path: install_target.to_path_buf(),
         backup_path,
     });
     Ok(())
 }
+
+/// Strip the `com.apple.quarantine` extended attribute from the freshly
+/// swapped binary. Some macOS configurations re-quarantine files written by
+/// processes whose own binary still carries the attribute; clearing it here
+/// keeps post-update launches from re-triggering Gatekeeper. Failure is
+/// ignored — the attribute may simply not be present.
+#[cfg(target_os = "macos")]
+fn clear_macos_quarantine(path: &Path) {
+    let _ = std::process::Command::new("xattr")
+        .arg("-d")
+        .arg("com.apple.quarantine")
+        .arg(path)
+        .status();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clear_macos_quarantine(_path: &Path) {}
 
 fn rollback_replaced_files(replaced: &[ReplacedFile]) {
     for entry in replaced.iter().rev() {

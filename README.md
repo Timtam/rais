@@ -24,17 +24,45 @@ can run from any folder and delete when you're done.
 
 Get the latest release from the [GitHub Releases
 page](https://github.com/Timtam/rais/releases/latest). Each release publishes
-versioned, per-platform binaries plus their SHA-256 sums. Pick the file that
+versioned, per-platform downloads plus their SHA-256 sums. Pick the file that
 matches your machine:
 
 - **Windows (Intel/AMD 64-bit)**: `rais-<version>-windows-x86_64.exe`
 - **Windows (ARM 64-bit)**: `rais-<version>-windows-aarch64.exe`
-- **macOS (Apple Silicon)**: `rais-<version>-macos-aarch64`
-- **macOS (Intel 64-bit)**: `rais-<version>-macos-x86_64`
+- **macOS (Apple Silicon)** — recommended: `rais-<version>-macos-aarch64.app.zip`
+- **macOS (Intel 64-bit)** — recommended: `rais-<version>-macos-x86_64.app.zip`
+- **macOS bare binary** (CLI use): `rais-<version>-macos-aarch64` /
+  `rais-<version>-macos-x86_64`
 
-Place the downloaded executable wherever you like (Desktop, Downloads, a USB
-stick) and double-click it. You can rename it to `RAIS.exe` / `RAIS` if you
-prefer — RAIS still updates itself in place under whatever filename you chose.
+On Windows, place the downloaded executable wherever you like (Desktop,
+Downloads, a USB stick) and double-click it. You can rename it to `RAIS.exe`
+if you prefer — RAIS still updates itself in place under whatever filename you
+chose.
+
+### macOS first launch
+
+RAIS is distributed unsigned (the project doesn't pay for an Apple Developer
+ID). Unzipping `rais-<version>-macos-<arch>.app.zip` gives you a `Rais` folder
+containing `Rais.app` and an `Open Me First.command` helper. **Double-click
+`Open Me First.command` once** — Terminal opens, the helper clears macOS's
+first-launch quarantine on `Rais.app`, and you can close the window. From
+then on `Rais.app` launches normally, and self-updates keep working without
+re-triggering Gatekeeper.
+
+If you'd rather not use the helper, you can clear the quarantine yourself in
+Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /path/to/Rais.app
+```
+
+…or use Apple's built-in path: open `Rais.app` once, dismiss the warning,
+then go to **System Settings → Privacy & Security** and click **Open
+Anyway** next to the entry for RAIS.
+
+The bare `rais-<version>-macos-<arch>` download is a plain Mach-O CLI
+executable (no `.app` wrapper). After downloading, run `chmod +x` and invoke
+it from Terminal.
 
 ## Use it
 
