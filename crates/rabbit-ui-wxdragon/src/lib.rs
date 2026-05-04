@@ -14,6 +14,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
+use rabbit_core::arch_probe::probe_executable_architecture;
 use rabbit_core::artifact::{default_cache_dir, expected_artifact_kind};
 use rabbit_core::detection::{
     DiscoveryOptions, default_standard_installation, detect_components, discover_installations,
@@ -199,6 +200,14 @@ pub struct TargetRow {
     pub portable: bool,
     pub selected: bool,
     pub writable: bool,
+    /// Architecture of the REAPER binary at this target. Populated by the
+    /// detection layer's binary-header probe rather than the host arch, so
+    /// e.g. an Intel REAPER on an Apple Silicon Mac, or an x86_64 REAPER on
+    /// Windows-on-ARM, gets the arch-correct extension binaries (ReaPack,
+    /// SWS, OSARA) instead of host-matching ones REAPER would refuse to
+    /// load. Falls back to `Architecture::current()` when the binary can't
+    /// be probed (synthetic / portable targets without a binary on disk yet).
+    pub architecture: Architecture,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -342,7 +351,6 @@ pub struct WizardOutcomeReport {
 
 pub fn load_wizard_model(options: UiBootstrapOptions) -> Result<WizardModel> {
     let platform = Platform::current().ok_or(RabbitError::UnsupportedPlatform)?;
-    let architecture = Architecture::current();
     let localizer = localizer_from_options(&options)?;
     let discovered_installations = discover_installations(&DiscoveryOptions {
         include_standard: true,
@@ -353,6 +361,15 @@ pub fn load_wizard_model(options: UiBootstrapOptions) -> Result<WizardModel> {
         .iter()
         .position(|installation| installation.writable);
     let target = selected_target_index.and_then(|index| installations.get(index).cloned());
+    // Default the model's architecture to the initially-selected target's
+    // probed binary arch — that's what the artifact resolver actually
+    // wants. Falls back to the host arch when no writable target was
+    // discovered (the user will pick one manually before any artifact
+    // work runs anyway).
+    let architecture = target
+        .as_ref()
+        .and_then(|installation| installation.architecture)
+        .unwrap_or_else(Architecture::current);
     let detections = match target.as_ref() {
         Some(target) => detect_components(&target.resource_path, platform)?,
         None => Vec::new(),
@@ -776,6 +793,9 @@ fn target_row(localizer: &Localizer, installation: &Installation, selected: bool
         portable: installation.kind == InstallationKind::Portable,
         selected,
         writable: installation.writable,
+        architecture: installation
+            .architecture
+            .unwrap_or_else(Architecture::current),
     }
 }
 
@@ -855,7 +875,7 @@ pub fn install_request_from_target_and_rows(
         resource_path: target.path.clone(),
         package_ids,
         platform: model.platform,
-        architecture: model.architecture,
+        architecture: target.architecture,
         portable: target.portable,
         target_app_path: Some(target.planned_app_path.clone()),
         dry_run: options.dry_run,
@@ -1320,12 +1340,20 @@ pub fn custom_portable_target_row(model: &WizardModel, path: PathBuf, selected: 
         ),
         app_path: app_path.clone(),
         planned_app_path: app_path
+            .clone()
             .unwrap_or_else(|| default_portable_reaper_app_path(model.platform, &path)),
         path,
         version,
         portable: true,
         selected,
         writable,
+        // Probe the portable target's REAPER binary if it exists on disk;
+        // otherwise inherit the host arch (the user is staging a fresh
+        // portable, so the upcoming install will land a host-arch REAPER).
+        architecture: app_path
+            .as_deref()
+            .map(probe_executable_architecture)
+            .unwrap_or_else(Architecture::current),
     }
 }
 
@@ -1334,13 +1362,18 @@ pub fn refreshed_target_row(model: &WizardModel, target: &TargetRow) -> TargetRo
         return custom_portable_target_row(model, target.path.clone(), target.selected);
     }
 
+    // Re-probe the target binary's architecture instead of inheriting the
+    // host arch — `target.architecture` may be stale if the user swapped
+    // REAPER builds (Intel ↔ Apple Silicon, x64 ↔ ARM) under the same
+    // install path between wizard launches.
+    let probed_architecture = probe_executable_architecture(&target.planned_app_path);
     let installation = Installation {
         kind: InstallationKind::Standard,
         platform: model.platform,
         app_path: target.planned_app_path.clone(),
         resource_path: target.path.clone(),
         version: file_version(&target.planned_app_path).ok().flatten(),
-        architecture: Some(model.architecture),
+        architecture: Some(probed_architecture),
         writable: is_probably_writable(&target.path),
         confidence: Confidence::Medium,
         evidence: Vec::new(),
@@ -1361,6 +1394,7 @@ pub fn refreshed_target_row(model: &WizardModel, target: &TargetRow) -> TargetRo
             portable: false,
             selected: target.selected,
             writable: installation.writable,
+            architecture: probed_architecture,
         },
     }
 }
@@ -1376,7 +1410,7 @@ fn installation_from_target_row(model: &WizardModel, target: &TargetRow) -> Inst
         app_path: target.planned_app_path.clone(),
         resource_path: target.path.clone(),
         version: target.version.clone(),
-        architecture: Some(model.architecture),
+        architecture: Some(target.architecture),
         writable: target.writable,
         confidence: Confidence::Medium,
         evidence: Vec::new(),

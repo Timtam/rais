@@ -6,6 +6,11 @@ license.workspace = true
 
 [dependencies]
 fluent-bundle.workspace = true
+# Battle-tested binary parsing for the executable-architecture probe in
+# `arch_probe.rs`. Default features off, only the readers we need on:
+# Mach-O (REAPER on macOS, including fat/universal binaries) and PE (REAPER
+# on Windows) — keeps the dep small versus pulling in ELF, Wasm, COFF, etc.
+object = { version = "0.36", default-features = false, features = ["read_core", "macho", "pe", "std"] }
 rabbit-platform = { path = "../rabbit-platform" }
 reqwest.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }

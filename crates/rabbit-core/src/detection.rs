@@ -1,11 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::arch_probe::probe_executable_architecture;
 use crate::error::{IoPathContext, Result};
 use crate::metadata::file_version;
 use crate::model::{
-    Architecture, ComponentDetection, Confidence, Evidence, Installation, InstallationKind,
-    Platform,
+    ComponentDetection, Confidence, Evidence, Installation, InstallationKind, Platform,
 };
 use crate::package::{
     PACKAGE_JAWS_SCRIPTS, PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_SWS,
@@ -552,13 +552,14 @@ fn standard_windows_installation(require_existing: bool) -> Option<Installation>
         ));
     }
 
+    let probed_architecture = probe_executable_architecture(&app_path);
     Some(Installation {
         kind: InstallationKind::Standard,
         platform: Platform::Windows,
         app_path,
         resource_path: resource_path.clone(),
         version,
-        architecture: Some(Architecture::current()),
+        architecture: Some(probed_architecture),
         writable: is_probably_writable(&resource_path),
         confidence: if !require_existing && evidence.is_empty() {
             Confidence::Low
@@ -634,13 +635,14 @@ fn discover_portable_windows(root: &Path) -> Option<Installation> {
         ));
     }
 
+    let probed_architecture = probe_executable_architecture(&app_path);
     Some(Installation {
         kind: InstallationKind::Portable,
         platform: Platform::Windows,
         app_path: app_path.clone(),
         resource_path: root.to_path_buf(),
         version,
-        architecture: Some(Architecture::current()),
+        architecture: Some(probed_architecture),
         writable: is_probably_writable(root),
         confidence: Confidence::High,
         evidence,
@@ -692,13 +694,14 @@ fn standard_macos_installation(require_existing: bool) -> Option<Installation> {
         ));
     }
 
+    let probed_architecture = probe_executable_architecture(&app_path);
     Some(Installation {
         kind: InstallationKind::Standard,
         platform: Platform::MacOs,
         app_path,
         resource_path: resource_path.clone(),
         version,
-        architecture: Some(Architecture::current()),
+        architecture: Some(probed_architecture),
         writable: is_probably_writable(&resource_path),
         confidence: if !require_existing && evidence.is_empty() {
             Confidence::Low
@@ -752,13 +755,14 @@ fn discover_portable_macos(root: &Path) -> Option<Installation> {
         ));
     }
 
+    let probed_architecture = probe_executable_architecture(&app_path);
     Some(Installation {
         kind: InstallationKind::Portable,
         platform: Platform::MacOs,
         app_path,
         resource_path: root.to_path_buf(),
         version,
-        architecture: Some(Architecture::current()),
+        architecture: Some(probed_architecture),
         writable: is_probably_writable(root),
         confidence,
         evidence,

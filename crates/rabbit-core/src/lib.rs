@@ -1,3 +1,4 @@
+pub mod arch_probe;
 pub mod archive;
 pub mod artifact;
 pub mod detection;
