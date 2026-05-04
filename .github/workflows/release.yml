@@ -42,13 +42,31 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Install Windows GUI build prerequisites
-        if: matrix.platform_id == 'windows'
+      - name: Install Windows GUI build prerequisites (x64)
+        if: matrix.platform_id == 'windows' && runner.arch == 'X64'
         shell: pwsh
         run: |
           choco install llvm ninja --yes --no-progress
           "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Windows GUI build prerequisites (arm64)
+        if: matrix.platform_id == 'windows' && runner.arch == 'ARM64'
+        shell: pwsh
+        run: |
+          # Choco's llvm package is x86_64-only; bindgen rejects it for an
+          # aarch64 target ("invalid DLL (x86-64)"). Pull the woa64 LLVM
+          # installer and ARM64 Ninja straight from upstream releases.
+          $LlvmVersion = "19.1.7"
+          $LlvmUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LlvmVersion/LLVM-$LlvmVersion-woa64.exe"
+          Invoke-WebRequest -Uri $LlvmUrl -OutFile "$env:RUNNER_TEMP\llvm-installer.exe"
+          Start-Process -FilePath "$env:RUNNER_TEMP\llvm-installer.exe" -ArgumentList "/S" -Wait
+          $NinjaUrl = "https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-winarm64.zip"
+          Invoke-WebRequest -Uri $NinjaUrl -OutFile "$env:RUNNER_TEMP\ninja.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\ninja.zip" -DestinationPath "C:\ninja" -Force
+          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\ninja" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install macOS GUI build prerequisites
