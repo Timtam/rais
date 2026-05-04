@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -196,7 +196,7 @@ jobs:
 
       - name: Upload Windows release artifact
         if: matrix.platform_id == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: rabbit-${{ matrix.platform_id }}-${{ env.RABBIT_ARCH }}
           path: |
@@ -206,7 +206,7 @@ jobs:
 
       - name: Upload macOS release artifacts (both arches)
         if: matrix.platform_id == 'macos'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: rabbit-macos
           path: |
@@ -222,7 +222,7 @@ jobs:
 
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           pattern: rabbit-*
           merge-multiple: true
