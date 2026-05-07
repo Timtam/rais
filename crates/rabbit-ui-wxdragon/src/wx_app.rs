@@ -439,7 +439,12 @@ mod native_tree_checkboxes {
         fn SendMessageW(h_wnd: *mut c_void, msg: u32, w_param: usize, l_param: isize) -> isize;
         fn GetDC(h_wnd: *mut c_void) -> *mut c_void;
         fn ReleaseDC(h_wnd: *mut c_void, hdc: *mut c_void) -> i32;
-        fn DrawFrameControl(hdc: *mut c_void, lprc: *const RectStruct, type_: u32, state: u32) -> i32;
+        fn DrawFrameControl(
+            hdc: *mut c_void,
+            lprc: *const RectStruct,
+            type_: u32,
+            state: u32,
+        ) -> i32;
         fn FillRect(hdc: *mut c_void, lprc: *const RectStruct, hbr: *mut c_void) -> i32;
     }
 
@@ -514,10 +519,7 @@ mod native_tree_checkboxes {
         // anywhere we leave magenta is treated as transparent on draw.
         const MAGENTA_BGR: u32 = 0x00FF00FF;
 
-        let class: Vec<u16> = "BUTTON"
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let class: Vec<u16> = "BUTTON".encode_utf16().chain(std::iter::once(0)).collect();
         let htheme = unsafe { OpenThemeData(hwnd, class.as_ptr()) };
 
         // Determine checkbox glyph size from the theme (DPI-aware) when
@@ -2075,12 +2077,8 @@ fn populate_packages_tree(
     let Some(root) = tree.add_root("", None, None) else {
         return;
     };
-    let Some(group) = tree.append_item(
-        &root,
-        &model.text.packages_tree_group_label,
-        None,
-        None,
-    ) else {
+    let Some(group) = tree.append_item(&root, &model.text.packages_tree_group_label, None, None)
+    else {
         return;
     };
 
@@ -2123,9 +2121,7 @@ fn format_row_label(summary: &str, _selected: bool) -> String {
 /// for either side because they can't enter the install plan and toggling
 /// them is a no-op — we only look at the rows the user can actually flip.
 #[cfg(target_os = "windows")]
-fn compute_packages_group_tristate(
-    rows: &[crate::PackageRow],
-) -> native_tree_checkboxes::TriState {
+fn compute_packages_group_tristate(rows: &[crate::PackageRow]) -> native_tree_checkboxes::TriState {
     let mut any = false;
     let mut all = true;
     let mut any_checked = false;
@@ -2518,30 +2514,20 @@ fn build_packages_page(
             };
             drop(items);
 
-            let new_state = native_tree_checkboxes::get_check_state(
-                tree_widget.get_handle(),
-                &focused,
-            );
+            let new_state =
+                native_tree_checkboxes::get_check_state(tree_widget.get_handle(), &focused);
 
             let unavailable = package_rows
                 .borrow()
                 .get(idx)
                 .is_some_and(|row| !row.available_for_target);
             if unavailable {
-                native_tree_checkboxes::set_check_state(
-                    tree_widget.get_handle(),
-                    &focused,
-                    false,
-                );
+                native_tree_checkboxes::set_check_state(tree_widget.get_handle(), &focused, false);
                 return;
             }
 
             if let Some(row) = package_rows.borrow_mut().get_mut(idx) {
-                let _ = apply_checkbox_state_to_package_row(
-                    &wizard_model,
-                    row,
-                    new_state,
-                );
+                let _ = apply_checkbox_state_to_package_row(&wizard_model, row, new_state);
             }
 
             if let Some(row) = package_rows.borrow().get(idx) {
@@ -3072,8 +3058,7 @@ fn build_packages_page(
                         // for as long as this closure can fire.
                         let node = unsafe { &*node_ptr };
                         if let NodeKind::Package(idx) = node.kind {
-                            if let Some(value) =
-                                package_rows.borrow().get(idx).map(package_details)
+                            if let Some(value) = package_rows.borrow().get(idx).map(package_details)
                             {
                                 details.set_value(&value);
                             }
@@ -3230,11 +3215,7 @@ fn build_packages_tree_model(
                         if !row.available_for_target {
                             return false;
                         }
-                        let _ = apply_checkbox_state_to_package_row(
-                            &wizard_model,
-                            row,
-                            new_state,
-                        );
+                        let _ = apply_checkbox_state_to_package_row(&wizard_model, row, new_state);
                     }
                 }
 
@@ -3714,7 +3695,6 @@ fn target_details_for_index(model: &WizardModel, index: usize) -> String {
 fn package_details(row: &crate::PackageRow) -> String {
     row.details.clone()
 }
-
 
 fn progress_details_for_start(
     model: &WizardModel,
