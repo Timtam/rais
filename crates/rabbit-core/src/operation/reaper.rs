@@ -152,18 +152,20 @@ pub(super) fn reaper_manual_steps(
                     resource_path.join("reaper.ini").display()
                 ),
             ],
-            ArtifactKind::DiskImage | ArtifactKind::Archive => vec![
-                format!(
-                    "Copy REAPER into this portable folder: {}",
-                    install_destination
-                        .unwrap_or_else(|| resource_path.to_path_buf())
-                        .display()
-                ),
-                format!(
-                    "Create or keep {} for the portable resource layout.",
-                    resource_path.join("reaper.ini").display()
-                ),
-            ],
+            ArtifactKind::DiskImage | ArtifactKind::Archive | ArtifactKind::SevenZipArchive => {
+                vec![
+                    format!(
+                        "Copy REAPER into this portable folder: {}",
+                        install_destination
+                            .unwrap_or_else(|| resource_path.to_path_buf())
+                            .display()
+                    ),
+                    format!(
+                        "Create or keep {} for the portable resource layout.",
+                        resource_path.join("reaper.ini").display()
+                    ),
+                ]
+            }
             ArtifactKind::ExtensionBinary => vec![format!(
                 "Place the REAPER application files under this target: {}",
                 resource_path.display()
@@ -185,7 +187,7 @@ pub(super) fn reaper_manual_steps(
                 ),
             ]
         }
-        ArtifactKind::DiskImage | ArtifactKind::Archive => {
+        ArtifactKind::DiskImage | ArtifactKind::Archive | ArtifactKind::SevenZipArchive => {
             let destination = install_destination.unwrap_or_else(|| resource_path.to_path_buf());
             vec![
                 format!("Copy REAPER to this destination: {}", destination.display()),

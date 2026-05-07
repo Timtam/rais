@@ -78,7 +78,7 @@ pub(super) fn sws_manual_steps(kind: ArtifactKind, resource_path: &Path) -> Vec<
             "When the SWS installer asks which REAPER installation to update, choose the one that uses this resource folder: {}",
             resource_path.display()
         )],
-        ArtifactKind::DiskImage | ArtifactKind::Archive => vec![
+        ArtifactKind::DiskImage | ArtifactKind::Archive | ArtifactKind::SevenZipArchive => vec![
             "Run the SWS installer from the opened package.".to_string(),
             format!(
                 "Choose the REAPER target that uses this resource folder: {}",

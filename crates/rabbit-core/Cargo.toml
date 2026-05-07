@@ -16,6 +16,15 @@ reqwest.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
+# Pure-Rust 7z reader. We need it specifically for the FFmpeg shared
+# builds: Gyan.dev (x64) and tordona/ffmpeg-win-arm64 (ARM64) only ship
+# the shared variant as `.7z`. Default features off skips the bzip2 C
+# dep, the encryption stack (we never decrypt), the encoder, and PPMd
+# (FFmpeg archives use LZMA2 which is provided by the always-present
+# `lzma-rust2` transitive dep). The `util` feature is what surfaces
+# `decompress_file_with_extract_fn` — we use it as the entry point for
+# selective bin/ extraction.
+sevenz-rust2 = { version = "0.21", default-features = false, features = ["util"] }
 sha2.workspace = true
 sysinfo.workspace = true
 tempfile.workspace = true

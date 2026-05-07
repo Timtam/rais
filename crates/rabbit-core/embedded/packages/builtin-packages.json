@@ -143,6 +143,28 @@
         "windows": [],
         "macos": []
       }
+    },
+    {
+      "id": "ffmpeg",
+      "display_name": "FFmpeg",
+      "display_name_key": "package-ffmpeg",
+      "display_description_key": "package-ffmpeg-description",
+      "package_kind": "user_plugin_binary",
+      "required": false,
+      "recommended": false,
+      "supported_platforms": ["windows"],
+      "supported_architectures": ["x64", "arm64", "arm64-ec"],
+      "latest_version_provider": "ffmpeg_gyan_release_version",
+      "artifact_provider": "ffmpeg_shared_build",
+      "detectors": ["rabbit_receipt", "user_plugin_file", "ffmpeg_libavformat_major"],
+      "install_steps": ["copy_user_plugin_binary"],
+      "uninstall_steps": ["remove_user_plugin_binary"],
+      "backup_policy": "backup_overwritten_files",
+      "user_plugin_prefixes": ["avformat", "avcodec", "avdevice", "avfilter", "avutil", "swresample", "swscale", "postproc"],
+      "user_plugin_suffixes": {
+        "windows": [".dll"],
+        "macos": [".dylib"]
+      }
     }
   ]
 }

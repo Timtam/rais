@@ -10,6 +10,7 @@ pub const PACKAGE_SWS: &str = "sws";
 pub const PACKAGE_REAPACK: &str = "reapack";
 pub const PACKAGE_REAKONTROL: &str = "reakontrol";
 pub const PACKAGE_JAWS_SCRIPTS: &str = "jaws-scripts";
+pub const PACKAGE_FFMPEG: &str = "ffmpeg";
 
 pub const BUILTIN_PACKAGE_MANIFEST_ID: &str = "builtin-packages.json";
 const BUILTIN_PACKAGE_MANIFEST: &str = include_str!("../embedded/packages/builtin-packages.json");
@@ -117,6 +118,16 @@ pub enum LatestVersionProvider {
     /// JAWS-for-REAPER scripts; the highest-version `*.zip` in the folder
     /// wins.
     JawsForReaperScriptsHoard,
+    /// Gyan.dev's `ffmpeg-release-full-shared.7z.ver` plain-text endpoint
+    /// — a single line of UTF-8 with the latest stable release version
+    /// of the GPL+nonfree shared Windows x64 build. We use Gyan as the
+    /// canonical version source for FFmpeg because BtbN doesn't publish
+    /// stable tagged releases (only rolling autobuilds), and Gyan is
+    /// also winget's upstream for the FFmpeg package. The ARM64 fan-out
+    /// (tordona/ffmpeg-win-arm64) generally tracks the same upstream
+    /// stable; if it ever drifts, the artifact resolver picks the
+    /// highest tordona tag matching `FFMPEG_SUPPORTED_MAJOR`.
+    FfmpegGyanReleaseVersion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +142,13 @@ pub enum ArtifactProvider {
     /// the latest-version provider hits, but the artifact resolver also
     /// captures the file URL for download.
     JawsForReaperScriptsHoard,
+    /// Per-arch fan-out for FFmpeg's shared Windows build: x64 comes
+    /// from Gyan.dev's stable `ffmpeg-release-full-shared.7z`, ARM64
+    /// from `github.com/tordona/ffmpeg-win-arm64` releases (matching
+    /// the same FFmpeg major). Both ship `.7z` archives that drop their
+    /// runtime DLLs under `bin/`; the resolver returns the right URL +
+    /// version for the user's REAPER target arch.
+    FfmpegSharedBuild,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +165,16 @@ pub enum PackageDetector {
     /// "FileVersion" resource. Lets RABBIT report a version even for users
     /// who installed the scripts before RABBIT existed (no receipt yet).
     JawsScriptsUninstallExe,
+    /// Map an `avformat-XX.dll` filename (or its macOS `libavformat.XX.dylib`
+    /// equivalent) to an FFmpeg release major version using the
+    /// well-known libavformat-major → FFmpeg-major table. The DLL's own
+    /// VERSIONINFO carries the libavformat version, not the FFmpeg
+    /// release version, so a filename heuristic is the reliable shared
+    /// signal across BtbN, Gyan.dev, and OSXExperts builds. We synthesize
+    /// the detected version as `<major>.0.0` so an external install of
+    /// FFmpeg N reports as Keep when the latest supported major is also
+    /// N, and as Update when the user is on an older major.
+    FfmpegLibavformatMajor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,7 +377,7 @@ mod tests {
         let manifest = embedded_package_manifest();
 
         assert_eq!(manifest.schema_version, 1);
-        assert_eq!(manifest.packages.len(), 6);
+        assert_eq!(manifest.packages.len(), 7);
         assert!(
             manifest
                 .packages

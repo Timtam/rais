@@ -171,7 +171,7 @@ pub(super) fn osara_manual_steps(
             "When the OSARA installer asks for the REAPER target, choose this resource or portable folder: {}",
             resource_path.display()
         )],
-        ArtifactKind::Archive => vec![format!(
+        ArtifactKind::Archive | ArtifactKind::SevenZipArchive => vec![format!(
             "Run the OSARA installer from the extracted archive and target this REAPER resource or portable folder: {}",
             resource_path.display()
         )],

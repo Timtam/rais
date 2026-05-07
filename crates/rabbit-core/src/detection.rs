@@ -8,8 +8,8 @@ use crate::model::{
     ComponentDetection, Confidence, Evidence, Installation, InstallationKind, Platform,
 };
 use crate::package::{
-    PACKAGE_JAWS_SCRIPTS, PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_SWS,
-    PackageSpec, builtin_package_specs,
+    PACKAGE_FFMPEG, PACKAGE_JAWS_SCRIPTS, PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK,
+    PACKAGE_SWS, PackageSpec, builtin_package_specs,
 };
 use crate::reapack::package_owner_for_file;
 use crate::receipt::{ReceiptVerification, load_install_state, verify_package_receipt};
@@ -206,6 +206,24 @@ fn detect_version_from_files_with_probes(
     package_id: &str,
     uninstall_display_version: fn(&str) -> Option<String>,
 ) -> Result<Option<(crate::version::Version, String, Confidence, Vec<String>)>> {
+    // FFmpeg: the libavformat / libavcodec / etc. DLLs carry their
+    // *library* major (62.3.100 for libavformat 62) in VS_FIXEDFILEINFO,
+    // not the FFmpeg release version, so the generic file-version probe
+    // below would mis-report. We dispatch to a custom resolver that:
+    //   1. tries `ffmpeg.exe` / `ffprobe.exe` / `ffplay.exe`
+    //      VS_FIXEDFILEINFO — these carry the real release on Gyan and
+    //      tordona builds, e.g. `8.1.1.0` for FFmpeg 8.1.1; and
+    //   2. falls back to a filename-based libavformat-major →
+    //      FFmpeg-major mapping (`avformat-62.dll` → `8.0.0`) when no
+    //      executable is present or its VS_FIXEDFILEINFO is the
+    //      uninformative `0.0.0.0` placeholder.
+    if package_id == PACKAGE_FFMPEG {
+        if let Some(detection) = detect_ffmpeg_version(files) {
+            return Ok(Some(detection));
+        }
+        return Ok(None);
+    }
+
     // OSARA: Windows installers register a `DisplayVersion` under the standard
     // Uninstall key. Prefer that for non-RABBIT-managed OSARA installs because
     // it reflects what the user sees in Programs and Features.
@@ -458,6 +476,209 @@ fn embedded_snapshot_version_from_text(text: &str) -> Option<crate::version::Ver
     }
 
     None
+}
+
+/// FFmpeg version detector that tries three probes in order:
+///
+/// 1. **`ffmpeg.exe` `ProductVersion` StringFileInfo** — vanilla
+///    FFmpeg builds attach only a manifest to the binaries, so this
+///    field is usually absent; but if a vendor (winget MSI wrapper,
+///    custom build) patches it in, we read it for free without a
+///    process spawn. `FileVersion` carries `LIBAVUTIL_VERSION` and
+///    isn't useful here (libavutil 60.x.y for FFmpeg 8.x).
+/// 2. **`ffmpeg.exe -version`** — the canonical, vendor-independent
+///    signal. The first line is
+///    `ffmpeg version <version> Copyright (c) ...`, where
+///    `<version>` is `8.1.1` for Gyan stable or
+///    `n8.1.1-6-gdeadbeef-...` for tordona's git builds. We strip the
+///    `n`/`v` prefix and take the leading digit-or-dot run, giving us
+///    the upstream release version (`8.1.1`) at `High` confidence.
+///    Spawned with the no-window flag on Windows so users don't see a
+///    console flash; the file lives in the user's own UserPlugins
+///    folder so we trust it the same way we trust REAPER's existing
+///    binaries.
+/// 3. **libavformat-major filename heuristic** — fallback when no
+///    executable is present or the spawn fails. Maps
+///    `avformat-XX.dll`'s libavformat major to the FFmpeg release
+///    major (lib 58→FFmpeg 4, 59→5, 60→6, 61→7, 62→8, i.e.
+///    `lib_major - 54`). Patch level isn't recoverable from the
+///    filename alone, so we synthesize as `<major>.0.0` at `Medium`
+///    confidence.
+fn detect_ffmpeg_version(
+    files: &[PathBuf],
+) -> Option<(crate::version::Version, String, Confidence, Vec<String>)> {
+    // Walk `ffmpeg.exe` / `ffprobe.exe` / `ffplay.exe`. Any matched
+    // file's parent points at the UserPlugins directory the
+    // executables live in.
+    let candidates: Vec<PathBuf> = files
+        .iter()
+        .find_map(|file| file.parent())
+        .map(|parent| {
+            ["ffmpeg.exe", "ffprobe.exe", "ffplay.exe"]
+                .iter()
+                .map(|name| parent.join(name))
+                .filter(|path| path.is_file())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Probe 1: ProductVersion (cheap, no process spawn). Almost always
+    // absent on vanilla FFmpeg — kept so a future vendor that patches
+    // VERSIONINFO works without a spawn.
+    for exe_path in &candidates {
+        let Some(raw) = rabbit_platform::read_string_file_info_key(exe_path, "ProductVersion")
+        else {
+            continue;
+        };
+        let Some(version) = ffmpeg_version_from_product_version_string(&raw) else {
+            continue;
+        };
+        let major = version.numeric_parts().first().copied().unwrap_or(0);
+        if (4..=9).contains(&major) {
+            let exe_name = exe_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("ffmpeg.exe")
+                .to_string();
+            return Some((
+                version,
+                "ffmpeg-productversion".to_string(),
+                Confidence::High,
+                vec![format!(
+                    "Version came from {exe_name}'s `ProductVersion` StringFileInfo entry ({raw:?})."
+                )],
+            ));
+        }
+    }
+
+    // Probe 2: `ffmpeg.exe -version`. The vanilla FFmpeg build prints
+    // its version on the first stdout line, regardless of whether the
+    // .rc file carries any StringFileInfo. We invoke at most one of
+    // the three candidates (ffmpeg, ffprobe, ffplay) — they all share
+    // the same fftools cmdutils path, so the first one that runs is
+    // authoritative.
+    if let Some(exe_path) = candidates.first() {
+        if let Some(version) = ffmpeg_version_from_executable_invocation(exe_path) {
+            let major = version.numeric_parts().first().copied().unwrap_or(0);
+            if (4..=9).contains(&major) {
+                let exe_name = exe_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("ffmpeg.exe")
+                    .to_string();
+                return Some((
+                    version,
+                    "ffmpeg-cli-version".to_string(),
+                    Confidence::High,
+                    vec![format!(
+                        "Version came from running `{exe_name} -version` and parsing the first line."
+                    )],
+                ));
+            }
+        }
+    }
+
+    // Probe 3: libavformat-major filename heuristic.
+    for file in files {
+        let basename = file.file_name().and_then(|name| name.to_str())?;
+        if let Some(lib_major) = libavformat_major_from_basename(basename) {
+            let ffmpeg_major = ffmpeg_major_from_libavformat_major(lib_major)?;
+            let version = crate::version::Version::parse(format!("{ffmpeg_major}.0.0")).ok()?;
+            return Some((
+                version,
+                "ffmpeg-libavformat-major".to_string(),
+                Confidence::Medium,
+                vec![format!(
+                    "Mapped {basename}'s libavformat major version to the corresponding FFmpeg release major. The patch level isn't recoverable from the DLL filename alone, so the detected version is reported as `<major>.0.0`."
+                )],
+            ));
+        }
+    }
+    None
+}
+
+/// Run `<exe_path> -version`, capture stdout, and parse the leading
+/// version token off the first line. Vanilla FFmpeg's first stdout
+/// line is `ffmpeg version <version> Copyright (c) ...`. Returns
+/// `None` on spawn failure, non-zero exit, or unparseable output —
+/// caller falls back to the libavformat heuristic in that case.
+fn ffmpeg_version_from_executable_invocation(exe_path: &Path) -> Option<crate::version::Version> {
+    use std::process::Command;
+
+    let mut command = Command::new(exe_path);
+    command.arg("-version");
+
+    // CREATE_NO_WINDOW = 0x08000000. Suppresses the console window
+    // flash that would otherwise appear when spawning a console-mode
+    // exe from a GUI process. No-op on non-Windows.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let first_line = stdout.lines().next()?.trim();
+    let after_prefix = first_line.strip_prefix("ffmpeg version ")?;
+    let token = after_prefix.split_whitespace().next()?;
+    ffmpeg_version_from_product_version_string(token)
+}
+
+/// Pull the leading version-shaped run out of FFmpeg's
+/// `ProductVersion` string. Accepts forms like:
+///
+/// - `8.1.1` (Gyan stable)
+/// - `n8.1.1` (BtbN-style tag)
+/// - `n8.1.1-6-gdeadbeef-tordona-ffmpeg-builds-binaries` (tordona)
+/// - `8.1.1-6-gdeadbeef`
+///
+/// Strips an optional `n` / `v` prefix, takes the longest leading
+/// digit-or-dot run, and parses it as a `Version`.
+fn ffmpeg_version_from_product_version_string(raw: &str) -> Option<crate::version::Version> {
+    let stripped = raw
+        .trim()
+        .trim_start_matches(|ch: char| matches!(ch, 'n' | 'N' | 'v' | 'V'));
+    let mut end = 0;
+    for (idx, ch) in stripped.char_indices() {
+        if ch.is_ascii_digit() || ch == '.' {
+            end = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if end == 0 {
+        return None;
+    }
+    let candidate = stripped[..end].trim_end_matches('.');
+    crate::version::Version::parse(candidate).ok()
+}
+
+/// Parse the libavformat major from `avformat-<MAJOR>.dll` (Windows) or
+/// `libavformat.<MAJOR>.dylib` (macOS) filenames. Other filenames
+/// return `None`.
+fn libavformat_major_from_basename(basename: &str) -> Option<u64> {
+    let lower = basename.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("avformat-") {
+        let stem = rest.strip_suffix(".dll")?;
+        return stem.parse().ok();
+    }
+    if let Some(rest) = lower.strip_prefix("libavformat.") {
+        let stem = rest.strip_suffix(".dylib")?;
+        return stem.parse().ok();
+    }
+    None
+}
+
+fn ffmpeg_major_from_libavformat_major(libavformat_major: u64) -> Option<u64> {
+    // libavformat 58 → FFmpeg 4; each subsequent libavformat major
+    // bump corresponds to the next FFmpeg major. Computed rather than
+    // table-lookup so a future FFmpeg release that follows the same
+    // pattern keeps working without a code change.
+    libavformat_major.checked_sub(54)
 }
 
 pub(crate) fn matching_user_plugin_files(
@@ -827,11 +1048,15 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        DiscoveryOptions, default_standard_installation, detect_components, discover_installations,
-        embedded_snapshot_version_from_text, reapack_version_from_text, sws_version_from_text,
+        DiscoveryOptions, default_standard_installation, detect_components, detect_ffmpeg_version,
+        discover_installations, embedded_snapshot_version_from_text,
+        ffmpeg_major_from_libavformat_major, ffmpeg_version_from_product_version_string,
+        libavformat_major_from_basename, reapack_version_from_text, sws_version_from_text,
     };
     use crate::model::Platform;
-    use crate::package::{PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_SWS};
+    use crate::package::{
+        PACKAGE_FFMPEG, PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_SWS,
+    };
 
     #[test]
     fn detects_extensions_by_user_plugin_prefix() {
@@ -852,6 +1077,121 @@ mod tests {
         assert!(installed.contains(&PACKAGE_OSARA));
         assert!(installed.contains(&PACKAGE_SWS));
         assert!(installed.contains(&PACKAGE_REAPACK));
+    }
+
+    #[test]
+    fn ffmpeg_libavformat_filenames_round_trip_to_major_only_versions() {
+        assert_eq!(libavformat_major_from_basename("avformat-62.dll"), Some(62));
+        assert_eq!(
+            libavformat_major_from_basename("AVFORMAT-62.DLL"),
+            Some(62),
+            "case-insensitive on Windows"
+        );
+        assert_eq!(
+            libavformat_major_from_basename("libavformat.62.dylib"),
+            Some(62),
+            "macOS dylib layout"
+        );
+        assert_eq!(libavformat_major_from_basename("avformat.dll"), None);
+        assert_eq!(libavformat_major_from_basename("avcodec-62.dll"), None);
+        assert_eq!(libavformat_major_from_basename("avformat-foo.dll"), None);
+
+        assert_eq!(ffmpeg_major_from_libavformat_major(58), Some(4));
+        assert_eq!(ffmpeg_major_from_libavformat_major(62), Some(8));
+        assert_eq!(ffmpeg_major_from_libavformat_major(53), None);
+    }
+
+    #[test]
+    fn ffmpeg_product_version_parser_extracts_release_string() {
+        // Plain stable: Gyan.dev's `ProductVersion`.
+        assert_eq!(
+            ffmpeg_version_from_product_version_string("8.1.1")
+                .unwrap()
+                .raw(),
+            "8.1.1"
+        );
+        // BtbN/tordona-style with `n` prefix.
+        assert_eq!(
+            ffmpeg_version_from_product_version_string("n8.1.1")
+                .unwrap()
+                .raw(),
+            "8.1.1"
+        );
+        // tordona-style autobuild trailer — we drop everything after
+        // the version run.
+        assert_eq!(
+            ffmpeg_version_from_product_version_string("n8.1.1-6-gdeadbeef-tordona-ffmpeg")
+                .unwrap()
+                .raw(),
+            "8.1.1"
+        );
+        // Older 4-component style.
+        assert_eq!(
+            ffmpeg_version_from_product_version_string("v8.1.1.0")
+                .unwrap()
+                .raw(),
+            "8.1.1.0"
+        );
+        // Whitespace.
+        assert_eq!(
+            ffmpeg_version_from_product_version_string("  8.0  ")
+                .unwrap()
+                .raw(),
+            "8.0"
+        );
+        // No version-shaped prefix.
+        assert!(ffmpeg_version_from_product_version_string("git-master").is_none());
+        assert!(ffmpeg_version_from_product_version_string("").is_none());
+    }
+
+    #[test]
+    fn ffmpeg_version_falls_back_to_libavformat_filename_when_exe_has_no_versioninfo() {
+        let dir = tempdir().unwrap();
+        let plugins = dir.path().join("UserPlugins");
+        fs::create_dir_all(&plugins).unwrap();
+        let avformat = plugins.join("avformat-62.dll");
+        let avcodec = plugins.join("avcodec-62.dll");
+        // A stub ffmpeg.exe with no PE resource section — file_version
+        // returns Ok(None) so the helper drops to the libavformat
+        // fallback.
+        let ffmpeg_exe = plugins.join("ffmpeg.exe");
+        fs::write(&avformat, b"").unwrap();
+        fs::write(&avcodec, b"").unwrap();
+        fs::write(&ffmpeg_exe, b"").unwrap();
+
+        let (version, detector, confidence, _notes) =
+            detect_ffmpeg_version(&[avcodec.clone(), avformat.clone()]).unwrap();
+        assert_eq!(version.raw(), "8.0.0");
+        assert_eq!(detector, "ffmpeg-libavformat-major");
+        assert_eq!(confidence, super::Confidence::Medium);
+
+        // Without an avformat file in the list, neither probe applies
+        // — we don't synthesize from avcodec / avutil because their
+        // major-bump cadence isn't perfectly synchronized to FFmpeg's,
+        // and the stubbed ffmpeg.exe has no readable VS_FIXEDFILEINFO.
+        assert!(detect_ffmpeg_version(&[avcodec]).is_none());
+    }
+
+    #[test]
+    fn detects_externally_installed_ffmpeg_via_avformat_filename() {
+        let dir = tempdir().unwrap();
+        let plugins = dir.path().join("UserPlugins");
+        fs::create_dir_all(&plugins).unwrap();
+        // Drop an avformat-62.dll from a hypothetical external FFmpeg 8
+        // install. RABBIT shouldn't have a receipt for it, so detection
+        // must fall back to the libavformat-major heuristic.
+        fs::write(plugins.join("avformat-62.dll"), b"").unwrap();
+        fs::write(plugins.join("avcodec-62.dll"), b"").unwrap();
+
+        let detections = detect_components(dir.path(), Platform::Windows).unwrap();
+        let ffmpeg = detections
+            .iter()
+            .find(|detection| detection.package_id == PACKAGE_FFMPEG)
+            .expect("ffmpeg row missing from Windows detections");
+        assert!(ffmpeg.installed);
+        let version = ffmpeg.version.as_ref().expect("version not detected");
+        assert_eq!(version.raw(), "8.0.0");
+        assert_eq!(ffmpeg.detector, "ffmpeg-libavformat-major");
     }
 
     #[test]

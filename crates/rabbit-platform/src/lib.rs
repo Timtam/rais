@@ -24,7 +24,9 @@ pub use disk_image::{
     install_app_bundle_from_disk_image, mount_disk_image,
 };
 pub use elevation::{ElevationError, run_elevated_and_wait};
-pub use file_version::{read_file_version_parts, read_file_version_string};
+pub use file_version::{
+    read_file_version_parts, read_file_version_string, read_string_file_info_key,
+};
 pub use jaws::{JawsInstall, detect_jaws_install, detect_jaws_install_under, is_jaws_installed};
 pub use locale::os_default_locale;
 pub use paths::{

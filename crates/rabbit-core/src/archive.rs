@@ -93,6 +93,225 @@ fn matches_user_plugin_file(file_name: &str, spec: &PackageSpec) -> bool {
     prefix_match && suffix_match
 }
 
+/// Extract every file whose immediate parent directory is `bin` (case
+/// insensitive) into `extract_dir`, flattening the layout. Used by the
+/// FFmpeg pipeline: BtbN's archives lay the runtime DLLs out under a
+/// `ffmpeg-<tag>-<arch>-gpl-shared-<ver>/bin/` prefix, and we want all
+/// of them dropped into `<resource>/UserPlugins/` regardless of which
+/// specific FFmpeg sublibraries the user's plugins depend on. Returns
+/// the per-file extraction records sorted by base name. Errors when the
+/// archive contains no `bin/<file>` entries — the user fed us something
+/// that doesn't match the expected BtbN layout.
+pub fn extract_bin_directory_from_archive(
+    archive_path: &Path,
+    spec: &PackageSpec,
+    extract_dir: &Path,
+) -> Result<Vec<ExtractedUserPlugin>> {
+    let file = fs::File::open(archive_path).with_path(archive_path)?;
+    let mut archive =
+        zip::ZipArchive::new(BufReader::new(file)).map_err(|source| RabbitError::ArchiveRead {
+            archive: archive_path.to_path_buf(),
+            message: source.to_string(),
+        })?;
+
+    fs::create_dir_all(extract_dir).with_path(extract_dir)?;
+    let mut extracted = Vec::new();
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|source| RabbitError::ArchiveRead {
+                archive: archive_path.to_path_buf(),
+                message: source.to_string(),
+            })?;
+        if !entry.is_file() {
+            continue;
+        }
+        let entry_name = entry.name().to_string();
+        let entry_path = Path::new(&entry_name);
+        let parent_is_bin = entry_path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("bin"));
+        if !parent_is_bin {
+            continue;
+        }
+        let Some(basename) = entry_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let target = extract_dir.join(&basename);
+        if target.exists() {
+            fs::remove_file(&target).with_path(&target)?;
+        }
+        let mut output = fs::File::create(&target).with_path(&target)?;
+        std::io::copy(&mut entry, &mut output).with_path(&target)?;
+        output.flush().with_path(&target)?;
+        extracted.push(ExtractedUserPlugin {
+            source_archive: archive_path.to_path_buf(),
+            entry_name,
+            extracted_path: target,
+            file_name: basename,
+        });
+    }
+    extracted.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+
+    if extracted.is_empty() {
+        return Err(RabbitError::ArchiveMissingExtensionBinary {
+            archive: archive_path.to_path_buf(),
+            package_id: spec.id.clone(),
+        });
+    }
+
+    Ok(extracted)
+}
+
+/// 7z twin of [`extract_bin_directory_from_archive`]. Used by the
+/// FFmpeg pipeline because both upstreams (Gyan.dev for x64,
+/// `tordona/ffmpeg-win-arm64` for ARM64) ship the shared variant only
+/// as `.7z`. Walks every entry in the archive, picks the ones whose
+/// immediate parent directory is `bin/` (case insensitive), and
+/// extracts them flat into `extract_dir`. Errors when the archive
+/// contains no `bin/<file>` entries.
+pub fn extract_bin_directory_from_seven_zip_archive(
+    archive_path: &Path,
+    spec: &PackageSpec,
+    extract_dir: &Path,
+) -> Result<Vec<ExtractedUserPlugin>> {
+    fs::create_dir_all(extract_dir).with_path(extract_dir)?;
+
+    let extract_dir_owned = extract_dir.to_path_buf();
+    let archive_path_owned = archive_path.to_path_buf();
+    let extracted: std::cell::RefCell<Vec<ExtractedUserPlugin>> =
+        std::cell::RefCell::new(Vec::new());
+    let extract_error: std::cell::RefCell<Option<RabbitError>> = std::cell::RefCell::new(None);
+
+    let result = sevenz_rust2::decompress_file_with_extract_fn(
+        archive_path,
+        &extract_dir_owned,
+        |entry, reader, _dest| {
+            // Skip directory entries — we only flatten files. The 7z
+            // crate's callback is called for each entry; returning
+            // `Ok(true)` continues iteration without writing anything,
+            // returning `Ok(false)` aborts.
+            if entry.is_directory() {
+                return Ok(true);
+            }
+            let entry_name = entry.name().to_string();
+            let entry_path = Path::new(&entry_name);
+            let parent_is_bin = entry_path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("bin"));
+            if !parent_is_bin {
+                return Ok(true);
+            }
+            let Some(basename) = entry_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+            else {
+                return Ok(true);
+            };
+
+            let target = extract_dir_owned.join(&basename);
+            // Translate any std::io error into a RabbitError; the 7z
+            // crate's callback expects a sevenz_rust2::Error so we
+            // stash the typed error in extract_error and abort the
+            // walk by returning Ok(false). The outer code surfaces
+            // the stashed error after `decompress_file_with_extract_fn`
+            // returns.
+            macro_rules! bail_with {
+                ($error:expr) => {{
+                    *extract_error.borrow_mut() = Some($error);
+                    return Ok(false);
+                }};
+            }
+
+            if target.exists() {
+                if let Err(error) = fs::remove_file(&target) {
+                    bail_with!(RabbitError::Io {
+                        path: target.clone(),
+                        source: error,
+                    });
+                }
+            }
+            let mut output = match fs::File::create(&target) {
+                Ok(file) => file,
+                Err(error) => {
+                    bail_with!(RabbitError::Io {
+                        path: target.clone(),
+                        source: error,
+                    });
+                }
+            };
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let read = match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(error) => {
+                        bail_with!(RabbitError::Io {
+                            path: target.clone(),
+                            source: error,
+                        });
+                    }
+                };
+                if let Err(error) = output.write_all(&buffer[..read]) {
+                    bail_with!(RabbitError::Io {
+                        path: target.clone(),
+                        source: error,
+                    });
+                }
+            }
+            if let Err(error) = output.flush() {
+                bail_with!(RabbitError::Io {
+                    path: target.clone(),
+                    source: error,
+                });
+            }
+            extracted.borrow_mut().push(ExtractedUserPlugin {
+                source_archive: archive_path_owned.clone(),
+                entry_name,
+                extracted_path: target,
+                file_name: basename,
+            });
+            Ok(true)
+        },
+    );
+
+    // Surface a RabbitError stashed by the per-entry callback in
+    // preference to the 7z library's error — our IoPathContext shape
+    // is what the rest of the install pipeline expects.
+    if let Some(error) = extract_error.into_inner() {
+        return Err(error);
+    }
+    if let Err(source) = result {
+        return Err(RabbitError::ArchiveRead {
+            archive: archive_path.to_path_buf(),
+            message: source.to_string(),
+        });
+    }
+
+    let mut extracted = extracted.into_inner();
+    extracted.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+
+    if extracted.is_empty() {
+        return Err(RabbitError::ArchiveMissingExtensionBinary {
+            archive: archive_path.to_path_buf(),
+            package_id: spec.id.clone(),
+        });
+    }
+
+    Ok(extracted)
+}
+
 pub fn extract_all_files_flat(archive_path: &Path, extract_dir: &Path) -> Result<Vec<PathBuf>> {
     let file = fs::File::open(archive_path).with_path(archive_path)?;
     let mut archive =
@@ -225,10 +444,13 @@ mod tests {
     use tempfile::tempdir;
     use zip::write::SimpleFileOptions;
 
-    use super::{extract_osara_macos_assets, extract_user_plugin_from_archive};
+    use super::{
+        extract_bin_directory_from_archive, extract_osara_macos_assets,
+        extract_user_plugin_from_archive,
+    };
     use crate::error::RabbitError;
     use crate::model::Platform;
-    use crate::package::{PACKAGE_REAKONTROL, package_specs_by_id};
+    use crate::package::{PACKAGE_FFMPEG, PACKAGE_REAKONTROL, package_specs_by_id};
 
     #[test]
     fn extracts_matching_user_plugin_binary_from_zip() {
@@ -361,6 +583,70 @@ mod tests {
         assert!(matches!(
             error,
             RabbitError::OsaraArchiveMissingAssets { .. }
+        ));
+    }
+
+    #[test]
+    fn extract_bin_directory_pulls_only_bin_children_flat_into_extract_dir() {
+        let dir = tempdir().unwrap();
+        let archive_path = dir.path().join("ffmpeg-test.zip");
+        write_test_archive(
+            &archive_path,
+            &[
+                ("ffmpeg-n8.0/bin/avformat-62.dll", b"avformat"),
+                ("ffmpeg-n8.0/bin/avcodec-62.dll", b"avcodec"),
+                ("ffmpeg-n8.0/bin/ffmpeg.exe", b"ffmpeg-exe"),
+                ("ffmpeg-n8.0/bin/sub/nested.dll", b"nested"),
+                ("ffmpeg-n8.0/include/libavformat/avformat.h", b"header"),
+                ("ffmpeg-n8.0/lib/avformat.lib", b"static-lib"),
+                ("ffmpeg-n8.0/doc/README.md", b"docs"),
+            ],
+        );
+
+        let spec = package_specs_by_id(Platform::Windows)
+            .remove(PACKAGE_FFMPEG)
+            .unwrap();
+        let extract_dir = dir.path().join("extract");
+        let extracted =
+            extract_bin_directory_from_archive(&archive_path, &spec, &extract_dir).unwrap();
+
+        let names: Vec<_> = extracted
+            .iter()
+            .map(|item| item.file_name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "avcodec-62.dll".to_string(),
+                "avformat-62.dll".to_string(),
+                "ffmpeg.exe".to_string(),
+            ]
+        );
+        assert_eq!(
+            std::fs::read(extract_dir.join("avformat-62.dll")).unwrap(),
+            b"avformat"
+        );
+        assert!(!extract_dir.join("avformat.h").exists());
+        assert!(!extract_dir.join("nested.dll").exists());
+    }
+
+    #[test]
+    fn extract_bin_directory_errors_when_archive_lacks_bin_entries() {
+        let dir = tempdir().unwrap();
+        let archive_path = dir.path().join("no-bin.zip");
+        write_test_archive(
+            &archive_path,
+            &[("ffmpeg-n8.0/include/libavformat/avformat.h", b"header")],
+        );
+
+        let spec = package_specs_by_id(Platform::Windows)
+            .remove(PACKAGE_FFMPEG)
+            .unwrap();
+        let error =
+            extract_bin_directory_from_archive(&archive_path, &spec, dir.path()).unwrap_err();
+        assert!(matches!(
+            error,
+            RabbitError::ArchiveMissingExtensionBinary { .. }
         ));
     }
 

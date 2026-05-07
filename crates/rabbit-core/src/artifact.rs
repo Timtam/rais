@@ -11,15 +11,17 @@ use crate::error::{IoPathContext, RabbitError, Result};
 use crate::hash::sha256_file;
 use crate::hfs::{fetch_file_list, file_url as hfs_file_url};
 use crate::latest::{
-    JAWS_FOR_REAPER_HFS_BASE, JAWS_FOR_REAPER_HFS_FOLDER, OSARA_UPDATE_URL,
-    REAKONTROL_GITHUB_LATEST_URL, REAPACK_GITHUB_LATEST_URL, REAPER_DOWNLOAD_URL, SWS_HOME_URL,
-    parse_github_latest_release_json, parse_osara_update_json, parse_reaper_latest_version,
-    parse_sws_latest_version, pick_jaws_for_reaper_version, reakontrol_version_from_asset_name,
+    FFMPEG_GYAN_VERSION_URL, FFMPEG_GYAN_X64_ARCHIVE_URL, FFMPEG_SUPPORTED_MAJOR,
+    FFMPEG_TORDONA_ARM64_RELEASES_URL, JAWS_FOR_REAPER_HFS_BASE, JAWS_FOR_REAPER_HFS_FOLDER,
+    OSARA_UPDATE_URL, REAKONTROL_GITHUB_LATEST_URL, REAPACK_GITHUB_LATEST_URL, REAPER_DOWNLOAD_URL,
+    SWS_HOME_URL, parse_ffmpeg_gyan_release_version, parse_github_latest_release_json,
+    parse_osara_update_json, parse_reaper_latest_version, parse_sws_latest_version,
+    pick_ffmpeg_tordona_release, pick_jaws_for_reaper_version, reakontrol_version_from_asset_name,
 };
 use crate::model::{Architecture, Platform};
 use crate::package::{
-    PACKAGE_JAWS_SCRIPTS, PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER,
-    PACKAGE_SWS,
+    PACKAGE_FFMPEG, PACKAGE_JAWS_SCRIPTS, PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK,
+    PACKAGE_REAPER, PACKAGE_SWS,
 };
 use crate::version::Version;
 
@@ -30,6 +32,12 @@ const USER_AGENT: &str = "RABBIT/0.1 (+https://github.com/Timtam/rabbit)";
 pub enum ArtifactKind {
     Installer,
     Archive,
+    /// `.7z` archive — used by the FFmpeg shared builds we ship from
+    /// Gyan.dev (x64) and `tordona/ffmpeg-win-arm64` (ARM64). Both
+    /// upstreams ship `.7z` exclusively for the shared variant; the
+    /// install pipeline dispatches to a dedicated 7z extractor since
+    /// the `zip` crate can't read these.
+    SevenZipArchive,
     DiskImage,
     ExtensionBinary,
 }
@@ -70,6 +78,7 @@ pub fn resolve_latest_artifacts(
             PACKAGE_REAPACK => resolve_reapack_artifact(&client, platform, architecture)?,
             PACKAGE_REAKONTROL => resolve_reakontrol_artifact(&client, platform, architecture)?,
             PACKAGE_JAWS_SCRIPTS => resolve_jaws_scripts_artifact(&client, platform, architecture)?,
+            PACKAGE_FFMPEG => resolve_ffmpeg_artifact(&client, platform, architecture)?,
             _ => {
                 return Err(RabbitError::NoArtifactFound {
                     package_id: package_id.clone(),
@@ -96,6 +105,7 @@ pub fn expected_artifact_kind(
         PACKAGE_REAPACK => expected_reapack_artifact_kind(platform, architecture),
         PACKAGE_REAKONTROL => expected_reakontrol_artifact_kind(platform),
         PACKAGE_JAWS_SCRIPTS => Ok(ArtifactKind::Installer),
+        PACKAGE_FFMPEG => expected_ffmpeg_artifact_kind(platform, architecture),
         _ => Err(RabbitError::NoArtifactFound {
             package_id: package_id.to_string(),
             platform,
@@ -588,6 +598,129 @@ fn expected_reakontrol_artifact_kind(_platform: Platform) -> Result<ArtifactKind
     Ok(ArtifactKind::Archive)
 }
 
+/// Resolve FFmpeg's shared Windows build for the user's REAPER target
+/// arch. Fans out to two upstreams that each ship a `.7z`:
+/// - **x64**: Gyan.dev's `ffmpeg-release-full-shared.7z`, with the
+///   version pulled from the sibling `*.ver` plain-text endpoint.
+/// - **ARM64 / ARM64-EC**: the highest stable matching tag from
+///   `github.com/tordona/ffmpeg-win-arm64`, with the
+///   `ffmpeg-<ver>-full-shared-win-arm64.7z` asset selected from that
+///   tag.
+///
+/// macOS is intentionally unsupported pending an OSXExperts.net path,
+/// and x86 isn't shipped by either upstream.
+fn resolve_ffmpeg_artifact(
+    client: &Client,
+    platform: Platform,
+    architecture: Architecture,
+) -> Result<ArtifactDescriptor> {
+    match (platform, architecture) {
+        (
+            Platform::Windows,
+            Architecture::X64 | Architecture::Universal | Architecture::Unknown,
+        ) => resolve_ffmpeg_gyan_x64_artifact(client),
+        (Platform::Windows, Architecture::Arm64 | Architecture::Arm64Ec) => {
+            resolve_ffmpeg_tordona_arm64_artifact(client, architecture)
+        }
+        (Platform::Windows, Architecture::X86) | (Platform::MacOs, _) => {
+            Err(RabbitError::NoArtifactFound {
+                package_id: PACKAGE_FFMPEG.to_string(),
+                platform,
+                architecture,
+            })
+        }
+    }
+}
+
+fn resolve_ffmpeg_gyan_x64_artifact(client: &Client) -> Result<ArtifactDescriptor> {
+    let version_body = http_get_text(client, FFMPEG_GYAN_VERSION_URL)?;
+    let version = parse_ffmpeg_gyan_release_version(&version_body, FFMPEG_GYAN_VERSION_URL)?;
+    // The Gyan URL is a stable redirector; `file_name_from_url` returns
+    // the basename if the redirector is intact. Fall back to a fixed
+    // basename so the cache layout stays predictable if Gyan ever
+    // restructures the URL.
+    let file_name = file_name_from_url(FFMPEG_GYAN_X64_ARCHIVE_URL)
+        .unwrap_or_else(|| "ffmpeg-release-full-shared.7z".to_string());
+    Ok(ArtifactDescriptor {
+        package_id: PACKAGE_FFMPEG.to_string(),
+        version,
+        platform: Platform::Windows,
+        architecture: Architecture::X64,
+        kind: ArtifactKind::SevenZipArchive,
+        url: FFMPEG_GYAN_X64_ARCHIVE_URL.to_string(),
+        file_name,
+    })
+}
+
+fn resolve_ffmpeg_tordona_arm64_artifact(
+    client: &Client,
+    architecture: Architecture,
+) -> Result<ArtifactDescriptor> {
+    let body = http_get_text(client, FFMPEG_TORDONA_ARM64_RELEASES_URL)?;
+    resolve_ffmpeg_tordona_arm64_artifact_from_release_body(&body, architecture)
+}
+
+fn resolve_ffmpeg_tordona_arm64_artifact_from_release_body(
+    body: &str,
+    architecture: Architecture,
+) -> Result<ArtifactDescriptor> {
+    let release = pick_ffmpeg_tordona_release(
+        body,
+        FFMPEG_TORDONA_ARM64_RELEASES_URL,
+        FFMPEG_SUPPORTED_MAJOR,
+    )?
+    .ok_or_else(|| RabbitError::NoArtifactFound {
+        package_id: PACKAGE_FFMPEG.to_string(),
+        platform: Platform::Windows,
+        architecture,
+    })?;
+
+    // tordona ships `ffmpeg-<ver>-{essentials,full}-{shared,static}-win-arm64.7z`.
+    // We want the `full-shared` variant — full feature set, shared
+    // libraries (DLLs) so REAPER's video decoder can load them.
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name.contains("-full-shared-win-arm64") && asset.name.ends_with(".7z"))
+        .ok_or_else(|| RabbitError::NoArtifactFound {
+            package_id: PACKAGE_FFMPEG.to_string(),
+            platform: Platform::Windows,
+            architecture,
+        })?;
+
+    Ok(ArtifactDescriptor {
+        package_id: PACKAGE_FFMPEG.to_string(),
+        version: release.version,
+        platform: Platform::Windows,
+        architecture: Architecture::Arm64,
+        kind: ArtifactKind::SevenZipArchive,
+        url: asset.url.clone(),
+        file_name: asset.name.clone(),
+    })
+}
+
+fn expected_ffmpeg_artifact_kind(
+    platform: Platform,
+    architecture: Architecture,
+) -> Result<ArtifactKind> {
+    match (platform, architecture) {
+        (
+            Platform::Windows,
+            Architecture::X64 | Architecture::Universal | Architecture::Unknown,
+        )
+        | (Platform::Windows, Architecture::Arm64 | Architecture::Arm64Ec) => {
+            Ok(ArtifactKind::SevenZipArchive)
+        }
+        (Platform::Windows, Architecture::X86) | (Platform::MacOs, _) => {
+            Err(RabbitError::NoArtifactFound {
+                package_id: PACKAGE_FFMPEG.to_string(),
+                platform,
+                architecture,
+            })
+        }
+    }
+}
+
 fn resolve_jaws_scripts_artifact(
     client: &Client,
     platform: Platform,
@@ -807,10 +940,12 @@ mod tests {
 
     use crate::artifact::{
         absolute_url, expected_artifact_kind, file_name_from_url, find_href_containing,
+        resolve_ffmpeg_tordona_arm64_artifact_from_release_body,
         resolve_reakontrol_artifact_from_release_body, resolve_reapack_asset_from_fixture,
     };
     use crate::package::{
-        PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS,
+        PACKAGE_FFMPEG, PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER,
+        PACKAGE_SWS,
     };
     use tempfile::tempdir;
 
@@ -952,6 +1087,18 @@ mod tests {
                 .unwrap(),
             ArtifactKind::Archive
         );
+        assert_eq!(
+            expected_artifact_kind(PACKAGE_FFMPEG, Platform::Windows, Architecture::X64).unwrap(),
+            ArtifactKind::SevenZipArchive
+        );
+        assert_eq!(
+            expected_artifact_kind(PACKAGE_FFMPEG, Platform::Windows, Architecture::Arm64).unwrap(),
+            ArtifactKind::SevenZipArchive
+        );
+        assert!(matches!(
+            expected_artifact_kind(PACKAGE_FFMPEG, Platform::MacOs, Architecture::Arm64),
+            Err(RabbitError::NoArtifactFound { .. })
+        ));
     }
 
     #[test]
@@ -1000,6 +1147,90 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mac.file_name, "reaKontrol_mac_2026.2.16.100.cafef00d.zip");
+    }
+
+    #[test]
+    fn resolves_ffmpeg_arm64_asset_from_tordona_releases() {
+        let body = r#"[
+            {
+                "tag_name": "daily-autobuild-2026.05.06.0",
+                "prerelease": false,
+                "assets": [
+                    {
+                        "name": "ffmpeg-master-latest-full-shared-win-arm64.7z",
+                        "browser_download_url": "https://example.test/ffmpeg-master-latest-full-shared-win-arm64.7z"
+                    }
+                ]
+            },
+            {
+                "tag_name": "8.1.1",
+                "prerelease": false,
+                "assets": [
+                    {
+                        "name": "ffmpeg-8.1.1-essentials-shared-win-arm64.7z",
+                        "browser_download_url": "https://example.test/ffmpeg-8.1.1-essentials-shared-win-arm64.7z"
+                    },
+                    {
+                        "name": "ffmpeg-8.1.1-full-shared-win-arm64.7z",
+                        "browser_download_url": "https://example.test/ffmpeg-8.1.1-full-shared-win-arm64.7z"
+                    },
+                    {
+                        "name": "ffmpeg-8.1.1-full-static-win-arm64.7z",
+                        "browser_download_url": "https://example.test/ffmpeg-8.1.1-full-static-win-arm64.7z"
+                    }
+                ]
+            },
+            {
+                "tag_name": "8.0.2",
+                "prerelease": false,
+                "assets": [
+                    {
+                        "name": "ffmpeg-8.0.2-full-shared-win-arm64.7z",
+                        "browser_download_url": "https://example.test/ffmpeg-8.0.2-full-shared-win-arm64.7z"
+                    }
+                ]
+            },
+            {
+                "tag_name": "7.1.4",
+                "prerelease": false,
+                "assets": [
+                    {
+                        "name": "ffmpeg-7.1.4-full-shared-win-arm64.7z",
+                        "browser_download_url": "https://example.test/ffmpeg-7.1.4-full-shared-win-arm64.7z"
+                    }
+                ]
+            }
+        ]"#;
+
+        let arm64 =
+            resolve_ffmpeg_tordona_arm64_artifact_from_release_body(body, Architecture::Arm64)
+                .unwrap();
+        assert_eq!(arm64.package_id, PACKAGE_FFMPEG);
+        assert_eq!(arm64.kind, ArtifactKind::SevenZipArchive);
+        assert_eq!(arm64.version.raw(), "8.1.1");
+        assert_eq!(arm64.file_name, "ffmpeg-8.1.1-full-shared-win-arm64.7z");
+        assert_eq!(arm64.architecture, Architecture::Arm64);
+
+        // Same body with no n8 stable tags must surface NoArtifactFound
+        // rather than silently picking the autobuild.
+        let only_autobuild_body = r#"[
+            {
+                "tag_name": "daily-autobuild-2026.05.06.0",
+                "prerelease": false,
+                "assets": [
+                    {
+                        "name": "ffmpeg-master-latest-full-shared-win-arm64.7z",
+                        "browser_download_url": "https://example.test/ffmpeg-master-latest-full-shared-win-arm64.7z"
+                    }
+                ]
+            }
+        ]"#;
+        let error = resolve_ffmpeg_tordona_arm64_artifact_from_release_body(
+            only_autobuild_body,
+            Architecture::Arm64,
+        )
+        .unwrap_err();
+        assert!(matches!(error, RabbitError::NoArtifactFound { .. }));
     }
 
     #[test]

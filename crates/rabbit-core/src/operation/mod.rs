@@ -192,6 +192,14 @@ fn automation_support_dispatch(
     if package_id == crate::package::PACKAGE_REAKONTROL && matches!(kind, ArtifactKind::Archive) {
         return PackageAutomationSupport::Direct;
     }
+    // FFmpeg ships as a `.7z` whose `bin/` we extract directly into
+    // UserPlugins — no upstream installer to launch, no user prompt to
+    // dismiss. Same automation class as the per-file extension-binary
+    // case (Direct).
+    if package_id == crate::package::PACKAGE_FFMPEG && matches!(kind, ArtifactKind::SevenZipArchive)
+    {
+        return PackageAutomationSupport::Direct;
+    }
     let per_package = match package_id {
         crate::package::PACKAGE_REAPER => reaper::automation_support_for(kind, platform),
         crate::package::PACKAGE_OSARA => osara::automation_support_for(kind, platform),
@@ -208,7 +216,7 @@ fn automation_support_dispatch(
         ArtifactKind::Installer => {
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::VendorInstaller)
         }
-        ArtifactKind::Archive => {
+        ArtifactKind::Archive | ArtifactKind::SevenZipArchive => {
             PackageAutomationSupport::PlannedUnattended(PlannedAutomationKind::ArchiveExtraction)
         }
         ArtifactKind::DiskImage => {
@@ -1013,7 +1021,7 @@ fn planned_execution_for_artifact(
             requires_elevation,
             freshness_paths,
         },
-        ArtifactKind::Archive => PlannedExecutionPlan {
+        ArtifactKind::Archive | ArtifactKind::SevenZipArchive => PlannedExecutionPlan {
             kind: PlannedExecutionKind::ExtractArchiveAndRunInstaller,
             program: None,
             arguments: Vec::new(),
@@ -1255,7 +1263,9 @@ fn build_manual_instruction(
 fn artifact_access_step(kind: ArtifactKind, artifact_location: &str) -> String {
     match kind {
         ArtifactKind::Installer => format!("Run this installer: {artifact_location}"),
-        ArtifactKind::Archive => format!("Extract this archive: {artifact_location}"),
+        ArtifactKind::Archive | ArtifactKind::SevenZipArchive => {
+            format!("Extract this archive: {artifact_location}")
+        }
         ArtifactKind::DiskImage => format!("Open this disk image: {artifact_location}"),
         ArtifactKind::ExtensionBinary => format!("Use this extension file: {artifact_location}"),
     }
@@ -1264,7 +1274,7 @@ fn artifact_access_step(kind: ArtifactKind, artifact_location: &str) -> String {
 fn planned_automation_description(kind: ArtifactKind) -> &'static str {
     match kind {
         ArtifactKind::Installer => "vendor installer",
-        ArtifactKind::Archive => "archive extraction",
+        ArtifactKind::Archive | ArtifactKind::SevenZipArchive => "archive extraction",
         ArtifactKind::DiskImage => "disk image install",
         ArtifactKind::ExtensionBinary => "direct file install",
     }
@@ -1315,7 +1325,7 @@ fn preview_artifact_access_step(kind: ArtifactKind) -> String {
         ArtifactKind::Installer => {
             "RABBIT will download the upstream installer during the run.".to_string()
         }
-        ArtifactKind::Archive => {
+        ArtifactKind::Archive | ArtifactKind::SevenZipArchive => {
             "RABBIT will download the upstream archive during the run.".to_string()
         }
         ArtifactKind::DiskImage => {

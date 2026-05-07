@@ -4,8 +4,8 @@ use serde_json::Value;
 use crate::error::{RabbitError, Result};
 use crate::hfs::{HfsListEntry, fetch_file_list, parse_get_file_list_response};
 use crate::package::{
-    PACKAGE_JAWS_SCRIPTS, PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK, PACKAGE_REAPER,
-    PACKAGE_SWS,
+    PACKAGE_FFMPEG, PACKAGE_JAWS_SCRIPTS, PACKAGE_OSARA, PACKAGE_REAKONTROL, PACKAGE_REAPACK,
+    PACKAGE_REAPER, PACKAGE_SWS,
 };
 use crate::plan::AvailablePackage;
 use crate::version::Version;
@@ -19,6 +19,32 @@ pub const REAPACK_GITHUB_LATEST_URL: &str =
     "https://api.github.com/repos/cfillion/reapack/releases/latest";
 pub const REAKONTROL_GITHUB_LATEST_URL: &str =
     "https://api.github.com/repos/jcsteh/reaKontrol/releases/latest";
+/// Gyan.dev's plain-text version stamp for the latest stable
+/// `ffmpeg-release-full-shared.7z`. Returns a single line of UTF-8 like
+/// `8.1.1` — no JSON, no HTML scraping. We use Gyan as the canonical
+/// version source for FFmpeg (and as the x64 artifact source) because
+/// BtbN doesn't publish stable tagged releases — only rolling
+/// autobuilds — and Gyan is also winget's upstream for FFmpeg.
+pub const FFMPEG_GYAN_VERSION_URL: &str =
+    "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z.ver";
+/// Gyan.dev's stable `ffmpeg-release-full-shared.7z` URL. The path is
+/// fixed; the server redirects to the current versioned file.
+pub const FFMPEG_GYAN_X64_ARCHIVE_URL: &str =
+    "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z";
+/// `tordona/ffmpeg-win-arm64` GitHub releases — used for the ARM64
+/// fan-out of [`crate::package::ArtifactProvider::FfmpegSharedBuild`].
+/// Tags are plain `<major>.<minor>.<patch>` (no `n` prefix); we pick
+/// the highest non-prerelease tag whose major matches
+/// [`FFMPEG_SUPPORTED_MAJOR`].
+pub const FFMPEG_TORDONA_ARM64_RELEASES_URL: &str =
+    "https://api.github.com/repos/tordona/ffmpeg-win-arm64/releases?per_page=100";
+
+/// FFmpeg major version that REAPER's video decoder is known to support.
+/// Bump this when a new REAPER release adds support for the next FFmpeg
+/// major (e.g. REAPER 7.66 added FFmpeg 8 support → pinned to `8`). The
+/// detector and the latest-version provider both reference this so a
+/// single bump tracks both code paths.
+pub const FFMPEG_SUPPORTED_MAJOR: u64 = 8;
 
 /// HFS root that hosts the JAWS-for-REAPER scripts archive (rejetto HFS).
 pub const JAWS_FOR_REAPER_HFS_BASE: &str = "https://hoard.reaperaccessibility.com";
@@ -180,7 +206,7 @@ fn build_http_client() -> Result<Client> {
         })
 }
 
-fn providers() -> [(&'static str, &'static str, VersionParser); 5] {
+fn providers() -> [(&'static str, &'static str, VersionParser); 6] {
     [
         (
             PACKAGE_REAPER,
@@ -206,6 +232,11 @@ fn providers() -> [(&'static str, &'static str, VersionParser); 5] {
             PACKAGE_REAKONTROL,
             REAKONTROL_GITHUB_LATEST_URL,
             parse_reakontrol_snapshot_version as VersionParser,
+        ),
+        (
+            PACKAGE_FFMPEG,
+            FFMPEG_GYAN_VERSION_URL,
+            parse_ffmpeg_gyan_release_version as VersionParser,
         ),
     ]
 }
@@ -300,6 +331,114 @@ pub(crate) fn reakontrol_version_from_asset_name(name: &str) -> Option<Version> 
     Version::parse(version_part).ok()
 }
 
+/// Parse Gyan.dev's `*.ver` plain-text payload — a single line like
+/// `8.1.1` (sometimes with trailing whitespace / newlines). We trim
+/// and parse; anything that doesn't shape like a version is rejected.
+pub fn parse_ffmpeg_gyan_release_version(body: &str, url: &str) -> Result<Version> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Err(RabbitError::RemoteData {
+            url: url.to_string(),
+            message: "Gyan FFmpeg release-version response was empty".to_string(),
+        });
+    }
+    Version::parse(trimmed).map_err(|_| RabbitError::RemoteData {
+        url: url.to_string(),
+        message: format!("Gyan FFmpeg release-version response is not a version: {trimmed:?}"),
+    })
+}
+
+/// Walk the tordona/ffmpeg-win-arm64 releases JSON and return both the
+/// highest stable tag whose major matches `FFMPEG_SUPPORTED_MAJOR` and
+/// its assets. The ARM64 artifact resolver uses the assets list to
+/// pick `ffmpeg-<ver>-full-shared-win-arm64.7z`. Pre-releases (the
+/// daily `daily-autobuild-*` autobuilds and the `latest` rolling tag)
+/// and majors other than the supported one are skipped.
+pub(crate) fn pick_ffmpeg_tordona_release(
+    body: &str,
+    url: &str,
+    supported_major: u64,
+) -> Result<Option<TordonaRelease>> {
+    let releases = parse_tordona_releases_array(body, url)?;
+    let mut best: Option<TordonaRelease> = None;
+    for release in releases {
+        let parts = release.version.numeric_parts();
+        if parts.first().copied() != Some(supported_major) {
+            continue;
+        }
+        best = Some(match best {
+            Some(current) if current.version.cmp_lenient(&release.version).is_ge() => current,
+            _ => release.clone(),
+        });
+    }
+    Ok(best)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TordonaRelease {
+    pub version: Version,
+    pub assets: Vec<TordonaAsset>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TordonaAsset {
+    pub name: String,
+    pub url: String,
+}
+
+fn parse_tordona_releases_array(body: &str, url: &str) -> Result<Vec<TordonaRelease>> {
+    let value: Value = serde_json::from_str(body).map_err(|source| RabbitError::RemoteData {
+        url: url.to_string(),
+        message: source.to_string(),
+    })?;
+    let array = value.as_array().ok_or_else(|| RabbitError::RemoteData {
+        url: url.to_string(),
+        message: "tordona/ffmpeg-win-arm64 releases response was not a JSON array".to_string(),
+    })?;
+
+    let mut releases = Vec::with_capacity(array.len());
+    for entry in array {
+        if entry.get("prerelease").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let Some(tag_name) = entry.get("tag_name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(version) = ffmpeg_version_from_tordona_tag(tag_name) else {
+            continue;
+        };
+        let assets = entry
+            .get("assets")
+            .and_then(Value::as_array)
+            .map(|assets| {
+                assets
+                    .iter()
+                    .filter_map(|asset| {
+                        let name = asset.get("name").and_then(Value::as_str)?.to_string();
+                        let url = asset
+                            .get("browser_download_url")
+                            .and_then(Value::as_str)?
+                            .to_string();
+                        Some(TordonaAsset { name, url })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        releases.push(TordonaRelease { version, assets });
+    }
+    Ok(releases)
+}
+
+/// Extract a `Version` from a tordona/ffmpeg-win-arm64 release tag.
+/// Tags are plain `<major>.<minor>.<patch>` (no `n` prefix, no `v`).
+/// Rolling tags (`latest`, `daily-autobuild-…`) return `None`.
+pub(crate) fn ffmpeg_version_from_tordona_tag(tag_name: &str) -> Option<Version> {
+    if !tag_name.starts_with(|ch: char| ch.is_ascii_digit()) {
+        return None;
+    }
+    Version::parse(tag_name).ok()
+}
+
 pub fn parse_sws_latest_version(body: &str, url: &str) -> Result<Version> {
     let marker = "Latest stable version:";
     let Some(marker_start) = body.find(marker) else {
@@ -391,11 +530,13 @@ fn collect_digits(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        OSARA_UPDATE_URL, REAKONTROL_GITHUB_LATEST_URL, REAPACK_GITHUB_LATEST_URL,
-        REAPER_DOWNLOAD_URL, SWS_HOME_URL, jaws_for_reaper_listing_url,
-        jaws_for_reaper_version_from_filename, parse_github_latest_release_json,
-        parse_jaws_for_reaper_listing, parse_osara_update_json, parse_reakontrol_snapshot_version,
-        parse_reaper_latest_version, parse_sws_latest_version, reakontrol_version_from_asset_name,
+        FFMPEG_GYAN_VERSION_URL, FFMPEG_TORDONA_ARM64_RELEASES_URL, OSARA_UPDATE_URL,
+        REAKONTROL_GITHUB_LATEST_URL, REAPACK_GITHUB_LATEST_URL, REAPER_DOWNLOAD_URL, SWS_HOME_URL,
+        ffmpeg_version_from_tordona_tag, jaws_for_reaper_listing_url,
+        jaws_for_reaper_version_from_filename, parse_ffmpeg_gyan_release_version,
+        parse_github_latest_release_json, parse_jaws_for_reaper_listing, parse_osara_update_json,
+        parse_reakontrol_snapshot_version, parse_reaper_latest_version, parse_sws_latest_version,
+        pick_ffmpeg_tordona_release, reakontrol_version_from_asset_name,
     };
 
     #[test]
@@ -514,5 +655,113 @@ mod tests {
         let error =
             parse_jaws_for_reaper_listing(body, &jaws_for_reaper_listing_url()).unwrap_err();
         assert!(error.to_string().contains("no versioned JAWS-for-REAPER"));
+    }
+
+    #[test]
+    fn parses_gyan_release_version_text_payload() {
+        assert_eq!(
+            parse_ffmpeg_gyan_release_version("8.1.1\n", FFMPEG_GYAN_VERSION_URL)
+                .unwrap()
+                .raw(),
+            "8.1.1"
+        );
+        assert_eq!(
+            parse_ffmpeg_gyan_release_version("  8.1.1  ", FFMPEG_GYAN_VERSION_URL)
+                .unwrap()
+                .raw(),
+            "8.1.1"
+        );
+        assert!(parse_ffmpeg_gyan_release_version("", FFMPEG_GYAN_VERSION_URL).is_err());
+        assert!(
+            parse_ffmpeg_gyan_release_version("not-a-version", FFMPEG_GYAN_VERSION_URL).is_err()
+        );
+    }
+
+    #[test]
+    fn extracts_ffmpeg_version_from_tordona_release_tag() {
+        // tordona ships plain `<major>.<minor>.<patch>` tags.
+        assert_eq!(
+            ffmpeg_version_from_tordona_tag("8.1.1").unwrap().raw(),
+            "8.1.1"
+        );
+        assert_eq!(
+            ffmpeg_version_from_tordona_tag("7.1.4").unwrap().raw(),
+            "7.1.4"
+        );
+        // Rolling tags and BtbN-style `n` prefixes are rejected.
+        assert!(ffmpeg_version_from_tordona_tag("latest").is_none());
+        assert!(ffmpeg_version_from_tordona_tag("daily-autobuild-2026.05.06.0").is_none());
+        assert!(ffmpeg_version_from_tordona_tag("n8.1.1").is_none());
+    }
+
+    #[test]
+    fn picks_highest_stable_n8_release_from_tordona_listing() {
+        let body = r#"[
+            {
+                "tag_name": "daily-autobuild-2026.05.06.0",
+                "prerelease": false,
+                "assets": [
+                    {
+                        "name": "ffmpeg-master-latest-full-shared-win-arm64.7z",
+                        "browser_download_url": "https://example.test/ffmpeg-master-latest-full-shared-win-arm64.7z"
+                    }
+                ]
+            },
+            {
+                "tag_name": "7.1.4",
+                "prerelease": false,
+                "assets": []
+            },
+            {
+                "tag_name": "8.0.2",
+                "prerelease": false,
+                "assets": []
+            },
+            {
+                "tag_name": "8.1.1",
+                "prerelease": false,
+                "assets": [
+                    {
+                        "name": "ffmpeg-8.1.1-full-shared-win-arm64.7z",
+                        "browser_download_url": "https://example.test/ffmpeg-8.1.1-full-shared-win-arm64.7z"
+                    },
+                    {
+                        "name": "ffmpeg-8.1.1-full-static-win-arm64.7z",
+                        "browser_download_url": "https://example.test/ffmpeg-8.1.1-full-static-win-arm64.7z"
+                    }
+                ]
+            },
+            {
+                "tag_name": "9.0",
+                "prerelease": true,
+                "assets": []
+            }
+        ]"#;
+        let release = pick_ffmpeg_tordona_release(body, FFMPEG_TORDONA_ARM64_RELEASES_URL, 8)
+            .unwrap()
+            .expect("an n8.x.y release should be selected");
+        assert_eq!(release.version.raw(), "8.1.1");
+        // The full-shared asset must remain in the picked release so the
+        // artifact resolver can grab the `.browser_download_url`.
+        let asset = release
+            .assets
+            .iter()
+            .find(|asset| asset.name == "ffmpeg-8.1.1-full-shared-win-arm64.7z")
+            .expect("full-shared asset should still be carried through");
+        assert_eq!(
+            asset.url,
+            "https://example.test/ffmpeg-8.1.1-full-shared-win-arm64.7z"
+        );
+    }
+
+    #[test]
+    fn errors_when_tordona_listing_has_no_supported_major() {
+        let body = r#"[
+            {"tag_name": "7.1.4", "prerelease": false, "assets": []},
+            {"tag_name": "latest", "prerelease": true, "assets": []}
+        ]"#;
+        let release =
+            pick_ffmpeg_tordona_release(body, FFMPEG_TORDONA_ARM64_RELEASES_URL, 8).unwrap();
+        assert!(release.is_none());
     }
 }

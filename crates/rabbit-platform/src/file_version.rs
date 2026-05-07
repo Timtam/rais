@@ -29,7 +29,19 @@ pub fn read_file_version_parts(path: &Path) -> Option<[u32; 4]> {
 /// Returns `None` when the file has no version resource, no StringFileInfo
 /// block, or no `FileVersion` entry. Always `None` on non-Windows hosts.
 pub fn read_file_version_string(path: &Path) -> Option<String> {
-    platform_read_file_version_string(path)
+    read_string_file_info_key(path, "FileVersion")
+}
+
+/// Read an arbitrary StringFileInfo key (e.g. `"ProductVersion"`,
+/// `"CompanyName"`, `"OriginalFilename"`) off a Windows binary.
+/// FFmpeg's resource script sets `FileVersion = LIBAVUTIL_VERSION`
+/// (the libavutil major.minor.micro, NOT the FFmpeg release) and
+/// `ProductVersion = FFMPEG_VERSION` (the release string like `8.1.1`
+/// or `n8.1.1-…`), so we use this to read the release version directly
+/// from `ffmpeg.exe` / `ffprobe.exe` / `ffplay.exe`. Always `None` on
+/// non-Windows hosts.
+pub fn read_string_file_info_key(path: &Path, key: &str) -> Option<String> {
+    platform_read_string_file_info_key(path, key)
 }
 
 #[cfg(windows)]
@@ -128,7 +140,7 @@ fn platform_read_file_version_parts(_path: &Path) -> Option<[u32; 4]> {
 }
 
 #[cfg(windows)]
-fn platform_read_file_version_string(path: &Path) -> Option<String> {
+fn platform_read_string_file_info_key(path: &Path, key: &str) -> Option<String> {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
 
@@ -183,9 +195,9 @@ fn platform_read_file_version_string(path: &Path) -> Option<String> {
         (0x0409, 0x04B0)
     };
 
-    // The subkey path is `\StringFileInfo\<lang><codepage>\FileVersion` with
+    // The subkey path is `\StringFileInfo\<lang><codepage>\<key>` with
     // the language/codepage written as 8 lowercase hex digits.
-    let subkey_str = format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileVersion");
+    let subkey_str = format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\{key}");
     let subkey: Vec<u16> = subkey_str.encode_utf16().chain(Some(0)).collect();
 
     let mut value: *mut c_void = std::ptr::null_mut();
@@ -215,7 +227,7 @@ fn platform_read_file_version_string(path: &Path) -> Option<String> {
 }
 
 #[cfg(not(windows))]
-fn platform_read_file_version_string(_path: &Path) -> Option<String> {
+fn platform_read_string_file_info_key(_path: &Path, _key: &str) -> Option<String> {
     None
 }
 

@@ -5,12 +5,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
-use crate::archive::extract_user_plugin_from_archive;
+use crate::archive::{
+    extract_bin_directory_from_seven_zip_archive, extract_user_plugin_from_archive,
+};
 use crate::artifact::{ArtifactKind, CachedArtifact};
 use crate::disk_image::extract_user_plugin_from_disk_image;
 use crate::error::{IoPathContext, RabbitError, Result};
 use crate::hash::sha256_file;
-use crate::package::{PackageSpec, package_specs_by_id};
+use crate::package::{PACKAGE_FFMPEG, PackageSpec, package_specs_by_id};
 use crate::preflight::{PreflightOptions, PreflightReport, run_install_preflight};
 use crate::receipt::{
     RECEIPT_RELATIVE_PATH, load_install_state, receipt_path, save_install_state,
@@ -93,44 +95,53 @@ pub fn install_cached_artifacts(
 
     for artifact in artifacts {
         let prepared = prepare_install_source(artifact)?;
+        let mut artifact_target_paths = Vec::with_capacity(prepared.files.len());
 
-        let relative_target = PathBuf::from("UserPlugins").join(&prepared.target_file_name);
-        let target_path = resource_path.join(&relative_target);
-        let target_exists = target_path.is_file();
-        let target_matches = target_exists && sha256_file(&target_path)? == prepared.source_sha256;
-        let backup_path = if target_exists && !target_matches {
-            let backup_set = resource_path
-                .join("RABBIT")
-                .join("backups")
-                .join(&timestamp);
-            replacement_backup_set.get_or_insert_with(|| backup_set.clone());
-            Some(backup_set.join(&relative_target))
-        } else {
-            None
-        };
+        for file in &prepared.files {
+            let relative_target = PathBuf::from("UserPlugins").join(&file.target_file_name);
+            let target_path = resource_path.join(&relative_target);
+            let target_exists = target_path.is_file();
+            let target_matches = target_exists && sha256_file(&target_path)? == file.source_sha256;
+            let backup_path = if target_exists && !target_matches {
+                let backup_set = resource_path
+                    .join("RABBIT")
+                    .join("backups")
+                    .join(&timestamp);
+                replacement_backup_set.get_or_insert_with(|| backup_set.clone());
+                Some(backup_set.join(&relative_target))
+            } else {
+                None
+            };
 
-        let action = classify_action(options.dry_run, target_exists, target_matches);
-        report.actions.push(InstallFileReport {
-            package_id: artifact.descriptor.package_id.clone(),
-            source_path: prepared.source_path.clone(),
-            target_path: target_path.clone(),
-            backup_path: backup_path.clone(),
-            action,
-            size: prepared.source_size,
-            sha256: prepared.source_sha256.clone(),
-        });
+            let action = classify_action(options.dry_run, target_exists, target_matches);
+            report.actions.push(InstallFileReport {
+                package_id: artifact.descriptor.package_id.clone(),
+                source_path: file.source_path.clone(),
+                target_path: target_path.clone(),
+                backup_path: backup_path.clone(),
+                action,
+                size: file.source_size,
+                sha256: file.source_sha256.clone(),
+            });
+
+            if options.dry_run {
+                artifact_target_paths.push(target_path);
+                continue;
+            }
+
+            if !target_matches {
+                install_extension_file(
+                    &file.source_path,
+                    &file.source_sha256,
+                    &target_path,
+                    backup_path.as_deref(),
+                )?;
+            }
+            artifact_target_paths.push(target_path);
+        }
 
         if options.dry_run {
             continue;
-        }
-
-        if !target_matches {
-            install_extension_file(
-                &prepared.source_path,
-                &prepared.source_sha256,
-                &target_path,
-                backup_path.as_deref(),
-            )?;
         }
 
         upsert_package_receipt(
@@ -140,7 +151,7 @@ pub fn install_cached_artifacts(
             Some(artifact.descriptor.version.clone()),
             Some(artifact.descriptor.url.clone()),
             Some(artifact.sha256.clone()),
-            &[target_path],
+            &artifact_target_paths,
             Some(install_timestamp()),
             Some(artifact.descriptor.architecture),
         )?;
@@ -183,21 +194,27 @@ fn classify_action(dry_run: bool, target_exists: bool, target_matches: bool) -> 
     }
 }
 
-struct PreparedInstallSource {
+struct PreparedInstallFile {
     source_path: PathBuf,
     source_sha256: String,
     source_size: u64,
     target_file_name: String,
+}
+
+struct PreparedInstallSource {
+    files: Vec<PreparedInstallFile>,
     _extraction_dir: Option<TempDir>,
 }
 
 fn prepare_install_source(artifact: &CachedArtifact) -> Result<PreparedInstallSource> {
     match artifact.descriptor.kind {
         ArtifactKind::ExtensionBinary => Ok(PreparedInstallSource {
-            source_path: artifact.path.clone(),
-            source_sha256: artifact.sha256.clone(),
-            source_size: artifact.size,
-            target_file_name: artifact.descriptor.file_name.clone(),
+            files: vec![PreparedInstallFile {
+                source_path: artifact.path.clone(),
+                source_sha256: artifact.sha256.clone(),
+                source_size: artifact.size,
+                target_file_name: artifact.descriptor.file_name.clone(),
+            }],
             _extraction_dir: None,
         }),
         ArtifactKind::Archive => {
@@ -211,15 +228,44 @@ fn prepare_install_source(artifact: &CachedArtifact) -> Result<PreparedInstallSo
             })?;
             let extracted =
                 extract_user_plugin_from_archive(&artifact.path, &spec, extraction_dir.path())?;
-            let source_sha256 = sha256_file(&extracted.extracted_path)?;
-            let source_size = fs::metadata(&extracted.extracted_path)
-                .with_path(&extracted.extracted_path)?
-                .len();
             Ok(PreparedInstallSource {
-                source_path: extracted.extracted_path,
-                source_sha256,
-                source_size,
-                target_file_name: extracted.file_name,
+                files: vec![prepared_install_file_from_extracted(extracted)?],
+                _extraction_dir: Some(extraction_dir),
+            })
+        }
+        ArtifactKind::SevenZipArchive => {
+            // FFmpeg ships every runtime DLL under `bin/` in the
+            // Gyan.dev (x64) and tordona/ffmpeg-win-arm64 (ARM64)
+            // archives — extract all of them so REAPER's video
+            // decoder gets every avformat / avcodec / sw* sibling
+            // alongside the top-level prefix-matched DLL. SevenZipArchive
+            // is the only kind whose extractor handles `.7z`; the
+            // package-id guard is a safety net in case a future
+            // package gets the same kind without bin/-style layout.
+            if artifact.descriptor.package_id != PACKAGE_FFMPEG {
+                return Err(RabbitError::UnsupportedArtifactKind {
+                    package_id: artifact.descriptor.package_id.clone(),
+                    kind: ArtifactKind::SevenZipArchive,
+                });
+            }
+            let spec = lookup_install_spec(
+                &artifact.descriptor.package_id,
+                artifact.descriptor.platform,
+            )?;
+            let extraction_dir = TempDir::new().map_err(|source| RabbitError::Io {
+                path: PathBuf::from("rabbit-7z-archive-extract"),
+                source,
+            })?;
+            let extracted = extract_bin_directory_from_seven_zip_archive(
+                &artifact.path,
+                &spec,
+                extraction_dir.path(),
+            )?;
+            Ok(PreparedInstallSource {
+                files: extracted
+                    .into_iter()
+                    .map(prepared_install_file_from_extracted)
+                    .collect::<Result<Vec<_>>>()?,
                 _extraction_dir: Some(extraction_dir),
             })
         }
@@ -234,15 +280,8 @@ fn prepare_install_source(artifact: &CachedArtifact) -> Result<PreparedInstallSo
             })?;
             let extracted =
                 extract_user_plugin_from_disk_image(&artifact.path, &spec, extraction_dir.path())?;
-            let source_sha256 = sha256_file(&extracted.extracted_path)?;
-            let source_size = fs::metadata(&extracted.extracted_path)
-                .with_path(&extracted.extracted_path)?
-                .len();
             Ok(PreparedInstallSource {
-                source_path: extracted.extracted_path,
-                source_sha256,
-                source_size,
-                target_file_name: extracted.file_name,
+                files: vec![prepared_install_file_from_extracted(extracted)?],
                 _extraction_dir: Some(extraction_dir),
             })
         }
@@ -251,6 +290,21 @@ fn prepare_install_source(artifact: &CachedArtifact) -> Result<PreparedInstallSo
             kind,
         }),
     }
+}
+
+fn prepared_install_file_from_extracted(
+    extracted: crate::archive::ExtractedUserPlugin,
+) -> Result<PreparedInstallFile> {
+    let source_sha256 = sha256_file(&extracted.extracted_path)?;
+    let source_size = fs::metadata(&extracted.extracted_path)
+        .with_path(&extracted.extracted_path)?
+        .len();
+    Ok(PreparedInstallFile {
+        source_path: extracted.extracted_path,
+        source_sha256,
+        source_size,
+        target_file_name: extracted.file_name,
+    })
 }
 
 fn lookup_install_spec(package_id: &str, platform: crate::model::Platform) -> Result<PackageSpec> {

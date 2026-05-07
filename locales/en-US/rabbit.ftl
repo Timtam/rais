@@ -14,6 +14,7 @@ package-sws = SWS Extension
 package-reapack = ReaPack
 package-reakontrol = ReaKontrol
 package-jaws-scripts = JAWS-for-REAPER scripts
+package-ffmpeg = FFmpeg
 
 package-reaper-description = REAPER is the digital audio workstation that everything else here builds on. RABBIT can install or update REAPER itself for you.
 package-osara-description = OSARA makes REAPER usable with screen readers — NVDA, JAWS, Narrator on Windows and VoiceOver on macOS. Install it if you rely on a screen reader to use REAPER.
@@ -21,6 +22,7 @@ package-sws-description = The SWS Extension is a long-running community pack of 
 package-reapack-description = ReaPack is REAPER's package manager: it installs, updates, and tracks third-party scripts and extensions from inside REAPER itself. Install it if you plan to use scripts shared by the REAPER community.
 package-reakontrol-description = ReaKontrol adds Native Instruments Komplete Kontrol keyboard support to REAPER. Install it if you have a Komplete Kontrol keyboard and want hardware control surface integration.
 package-jaws-scripts-description = The JAWS-for-REAPER scripts add script-level support for REAPER to the JAWS screen reader on Windows. RABBIT only offers them when JAWS is detected on this PC.
+package-ffmpeg-description = FFmpeg's shared runtime libraries enable REAPER's video decoder to import and play back common video and audio formats. RABBIT installs the BtbN GPL-shared build's bin folder into UserPlugins; the patch level isn't recoverable from the DLL filenames alone, so externally-installed FFmpegs are reported with a `<major>.0.0` placeholder.
 
 # $reason is one of the localized "wizard-package-row-unavailable-*" strings
 # explaining *why* the row is unavailable. Appended to the row's main summary
