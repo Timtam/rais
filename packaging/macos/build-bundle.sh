@@ -96,16 +96,76 @@ cat > "$STAGE_DIR/$WRAPPER_NAME/Open Me First.command" <<'HELPER'
 # RABBIT ships unsigned (no Apple Developer Program enrollment). Running this
 # helper once clears macOS's first-launch quarantine on Rabbit.app so it
 # launches normally from Finder. Future self-updates inherit the trust.
+set -u
+
 DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET="$DIR/Rabbit.app"
+
+pause() {
+	# Keep the Terminal window open after the script finishes so the user can
+	# read the result regardless of their Terminal "When the shell exits"
+	# preference.
+	echo
+	printf "Press Return to close this window. "
+	read -r _ || true
+}
+
+echo "RABBIT first-launch trust helper"
+echo "================================"
+echo
+
 if [ ! -d "$TARGET" ]; then
-	echo "Rabbit.app was not found next to this helper."
-	echo "Make sure both items extracted into the same folder, then run this again."
+	echo "Rabbit.app was not found next to this helper at:"
+	echo "  $TARGET"
+	echo
+	echo "Make sure both items (Rabbit.app and 'Open Me First.command')"
+	echo "extracted into the same folder, then run this helper again."
+	pause
 	exit 1
 fi
-xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
+
+echo "Clearing macOS quarantine from:"
+echo "  $TARGET"
+echo
+
+# Don't silence stderr — if xattr complains we want the user (and us) to see
+# why. -dr removes com.apple.quarantine recursively from every file inside
+# the .app so the inner Mach-O and frameworks lose their download markers.
+xattr -dr com.apple.quarantine "$TARGET" || true
+
+# Verify the attribute is actually gone from the top-level bundle. The most
+# common silent failure is Terminal lacking the Files-and-Folders permission
+# needed to write extended attributes when the bundle sits on Desktop,
+# Documents, or iCloud Drive — the call returns success-ish but the attr
+# stays. Catch that here instead of telling the user "all done".
+if xattr -p com.apple.quarantine "$TARGET" >/dev/null 2>&1; then
+	echo
+	echo "ERROR: com.apple.quarantine is still attached to Rabbit.app."
+	echo "Removing it did not take effect. Common causes:"
+	echo
+	echo "  - The Rabbit folder is on Desktop, Documents, or iCloud Drive and"
+	echo "    Terminal does not have permission to modify files there."
+	echo "    Fix: move the Rabbit folder to ~/Downloads and run this helper"
+	echo "    again, OR open System Settings -> Privacy & Security ->"
+	echo "    Files and Folders, find Terminal, and enable access for the"
+	echo "    folder you extracted into."
+	echo
+	echo "  - Rabbit.app is still inside the downloaded .zip (read-only)."
+	echo "    Fix: extract the Rabbit folder to a writable location first."
+	echo
+	echo "Manual fallback (run in Terminal):"
+	echo "  xattr -dr com.apple.quarantine \"$TARGET\""
+	echo
+	echo "Or open Rabbit.app once, dismiss the warning dialog, then click"
+	echo "'Open Anyway' in System Settings -> Privacy & Security."
+	pause
+	exit 1
+fi
+
+echo
 echo "Rabbit.app is now trusted."
 echo "You can close this window and double-click Rabbit.app to launch RABBIT."
+pause
 HELPER
 chmod +x "$STAGE_DIR/$WRAPPER_NAME/Open Me First.command"
 
