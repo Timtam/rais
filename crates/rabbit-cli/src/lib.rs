@@ -37,7 +37,15 @@ use serde::Serialize;
 
 #[derive(Debug, Parser)]
 #[command(name = "rabbit")]
+#[command(version)]
 #[command(about = "Diagnostic CLI for REAPER Accessibility Bootstrap & Bundle Installation Tool")]
+#[command(help_template = "\
+{name} {version}
+{about-with-newline}
+{usage-heading} {usage}
+
+{all-args}{after-help}\
+")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

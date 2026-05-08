@@ -520,7 +520,11 @@ fn model_from_plan_with_options(
         .any(|row| matches!(row.action, PlanActionKind::Install | PlanActionKind::Update));
 
     WizardModel {
-        window_title: localizer.text("app-title").value,
+        window_title: format!(
+            "{} v{}",
+            localizer.text("app-title").value,
+            env!("CARGO_PKG_VERSION")
+        ),
         platform,
         architecture,
         bootstrap_options,
@@ -3241,7 +3245,10 @@ mod tests {
 
         assert_eq!(
             model.window_title,
-            "REAPER Accessibility Bootstrap & Bundle Installation Tool"
+            format!(
+                "REAPER Accessibility Bootstrap & Bundle Installation Tool v{}",
+                env!("CARGO_PKG_VERSION")
+            )
         );
         assert_eq!(model.steps.len(), 7);
         assert_eq!(model.target_rows.len(), 1);

@@ -1,0 +1,107 @@
+name: prepare-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (X.Y.Z, no leading v)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Bump, roll changelog, tag, dispatch release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate inputs and CHANGELOG
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+            echo "Version '$VERSION' is not valid semver (expected X.Y.Z[-prerelease])" >&2
+            exit 1
+          fi
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists" >&2
+            exit 1
+          fi
+          if ! grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+            echo "CHANGELOG.md is missing the [Unreleased] section" >&2
+            exit 1
+          fi
+          UNRELEASED_BODY="$(bash scripts/extract-changelog.sh Unreleased CHANGELOG.md 2>/dev/null || true)"
+          if [ -z "$(printf '%s' "$UNRELEASED_BODY" | tr -d '[:space:]')" ]; then
+            echo "[Unreleased] section is empty; add entries to CHANGELOG.md before releasing." >&2
+            exit 1
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-edit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-edit
+
+      - name: Bump workspace version (Cargo.toml + Cargo.lock)
+        env:
+          VERSION: ${{ inputs.version }}
+        run: cargo set-version --workspace "$VERSION"
+
+      - name: Roll [Unreleased] into versioned section
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          DATE="$(date -u +%Y-%m-%d)"
+          awk -v ver="$VERSION" -v date="$DATE" '
+            BEGIN { done = 0 }
+            /^## \[Unreleased\]/ && !done {
+              print "## [Unreleased]"
+              print ""
+              print "## [" ver "] - " date
+              done = 1
+              next
+            }
+            { print }
+          ' CHANGELOG.md > CHANGELOG.md.new
+          mv CHANGELOG.md.new CHANGELOG.md
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit, tag, and push
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "release: v${VERSION}"
+          git tag -a "v${VERSION}" -m "v${VERSION}"
+          # Push commit back to the branch we were dispatched on, then the tag.
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "v${VERSION}"
+
+      - name: Trigger release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          # GITHUB_TOKEN-driven tag pushes do not fire the `push: tags` trigger
+          # in release.yml (GitHub's no-recursion safeguard for default tokens).
+          # Dispatch release.yml explicitly with the new tag as its ref so it
+          # checks out the bumped commit and publishes the release.
+          gh workflow run release.yml --ref "v${VERSION}"

@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -221,12 +222,29 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Download release artifacts
         uses: actions/download-artifact@v5
         with:
           pattern: rabbit-*
           merge-multiple: true
           path: release
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG_NAME#v}"
+          NOTES_PATH="release/RELEASE_NOTES.md"
+          bash scripts/extract-changelog.sh "$VERSION" CHANGELOG.md > "$NOTES_PATH"
+          echo "notes_path=$NOTES_PATH" >> "$GITHUB_OUTPUT"
+          echo "::group::Release notes"
+          cat "$NOTES_PATH"
+          echo "::endgroup::"
 
       - name: Generate combined checksum file
         shell: bash
@@ -310,4 +328,4 @@ jobs:
             release/rabbit-*
             release/SHA256SUMS.txt
             release/rabbit-update-stable.json
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.notes_path }}
