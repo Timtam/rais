@@ -2564,16 +2564,27 @@ fn package_rows(
             } else {
                 format!("{summary}\n\n{description}")
             };
+            // Auto-tick rule:
+            //  - Update → always ticked (the package is already on disk; the
+            //    user opted into having it, so keep it current by default).
+            //  - Install → only ticked when the spec is `recommended`. Non-
+            //    recommended packages (FFmpeg, ReaKontrol, JAWS scripts) stay
+            //    unchecked so the wizard doesn't push them on users who never
+            //    asked for them.
+            //  - Keep → never ticked (nothing to do).
+            let recommended = spec.map(|spec| spec.recommended).unwrap_or(false);
+            let initially_selected = match action.action {
+                PlanActionKind::Update => true,
+                PlanActionKind::Install => recommended,
+                PlanActionKind::Keep => false,
+            };
             PackageRow {
                 package_id: action.package_id.clone(),
                 summary: summary.clone(),
                 details,
                 display_name: display_name.clone(),
                 description,
-                selected: matches!(
-                    action.action,
-                    PlanActionKind::Install | PlanActionKind::Update
-                ),
+                selected: initially_selected,
                 installed_version,
                 available_version,
                 action: action.action,
@@ -2589,6 +2600,34 @@ fn package_rows(
         .collect()
 }
 
+/// Will this package be on disk after the current wizard run completes?
+///
+/// Two ways the answer is yes:
+///
+/// 1. The package was already on disk before the wizard opened. We read
+///    that from `original_action` — the plan only emits `Install` for
+///    packages that aren't installed, so anything else (`Update`, `Keep`)
+///    means the package was on disk when the wizard built its rows.
+/// 2. The user has the row ticked and its current action stages it to
+///    disk (`Install` or `Update`). `Keep` doesn't move bytes.
+///
+/// Driving the configuration-row dependency check off this predicate
+/// keeps gating coherent when a row's `selected` and `action` disagree —
+/// e.g. a non-recommended `Install` row arrives unticked-by-default
+/// (so `selected=false` but `action=Install`), and a user-unticked row
+/// is flipped to `Keep` (so `selected=false` but `action=Keep`). Both
+/// must read as "won't be on disk", which the simpler action-only check
+/// got wrong for the latter and our new default broke for the former.
+fn package_row_will_land_on_disk(row: &PackageRow) -> bool {
+    if !row.available_for_target {
+        return false;
+    }
+    let was_installed = !matches!(row.original_action, PlanActionKind::Install);
+    let installing_now = matches!(row.action, PlanActionKind::Install | PlanActionKind::Update)
+        && row.selected;
+    was_installed || installing_now
+}
+
 /// Build [`ConfigurationRow`]s from `rabbit-core`'s builtin step
 /// catalogue, gating each row on whether its dependency package is
 /// either already installed (action `Keep`) or queued for install /
@@ -2601,23 +2640,7 @@ pub fn configuration_rows(
 ) -> Vec<ConfigurationRow> {
     let installed_or_pending: BTreeMap<&str, bool> = package_rows
         .iter()
-        .map(|row| {
-            (
-                row.package_id.as_str(),
-                // "is or will be on disk after this run":
-                //  - `Keep` means already current → on disk
-                //  - `Install`/`Update` count if the user keeps the
-                //    row checked, but at row-build time we honour the
-                //    plan's current decision (the wizard later flips
-                //    rows live via `apply_checkbox_state_to_package_row`,
-                //    and `recompute_configuration_row_availability`
-                //    re-evaluates after each toggle).
-                matches!(
-                    row.action,
-                    PlanActionKind::Install | PlanActionKind::Update | PlanActionKind::Keep,
-                ),
-            )
-        })
+        .map(|row| (row.package_id.as_str(), package_row_will_land_on_disk(row)))
         .collect();
 
     rabbit_core::configuration::builtin_configuration_steps()
@@ -2787,16 +2810,7 @@ pub fn recompute_configuration_row_availability(
 ) {
     let installed_or_pending: BTreeMap<&str, bool> = package_rows
         .iter()
-        .map(|row| {
-            (
-                row.package_id.as_str(),
-                row.available_for_target
-                    && matches!(
-                        row.action,
-                        PlanActionKind::Install | PlanActionKind::Update | PlanActionKind::Keep,
-                    ),
-            )
-        })
+        .map(|row| (row.package_id.as_str(), package_row_will_land_on_disk(row)))
         .collect();
     let steps = rabbit_core::configuration::builtin_configuration_steps();
     for row in configuration_rows.iter_mut() {
@@ -2990,7 +3004,9 @@ mod tests {
         ManualInstallInstruction, PackageOperationItem, PackageOperationReport,
         PackageOperationStatus, PlannedExecutionKind, PlannedExecutionPlan,
     };
-    use rabbit_core::package::{PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS};
+    use rabbit_core::package::{
+        PACKAGE_FFMPEG, PACKAGE_OSARA, PACKAGE_REAPACK, PACKAGE_REAPER, PACKAGE_SWS,
+    };
     use rabbit_core::plan::{InstallPlan, PlanAction, PlanActionKind};
     use rabbit_core::preflight::PreflightReport;
     use rabbit_core::resource::ResourceInitReport;
@@ -3380,6 +3396,115 @@ mod tests {
         assert_eq!(row.action_label, "Update");
         assert!(row.selected);
         assert!(row.summary.contains("Update"));
+    }
+
+    #[test]
+    fn non_recommended_package_install_row_starts_unticked() {
+        // FFmpeg is `recommended: false` in builtin-packages.json. Even when
+        // the plan's action for it is Install, the wizard must NOT auto-tick
+        // the row — non-recommended packages should be opt-in.
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let installation = fake_installation();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            vec![installation.clone()],
+            Some(0),
+            InstallPlan {
+                target: Some(installation),
+                actions: vec![PlanAction {
+                    package_id: PACKAGE_FFMPEG.to_string(),
+                    action: PlanActionKind::Install,
+                    installed_version: None,
+                    available_version: Some(Version::parse("8.1.1").unwrap()),
+                    reason: "Missing".to_string(),
+                }],
+                notes: Vec::new(),
+            },
+        );
+        let row = &model.package_rows[0];
+        assert_eq!(row.action, PlanActionKind::Install);
+        assert!(!row.selected);
+    }
+
+    #[test]
+    fn configuration_row_unticks_when_dep_package_is_unticked_install() {
+        // ReaPack is `recommended: false`. With a fresh target it lands as an
+        // Install action that arrives unticked-by-default, so the
+        // "add ReaPack remote" configuration step's dependency is NOT
+        // satisfied — the configuration row must start unticked too,
+        // otherwise the wizard would queue a config step that points at a
+        // package the user hasn't asked for.
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let installation = fake_installation();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            vec![installation.clone()],
+            Some(0),
+            InstallPlan {
+                target: Some(installation),
+                actions: vec![PlanAction {
+                    package_id: PACKAGE_REAPACK.to_string(),
+                    action: PlanActionKind::Install,
+                    installed_version: None,
+                    available_version: Some(Version::parse("1.2.6").unwrap()),
+                    reason: "Missing".to_string(),
+                }],
+                notes: Vec::new(),
+            },
+        );
+
+        let reapack = &model.package_rows[0];
+        assert_eq!(reapack.action, PlanActionKind::Install);
+        assert!(!reapack.selected, "ReaPack row should start unticked");
+
+        let reapack_remote = model
+            .configuration_rows
+            .iter()
+            .find(|row| row.step_id == "reapack-add-reaper-accessibility-remote")
+            .expect("reapack-add-reaper-accessibility-remote row should exist");
+        assert!(
+            !reapack_remote.available_for_target,
+            "config row's dependency package isn't going to land on disk; \
+             row must be marked unavailable"
+        );
+        assert!(
+            !reapack_remote.selected,
+            "config row must not auto-tick when its dep package is an unticked Install"
+        );
+    }
+
+    #[test]
+    fn non_recommended_package_update_row_starts_ticked() {
+        // Update means the package is already on disk — the user opted into
+        // having it. RABBIT should keep it current by default, so the Update
+        // row stays auto-ticked even for a non-recommended package.
+        let localizer = Localizer::embedded(DEFAULT_LOCALE).unwrap();
+        let installation = fake_installation();
+        let model = model_from_plan(
+            &localizer,
+            Platform::Windows,
+            Architecture::X64,
+            vec![installation.clone()],
+            Some(0),
+            InstallPlan {
+                target: Some(installation),
+                actions: vec![PlanAction {
+                    package_id: PACKAGE_FFMPEG.to_string(),
+                    action: PlanActionKind::Update,
+                    installed_version: Some(Version::parse("8.0.0").unwrap()),
+                    available_version: Some(Version::parse("8.1.1").unwrap()),
+                    reason: "Older version on disk".to_string(),
+                }],
+                notes: Vec::new(),
+            },
+        );
+        let row = &model.package_rows[0];
+        assert_eq!(row.action, PlanActionKind::Update);
+        assert!(row.selected);
     }
 
     #[test]

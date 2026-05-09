@@ -508,10 +508,9 @@ mod tests {
         assert_eq!(
             default_desired_package_ids(),
             vec![
+                PACKAGE_REAPER.to_string(),
                 PACKAGE_OSARA.to_string(),
                 PACKAGE_SWS.to_string(),
-                PACKAGE_REAPACK.to_string(),
-                PACKAGE_REAKONTROL.to_string(),
                 PACKAGE_JAWS_SCRIPTS.to_string(),
             ]
         );

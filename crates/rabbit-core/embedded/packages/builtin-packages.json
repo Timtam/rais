@@ -8,7 +8,7 @@
       "display_description_key": "package-reaper-description",
       "package_kind": "reaper_app",
       "required": false,
-      "recommended": false,
+      "recommended": true,
       "supported_platforms": ["windows", "macos"],
       "supported_architectures": ["x86", "x64", "arm64", "arm64-ec", "universal"],
       "latest_version_provider": "reaper_download_page",
