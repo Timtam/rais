@@ -2623,8 +2623,8 @@ fn package_row_will_land_on_disk(row: &PackageRow) -> bool {
         return false;
     }
     let was_installed = !matches!(row.original_action, PlanActionKind::Install);
-    let installing_now = matches!(row.action, PlanActionKind::Install | PlanActionKind::Update)
-        && row.selected;
+    let installing_now =
+        matches!(row.action, PlanActionKind::Install | PlanActionKind::Update) && row.selected;
     was_installed || installing_now
 }
 
