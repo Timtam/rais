@@ -4,24 +4,24 @@ app-short-name = RABBIT
 common-yes = yes
 common-no = no
 
-action-install = Install
-action-update = Update
-action-keep = Keep
+action-install = Will install
+action-update = Will update
+action-keep = Won't touch
 
 package-reaper = REAPER
 package-osara = OSARA
 package-sws = SWS Extension
 package-reapack = ReaPack
 package-reakontrol = ReaKontrol
-package-jaws-scripts = JAWS-for-REAPER scripts
-package-ffmpeg = FFmpeg
+package-jaws-scripts = Snowman's JAWS Scripts for REAPER
+package-ffmpeg = FFmpeg for Improved Video Support
 
-package-reaper-description = REAPER is the digital audio workstation that everything else here builds on. RABBIT can install or update REAPER itself for you.
-package-osara-description = OSARA makes REAPER usable with screen readers — NVDA, JAWS, Narrator on Windows and VoiceOver on macOS. Install it if you rely on a screen reader to use REAPER.
-package-sws-description = The SWS Extension is a long-running community pack of extra actions, scripts, and helpers that polish REAPER's editing experience. Most accessible REAPER setups assume it is installed.
-package-reapack-description = ReaPack is REAPER's package manager: it installs, updates, and tracks third-party scripts and extensions from inside REAPER itself. Install it if you plan to use scripts shared by the REAPER community.
-package-reakontrol-description = ReaKontrol adds Native Instruments Komplete Kontrol keyboard support to REAPER. Install it if you have a Komplete Kontrol keyboard and want hardware control surface integration.
-package-jaws-scripts-description = The JAWS-for-REAPER scripts add script-level support for REAPER to the JAWS screen reader on Windows. RABBIT only offers them when JAWS is detected on this PC.
+package-reaper-description = REAPER is the digital audio workstation that everything else here builds on. RABBIT can install or update REAPER for you.
+package-osara-description = OSARA is the open source accessibility extension that makes REAPER usable with screen readers. NVDA, JAWS and Narrator on Windows, VoiceOver on macOS are all widely adopted, some other Windows screen readers might also work. Install OSARA if you rely on a screen reader to use REAPER.
+package-sws-description = The SWS Extension is a long-running community-authored pack of extra actions, scripts, and helpers that extend REAPER's features. For the most accessible REAPER setup, whether you're on Windows or Mac, you should install SWS alongside OSARA.
+package-reapack-description = ReaPack is an open source package manager. It can be used to search, install, track and update third-party scripts and extensions from inside REAPER itself. Install this if you want to use scripts shared by the REAPER community.
+package-reakontrol-description = ReaKontrol provides open source integration for Native Instruments Komplete Kontrol keyboards. Install this if you have an S series MK2, A series, M-32 or Kontrol MK3 keyboard.
+package-jaws-scripts-description = Snowman's scripts improve how JAWS handles various windows throughout REAPER, as well as offering extended Braille support and many other features. Note that these scripts are intended to be used alongside OSARA, they're not an alternative to it. For optimal accessibility with JAWS, you should install both.
 package-ffmpeg-description = FFmpeg's shared runtime libraries enable REAPER's video decoder to import and play back common video and audio formats. RABBIT installs the BtbN GPL-shared build's bin folder into UserPlugins; the patch level isn't recoverable from the DLL filenames alone, so externally-installed FFmpegs are reported with a `<major>.0.0` placeholder.
 
 # $reason is one of the localized "wizard-package-row-unavailable-*" strings
@@ -32,7 +32,7 @@ wizard-package-row-unavailable-portable = portable REAPER target
 
 detect-installed = Installed
 detect-not-installed = Not installed
-detect-version-unknown = Version unknown
+detect-version-unknown = Unknown version
 detect-source-receipt = RABBIT receipt
 detect-source-files = UserPlugins file presence
 detect-source-reapack-registry = ReaPack registry
@@ -59,25 +59,25 @@ wizard-button-install-mnemonic = I
 wizard-button-close = Close
 wizard-button-close-mnemonic = C
 
-wizard-target-heading = Choose REAPER installation
+wizard-target-heading = Choose a task
 wizard-target-language-label = Language
 wizard-target-language-restart-note = Changing the language restarts RABBIT so the new language can take effect.
 wizard-locale-name-en-US = English (United States)
 wizard-locale-name-de-DE = German (Germany)
-wizard-target-choice-label = Installation target
+wizard-target-choice-label = Installation Path
 wizard-target-details-label = Target details
 wizard-target-empty = No REAPER installation target is selected.
-wizard-target-portable-choice = Install or update a portable REAPER folder
+wizard-target-portable-choice = Make or update a portable version of REAPER
 wizard-target-portable-folder-label = Portable folder
-wizard-target-portable-folder-message = Choose a portable REAPER folder, or an empty folder for a new portable setup.
+wizard-target-portable-folder-message = Choose a portable REAPER folder if you already have one, or an empty folder if making a new portable version.
 wizard-target-portable-folder-browse-label = Browse…
-wizard-target-portable-pending-details = Choose the portable target option, then choose a portable REAPER folder or an empty folder for a new portable setup.
+wizard-target-portable-pending-details = Use the Browse button to set the location of an existing portable version if you have one, or to choose an empty folder if you want to make a new portable version of REAPER.
 wizard-target-custom-portable-label = Portable REAPER folder
 wizard-target-custom-portable-app-path-label = REAPER application path
 wizard-target-custom-portable-path-label = Portable resource path
 wizard-target-custom-portable-version-label = REAPER version
 wizard-target-custom-portable-writable-label = Writable
-wizard-target-custom-portable-note = RABBIT will create the REAPER resource layout here if it is missing.
+wizard-target-custom-portable-note = RABBIT will create the REAPER resource path here if it is missing.
 
 # $version is the REAPER version or an unknown-version label and $path is the resource path.
 wizard-target-row = REAPER { $version } in { $path }
@@ -85,8 +85,8 @@ wizard-target-row = REAPER { $version } in { $path }
 # $app_path is the REAPER application path, $path is the REAPER resource path,
 # $version is the REAPER version or an unknown-version label, and $writable
 # is yes/no.
-wizard-target-details = REAPER application: { $app_path }
-    REAPER version: { $version }
+wizard-target-details = REAPER installation path: { $app_path }
+    Version: { $version }
     Resource path: { $path }
     Writable: { $writable }
 
@@ -107,14 +107,14 @@ wizard-configuration-row-summary-suffix = ({ $reason })
 # $package is the localized name of the dependency package.
 wizard-configuration-row-status-requires = requires { $package }
 wizard-configuration-row-status-already-applied = already applied
-config-reapack-reaper-accessibility-name = REAPER Accessibility ReaPack repository
-config-reapack-reaper-accessibility-description = Adds Ttoni Barth's REAPER Accessibility repository (https://github.com/Timtam/reapack/raw/master/index.xml) to ReaPack so packages from it can be browsed and installed via Extensions → ReaPack → Browse packages.
+config-reapack-reaper-accessibility-name = Add Toni's REAPER Accessibility ReaPack repository
+config-reapack-reaper-accessibility-description = Adds Ttoni Barth's REAPER Accessibility ReaPack repository (https://github.com/Timtam/reapack/raw/master/index.xml). Once added, go to the Extensions menu, ReaPack, Browse Packages to get extra accessible scripts and plug-ins.
 
 wizard-reapack-ack-heading = ReaPack donation notice
-wizard-reapack-ack-body = ReaPack is free software released under the LGPL. Its author Christian Fillion accepts donations to support continued development. Donations are entirely optional and never required to use ReaPack or RABBIT.
+wizard-reapack-ack-body = ReaPack is free software released under the LGPL. Its author Christian Fillion accepts optional donations to support continued development. Christian also maintains the SWS extensions and has landed code specifically to improve compatibility with OSARA in the past. Any support you can send has been well earned.
 wizard-reapack-ack-link-label = Open the ReaPack donation page
-wizard-reapack-ack-confirm-label = I have read the notice above and want to continue installing or updating ReaPack
-cli-reapack-ack-prompt-summary = ReaPack is free software (LGPL). Donations to its author Christian Fillion at https://reapack.com/donate are optional and never required to use ReaPack or RABBIT.
+wizard-reapack-ack-confirm-label = Skip donation this time, just install or update ReaPack
+cli-reapack-ack-prompt-summary = ReaPack is free software (LGPL). Donations to its author Christian Fillion accepts optional donations at https://reapack.com/donate to support ongoing development.
 cli-reapack-ack-flag-required = ReaPack is in this run's plan but the donation acknowledgement is missing. Re-run with --accept-reapack-donation-notice to confirm you have read https://reapack.com/donate and want RABBIT to install or update ReaPack.
 
 wizard-version-check-heading = Checking latest versions
@@ -129,10 +129,10 @@ wizard-version-check-error-heading = Failed checks
 wizard-version-check-error-line = { $package }: { $message }
 wizard-package-details-label = Package details
 wizard-packages-osara-keymap-heading = OSARA key map
-wizard-packages-osara-keymap-replace-label = Replace current key map with OSARA key map
+wizard-packages-osara-keymap-replace-label = Replace your current key map with latest OSARA key map
 wizard-packages-osara-keymap-unavailable-note = Select OSARA to configure its key map behavior.
-wizard-packages-osara-keymap-preserve-note = The current key map will be preserved as a non-default override. RABBIT should not overwrite reaper-kb.ini.
-wizard-packages-osara-keymap-replace-note = RABBIT will back up and replace reaper-kb.ini with the OSARA key map. This is the default.
+wizard-packages-osara-keymap-preserve-note = For advanced users: your current key map will be preserved. Rabbit won't touch reaper-kb.ini, you will need to manage staying up to date with the latest OSARA key map additions manually.
+wizard-packages-osara-keymap-replace-note = Recommended for new through intermediate users: RABBIT will backup a copy of your current reaper-kb.ini file, then replace it with the latest version of the OSARA key map.
 wizard-package-details-handling-prefix = Handling
 wizard-package-handling-automatic = RABBIT can install this package directly.
 wizard-package-handling-unattended = RABBIT can install this package unattended, including launching its installer when required.
@@ -141,14 +141,14 @@ wizard-package-handling-manual = RABBIT will download this package and report th
 wizard-package-handling-unavailable = This package is not available for the selected platform or architecture.
 
 # $package is the localized package display name, $action is the localized planned action, $installed is the installed version or unknown, and $available is the available version or unknown.
-wizard-package-row = { $package }: { $action }. Installed: { $installed }. Available: { $available }
+wizard-package-row = { $package }: { $action }. You have { $installed }. Latest is { $available }
 
-wizard-review-heading = Review changes
+wizard-review-heading = Review what you've asked RABBIT to do
 wizard-review-target-prefix = Target
 wizard-review-package-heading = Selected packages
 wizard-review-osara-keymap-heading = OSARA key map
-wizard-review-osara-keymap-preserve = Preserve the current key map instead of applying the OSARA key map.
-wizard-review-osara-keymap-replace = Replace the current key map after backing up reaper-kb.ini.
+wizard-review-osara-keymap-preserve = Preserve your current key map.
+wizard-review-osara-keymap-replace = Backup your current key map then replace with the latest from OSARA.
 wizard-review-notes-heading = Notes
 wizard-review-preflight-prefix = Cannot install yet
 
@@ -162,7 +162,7 @@ wizard-review-package = { $package }: { $action }
 
 wizard-progress-heading = Installation progress
 wizard-progress-status-idle = Ready to install.
-wizard-progress-status-running = Installing selected packages. This can take several minutes.
+wizard-progress-status-running = Installing selected packages. This might take a few minutes.
 wizard-progress-details-label = Progress details
 wizard-progress-details-idle = No installation is running.
 wizard-progress-details-starting = Starting setup operation.
@@ -170,16 +170,16 @@ wizard-progress-details-cache-prefix = Cache
 
 wizard-done-heading = Done
 wizard-done-status-idle = No installation has been run from this window yet.
-wizard-done-status-success = Installation finished. Review the details below.
+wizard-done-status-success = RABBIT finished working its magic! Review the details below.
 wizard-done-status-error = Installation failed. Review the error below.
 wizard-done-status-no-packages = No package was selected for installation or update.
 wizard-done-show-details = Show details
 # Mnemonic messages are single-character native access keys. Choose a character
 # from the translated label when possible.
 wizard-done-launch-reaper = Open REAPER and close RABBIT
-wizard-done-launch-reaper-mnemonic = P
-wizard-done-open-resource = Open resource folder
-wizard-done-open-resource-mnemonic = O
+wizard-done-launch-reaper-mnemonic = O
+wizard-done-open-resource = Open resource folder (only for advanced manual maintenance)
+wizard-done-open-resource-mnemonic = R
 wizard-done-no-reaper-app = No launchable REAPER application is known for this target.
 wizard-done-launch-reaper-error-prefix = REAPER could not be launched
 wizard-done-open-resource-error-prefix = Resource folder could not be opened

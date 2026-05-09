@@ -3197,13 +3197,16 @@ mod tests {
         );
         assert_eq!(
             model.text.packages_osara_keymap_replace_label,
-            "Replace current key map with OSARA key map"
+            "Replace your current key map with latest OSARA key map"
         );
         assert_eq!(
             model.text.done_launch_reaper_label,
-            "O&pen REAPER and close RABBIT"
+            "&Open REAPER and close RABBIT"
         );
-        assert_eq!(model.text.done_open_resource_label, "&Open resource folder");
+        assert_eq!(
+            model.text.done_open_resource_label,
+            "Open &resource folder (only for advanced manual maintenance)"
+        );
     }
 
     #[test]
@@ -3286,8 +3289,12 @@ mod tests {
         assert_eq!(model.target_rows.len(), 1);
         assert!(model.target_rows[0].selected);
         assert!(model.target_rows[0].portable);
-        assert!(model.target_rows[0].details.contains("REAPER application"));
-        assert!(model.target_rows[0].details.contains("REAPER version"));
+        assert!(
+            model.target_rows[0]
+                .details
+                .contains("REAPER installation path")
+        );
+        assert!(model.target_rows[0].details.contains("Version:"));
         assert!(!model.target_rows[0].details.contains("Architecture"));
         assert!(
             !model.target_rows[0]
@@ -3315,14 +3322,14 @@ mod tests {
                 .contains(&model.package_rows[0].description),
             "expected OSARA description embedded in details"
         );
-        assert_eq!(model.package_rows[0].action_label, "Install");
+        assert_eq!(model.package_rows[0].action_label, "Will install");
         assert!(!model.package_rows[0].manual_attention_expected);
         assert_eq!(
             model.package_rows[0].handling_summary,
             model.text.package_handling_unattended
         );
         assert!(model.package_rows[0].selected);
-        assert_eq!(model.package_rows[1].action_label, "Keep");
+        assert_eq!(model.package_rows[1].action_label, "Won't touch");
         assert!(!model.package_rows[1].manual_attention_expected);
         assert!(!model.package_rows[1].selected);
         assert!(model.controls.can_go_next);
@@ -3358,23 +3365,23 @@ mod tests {
         );
         let mut row = model.package_rows[0].clone();
         assert_eq!(row.action, PlanActionKind::Install);
-        assert_eq!(row.action_label, "Install");
+        assert_eq!(row.action_label, "Will install");
         assert!(row.selected);
 
         let summary = super::apply_checkbox_state_to_package_row(&model, &mut row, false).unwrap();
         assert_eq!(row.action, PlanActionKind::Keep);
-        assert_eq!(row.action_label, "Keep");
+        assert_eq!(row.action_label, "Won't touch");
         assert!(!row.selected);
-        assert!(summary.contains("Keep"));
-        assert!(row.summary.contains("Keep"));
+        assert!(summary.contains("Won't touch"));
+        assert!(row.summary.contains("Won't touch"));
 
         // Re-checking restores the original install action because the
         // package was originally not installed.
         let summary = super::apply_checkbox_state_to_package_row(&model, &mut row, true).unwrap();
         assert_eq!(row.action, PlanActionKind::Install);
-        assert_eq!(row.action_label, "Install");
+        assert_eq!(row.action_label, "Will install");
         assert!(row.selected);
-        assert!(summary.contains("Install"));
+        assert!(summary.contains("Will install"));
     }
 
     #[test]
@@ -3409,9 +3416,9 @@ mod tests {
 
         let _ = super::apply_checkbox_state_to_package_row(&model, &mut row, true).unwrap();
         assert_eq!(row.action, PlanActionKind::Update);
-        assert_eq!(row.action_label, "Update");
+        assert_eq!(row.action_label, "Will update");
         assert!(row.selected);
-        assert!(row.summary.contains("Update"));
+        assert!(row.summary.contains("Will update"));
     }
 
     #[test]
@@ -3722,7 +3729,7 @@ mod tests {
         );
         assert!(row.label.contains("Portable REAPER folder"));
         assert!(row.details.contains("REAPER application path"));
-        assert!(row.details.contains("REAPER version: Version unknown"));
+        assert!(row.details.contains("REAPER version: Unknown version"));
         assert!(!row.details.contains("Architecture"));
         assert!(row.details.contains("Portable resource path"));
     }
@@ -3999,7 +4006,7 @@ mod tests {
 
         assert!(preview.lines.iter().any(|line| line == "OSARA key map"));
         assert!(preview.lines.iter().any(|line| {
-            line.contains("Replace the current key map") && line.contains("reaper-kb.ini")
+            line.contains("Backup your current key map") && line.contains("OSARA")
         }));
         assert!(
             !preview
@@ -4146,7 +4153,7 @@ mod tests {
             summary
                 .detail_lines
                 .iter()
-                .any(|line| line.contains("Plan action:") && line.contains("Install"))
+                .any(|line| line.contains("Plan action:") && line.contains("Will install"))
         );
         assert!(
             summary
@@ -4388,7 +4395,7 @@ mod tests {
             summary
                 .detail_lines
                 .iter()
-                .any(|line| line.contains("Replace the current key map"))
+                .any(|line| line.contains("Backup your current key map"))
         );
         assert!(
             summary
