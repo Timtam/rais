@@ -4330,10 +4330,7 @@ fn build_progress_page(page: &Panel, model: &WizardModel) -> (StaticText, Gauge,
     (status, gauge, details)
 }
 
-fn build_done_page(
-    page: &Panel,
-    model: &WizardModel,
-) -> (TextCtrl, TextCtrl, Button, Button) {
+fn build_done_page(page: &Panel, model: &WizardModel) -> (TextCtrl, TextCtrl, Button, Button) {
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     add_heading(
         page,

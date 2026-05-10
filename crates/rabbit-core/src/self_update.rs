@@ -1007,11 +1007,11 @@ mod tests {
         current_rabbit_version, enclosing_app_bundle, evaluate_self_update_report,
         parse_self_update_manifest, stage_self_update_from_report,
     };
-    use std::path::{Path, PathBuf};
     use crate::RabbitError;
     use crate::hash::sha256_file;
     use crate::model::{Architecture, Platform};
     use crate::version::Version;
+    use std::path::{Path, PathBuf};
 
     const MANIFEST_URL: &str = "https://example.test/rabbit-update-stable.json";
 
@@ -1663,7 +1663,9 @@ mod tests {
             None
         );
         assert_eq!(
-            enclosing_app_bundle(Path::new("/Users/alice/projects/rabbit/target/release/rabbit")),
+            enclosing_app_bundle(Path::new(
+                "/Users/alice/projects/rabbit/target/release/rabbit"
+            )),
             None
         );
     }
