@@ -189,6 +189,17 @@ jobs:
             "target/aarch64-apple-darwin/release/rabbit" \
             "target/x86_64-apple-darwin/release/rabbit"
           chmod +x "dist/${ARTIFACT}"
+          # Ad-hoc sign the bare binary itself, separately from the .app
+          # bundle. Two reasons: (a) Apple Silicon's kernel refuses to
+          # exec unsigned Mach-Os, and `lipo -create` strips its inputs'
+          # signatures from the fused fat output — without this step the
+          # bare-binary download wouldn't run for CLI users; (b) when
+          # self-update copies this binary over the binary inside an
+          # existing `Rabbit.app`, the inner Mach-O has a valid embedded
+          # signature, which is a prerequisite for the post-swap bundle
+          # re-sign in `apply_self_update` to produce a valid bundle.
+          # Sign before sha256 so the manifest hashes the signed bytes.
+          codesign --force --sign - "dist/${ARTIFACT}"
           shasum -a 256 "dist/${ARTIFACT}" | awk -v name="${ARTIFACT}" '{print tolower($1) "  " name}' > "dist/${ARTIFACT}.sha256"
           bash packaging/macos/build-bundle.sh \
             --binary "dist/${ARTIFACT}" \

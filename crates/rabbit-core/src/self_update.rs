@@ -370,6 +370,11 @@ pub fn apply_self_update(
         rollback_replaced_files(&replaced);
         return Err(error);
     }
+    // Best-effort: re-seal the surrounding `.app` bundle on macOS so the
+    // bundle's signature matches the just-swapped binary. No-op on every
+    // other platform, and on macOS for standalone-CLI installs that don't
+    // live inside an `.app`.
+    resign_macos_bundle_if_applicable(&install_target);
 
     let signed_count = signature_verdicts
         .iter()
@@ -501,6 +506,71 @@ fn clear_macos_quarantine(path: &Path) {
 
 #[cfg(not(target_os = "macos"))]
 fn clear_macos_quarantine(_path: &Path) {}
+
+/// macOS only: when the install target lives inside a `.app` bundle, re-sign
+/// the bundle ad-hoc so its `_CodeSignature/CodeResources` and bundle-level
+/// signature seal match the just-swapped binary. Without this step,
+/// `codesign --verify Rabbit.app` reports the bundle as corrupt because
+/// the binary's hash differs from the value sealed at bundle-build time,
+/// and Gatekeeper refuses to launch it from Finder on macOS 15 (Sequoia)
+/// and 26 (Tahoe).
+///
+/// Best-effort: failures (`/usr/bin/codesign` missing, malformed bundle,
+/// permissions on a system-protected install location) are logged to
+/// stderr but don't fail the apply, since the binary swap itself
+/// succeeded — the user falls back to the manual "Open Anyway" flow on
+/// next Finder launch, which is no worse than a fresh download.
+///
+/// Standalone-CLI installs without an `.app` ancestor skip codesign
+/// entirely; the bare-binary release artifact is ad-hoc signed in the
+/// release pipeline before publication, so there's no further work.
+#[cfg(target_os = "macos")]
+fn resign_macos_bundle_if_applicable(install_target: &Path) {
+    let Some(bundle) = enclosing_app_bundle(install_target) else {
+        return;
+    };
+    let output = std::process::Command::new("/usr/bin/codesign")
+        .args(["--force", "--deep", "--sign", "-"])
+        .arg(&bundle)
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "warning: ad-hoc re-sign of {} failed (exit {}): {}",
+                bundle.display(),
+                output.status.code().unwrap_or(-1),
+                stderr.trim()
+            );
+        }
+        Err(error) => {
+            eprintln!(
+                "warning: could not run codesign to re-sign {}: {}",
+                bundle.display(),
+                error
+            );
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn resign_macos_bundle_if_applicable(_install_target: &Path) {}
+
+/// Walk up the path looking for an ancestor with a `.app` extension —
+/// the macOS bundle root that contains the install target. Returns
+/// `None` if the path lives outside any `.app` (e.g., a standalone CLI
+/// install in `/usr/local/bin`).
+#[cfg(any(target_os = "macos", test))]
+fn enclosing_app_bundle(path: &Path) -> Option<PathBuf> {
+    let mut current = path.parent()?;
+    loop {
+        if current.extension().and_then(|extension| extension.to_str()) == Some("app") {
+            return Some(current.to_path_buf());
+        }
+        current = current.parent()?;
+    }
+}
 
 fn rollback_replaced_files(replaced: &[ReplacedFile]) {
     for entry in replaced.iter().rev() {
@@ -934,9 +1004,10 @@ mod tests {
     use super::{
         ApplySelfUpdateOptions, SelfUpdateAssetSelection, SelfUpdateCheckReport,
         SelfUpdateManifest, SelfUpdateStageReport, apply_self_update, arch_token_from_asset_url,
-        current_rabbit_version, evaluate_self_update_report, parse_self_update_manifest,
-        stage_self_update_from_report,
+        current_rabbit_version, enclosing_app_bundle, evaluate_self_update_report,
+        parse_self_update_manifest, stage_self_update_from_report,
     };
+    use std::path::{Path, PathBuf};
     use crate::RabbitError;
     use crate::hash::sha256_file;
     use crate::model::{Architecture, Platform};
@@ -1564,4 +1635,36 @@ mod tests {
     // self-update apply path. The lock is now per-target so the cross-
     // target check is gone — see `apply_self_update`'s comment for the
     // rationale.)
+
+    #[test]
+    fn finds_enclosing_app_bundle_for_macos_install_targets() {
+        // Standard macOS layout: install target is the Mach-O inside
+        // `<bundle>/Contents/MacOS/`. The walk should land on the bundle
+        // root regardless of how deep the bundle sits in the filesystem.
+        let bundle = Path::new("/Applications/Rabbit.app");
+        let install_target = bundle.join("Contents/MacOS/rabbit");
+        assert_eq!(
+            enclosing_app_bundle(&install_target),
+            Some(bundle.to_path_buf())
+        );
+
+        // Bundle nested under a user's Downloads folder. Same shape, just
+        // deeper — the walk still has to reach `Rabbit.app`.
+        let nested_bundle = PathBuf::from("/Users/alice/Downloads/Rabbit/Rabbit.app");
+        assert_eq!(
+            enclosing_app_bundle(&nested_bundle.join("Contents/MacOS/rabbit")),
+            Some(nested_bundle.clone())
+        );
+
+        // Standalone CLI install (no `.app` ancestor): function returns
+        // `None` so the caller skips bundle re-signing.
+        assert_eq!(
+            enclosing_app_bundle(Path::new("/usr/local/bin/rabbit")),
+            None
+        );
+        assert_eq!(
+            enclosing_app_bundle(Path::new("/Users/alice/projects/rabbit/target/release/rabbit")),
+            None
+        );
+    }
 }

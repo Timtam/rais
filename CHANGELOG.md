@@ -44,6 +44,21 @@ from this file and posts it as the GitHub release body.
   who change their mind can relaunch RABBIT to be re-prompted; the
   status-bar line spells that out.
 
+### Fixed
+
+- macOS self-update used to leave `Rabbit.app` structurally invalid
+  after the binary swap. The release pipeline now ad-hoc signs the
+  bare `rabbit-<version>-macos-universal` artifact itself (so the
+  staged-in binary has a valid embedded signature even though
+  `lipo -create` strips its inputs' sigs), and `apply_self_update`
+  re-seals the enclosing `.app` bundle with `codesign --force --deep
+  --sign -` after the swap. Both pieces are needed: the bare-binary
+  signing keeps Apple Silicon's exec checks happy and the bundle
+  re-seal restores the `_CodeSignature/CodeResources` consistency that
+  Gatekeeper checks on Finder launch. Without these, post-update
+  Finder launches on macOS 15 (Sequoia) and 26 (Tahoe) would refuse
+  the bundle as corrupt rather than just untrusted.
+
 ## [0.1.1] - 2026-05-10
 
 ### Added
