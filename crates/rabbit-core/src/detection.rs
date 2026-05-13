@@ -604,11 +604,21 @@ fn detect_ffmpeg_version(
 
 /// Scan a vanilla FFmpeg binary for the `show_banner` format-string
 /// literal and pull the embedded `FFMPEG_VERSION` out of it. The
-/// banner is one contiguous string of the form:
+/// banner is one contiguous string. Upstream FFmpeg uses:
 ///
 /// ```text
 /// %s version <VERSION>, Copyright (c) <year>-<year> the FFmpeg developers
 /// ```
+///
+/// — but some redistributors patch the format. Gyan.dev's full builds,
+/// for example, drop the comma and pad the version with trailing
+/// spaces (`%s version 8.1.1-full_build-www.gyan.dev         Copyright
+/// (c) …`), and tordona's ARM snapshots embed `n8.1.1-6-…` directly.
+/// We anchor on the distinctive `the FFmpeg developers` suffix, walk
+/// back to find the trailing `version ` token, and treat the *next*
+/// `Copyright` (with any preceding comma/whitespace stripped) as the
+/// terminator. That matches both the upstream and the Gyan variant
+/// without enumerating every redistributor's exact format.
 ///
 /// `<VERSION>` is whatever `FFMPEG_VERSION` was `#define`d to at
 /// compile time — `8.1.1` for Gyan stable, `n8.1.1` / `n8.1.1-6-…`
@@ -628,8 +638,9 @@ fn ffmpeg_version_from_binary_bytes(bytes: &[u8]) -> Option<crate::version::Vers
     let version_marker = "version ";
     let version_pos = prelude_str.rfind(version_marker)?;
     let after = &prelude_str[version_pos + version_marker.len()..];
-    let comma_pos = after.find(',')?;
-    let version_str = after[..comma_pos].trim();
+    let copyright_pos = after.find("Copyright")?;
+    let version_str = after[..copyright_pos]
+        .trim_end_matches(|ch: char| ch.is_whitespace() || ch == ',');
     ffmpeg_version_from_product_version_string(version_str)
 }
 
@@ -1199,6 +1210,22 @@ mod tests {
         let mut bytes = vec![0u8; 256];
         bytes.extend_from_slice(
             b"%s version n8.1.1-6-gdeadbeef, Copyright (c) %d-%d the FFmpeg developers\n",
+        );
+        let version = super::ffmpeg_version_from_binary_bytes(&bytes).unwrap();
+        assert_eq!(version.raw(), "8.1.1");
+    }
+
+    #[test]
+    fn parses_ffmpeg_gyan_full_build_banner_without_comma() {
+        // Gyan.dev's full builds patch the banner format to drop the
+        // comma between the version and `Copyright` and pad the
+        // version with trailing spaces. Real captured shape from a
+        // 2026 Gyan release ffmpeg.exe (the `n` prefix is part of the
+        // version suffix, not a snapshot marker):
+        //   `%s version 8.1.1-full_build-www.gyan.dev         Copyright (c) %d-%d the FFmpeg developers`
+        let mut bytes = vec![0u8; 256];
+        bytes.extend_from_slice(
+            b"%s version 8.1.1-full_build-www.gyan.dev         Copyright (c) %d-%d the FFmpeg developers \n",
         );
         let version = super::ffmpeg_version_from_binary_bytes(&bytes).unwrap();
         assert_eq!(version.raw(), "8.1.1");

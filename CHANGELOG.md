@@ -53,11 +53,16 @@ from this file and posts it as the GitHub release body.
   a default-configured machine, and the same stall ran on the
   post-install rescan after installing FFmpeg too. Probe 2 now scans
   the `ffmpeg.exe` binary for the contiguous `show_banner` format
-  string (`"%s version <VERSION>, Copyright (c) … the FFmpeg
-  developers"`) anchored on the unique `the FFmpeg developers`
-  literal, and pulls `<VERSION>` out without spawning any subprocess.
-  Same `High` confidence as before; the matching detector id changed
-  from `ffmpeg-cli-version` to `ffmpeg-binary-version-string`.
+  string anchored on the unique `the FFmpeg developers` literal, and
+  pulls `<VERSION>` out between the trailing `version ` token and the
+  next `Copyright` marker. That matches both the upstream FFmpeg
+  banner (`%s version <VERSION>, Copyright (c) …`) and the Gyan.dev
+  full-builds variant that drops the comma and pads with spaces
+  (`%s version 8.1.1-full_build-www.gyan.dev         Copyright (c) …`),
+  so externally-installed Gyan FFmpegs now report `8.1.1` instead of
+  the libavformat-major fallback's `8.0.0`. Same `High` confidence as
+  before; the matching detector id changed from `ffmpeg-cli-version`
+  to `ffmpeg-binary-version-string`.
 
 ### Added
 
