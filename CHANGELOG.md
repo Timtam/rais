@@ -31,6 +31,17 @@ from this file and posts it as the GitHub release body.
 
 ## [Unreleased]
 
+### Fixed
+
+- Self-update apply in the GUI now exits the old RABBIT process after
+  spawning the relaunched copy. Previously the swap completed and the
+  new version launched, but the pre-update window kept running next to
+  it because the apply callback never asked the wx event loop to shut
+  down. The relaunch path now mirrors the language-switch relaunch and
+  calls `std::process::exit(0)` once the new process has been spawned;
+  the error path is unchanged so a failed spawn still leaves the
+  original window open. CLI `apply --restart` was already correct.
+
 ## [0.2.0] - 2026-05-15
 
 ### Added

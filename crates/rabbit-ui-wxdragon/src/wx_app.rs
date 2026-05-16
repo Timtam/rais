@@ -2842,6 +2842,10 @@ fn start_self_update_apply(
                             );
                             append_done_status(&done_status, &msg);
                             self_update_status.set_status_text(&msg, 0);
+                            // Mirror relaunch_with_locale: hand off to the new
+                            // process and exit, otherwise the pre-update GUI
+                            // sticks around next to the freshly-launched copy.
+                            std::process::exit(0);
                         }
                         Err(error) => {
                             let msg = format!(
